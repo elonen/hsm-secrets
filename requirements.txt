@@ -1,0 +1,10 @@
+yubihsm[http]
+yubikey-manager
+
+click
+types-click
+
+pydantic
+
+pyyaml
+types-pyyaml

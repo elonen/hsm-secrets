@@ -1,0 +1,69 @@
+
+general:
+    connector_url: http://localhost:12345
+    domains:
+        # These are YubiHSM 2 domain numbers that are used to separate
+        # different types of objects. The names here are not used by the device
+        # but the hsm-secrets tool, for clarity.
+        device-admin: 0x1
+        openssh: 0x4
+        tls: 0x5
+        password-derivation: 0x6
+
+
+admin:
+    auth_keys:
+        -
+            label: full-admin
+            id: 0x0001
+            domains: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+            capabilities: ['all']
+            delegated_capabilities: ['all']
+
+ssh:
+    root_ca_keys:
+        -
+            label: ssh-ed25519-ca-root-key
+            id: 0x0200
+            type: asymmetric-key
+            domains: [0x4]
+            algorithm: ed25519
+            capabilities:
+                - sign-ssh-certificate
+                - sign-pkcs
+            # generate asymmetric 0 0x0200 ssh-ed25519-ca-root-key all sign-pkcs,sign-ssh-certificate ed25519
+            # get pubkey 0 0x0200 ssh-ed25519-ca-root-key.pub.pem
+        -
+            label: ssh-rsa-ca-root-key
+            id: 0x0201
+            type: asymmetric-key
+            domains: [0x4]
+            algorithm: rsa4096
+            capabilities:
+                - sign-ssh-certificate
+                - sign-pkcs
+
+    auth_keys:
+        -
+            label: ssh-auth-mgt
+            id: 0x0250
+            domains: [0x4]
+            capabilities:
+                - generate-asymmetric-key
+                - delete-asymmetric-key
+                - exportable-under-wrap
+                - import-wrapped
+                - sign-ssh-certificate
+                - sign-attestation-certificate
+            delegated_capabilities:
+                - sign-ssh-certificate
+                - sign-attestation-certificate
+
+        -
+            label: ssh-auth-sign_jarno
+            id: 0x0251
+            domains: [0x4]
+            capabilities:
+                - sign-ssh-certificate
+            delegated_capabilities:
+                - sign-ssh-certificate
