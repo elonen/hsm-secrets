@@ -10,7 +10,7 @@ def cmd_hsm(ctx):
 
 @cmd_hsm.command('list-objects')
 @click.pass_context
-def list_objects(ctx):
+def list_objects(ctx: click.Context):
     """List objects in the YubiHSM"""
 
     conf = ctx.obj['config']

@@ -10,6 +10,6 @@ def cmd_pass(ctx):
 @cmd_pass.command('show')
 @click.pass_context
 @click.option('--hostname', required=True, help="Hostname to derive password for")
-def show(ctx, hostname):
+def show(ctx: click.Context, hostname: str):
     """Create a new SSH Root CA"""
     raise NotImplementedError()

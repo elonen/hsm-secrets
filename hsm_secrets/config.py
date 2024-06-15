@@ -46,9 +46,9 @@ class General(BaseModel):
     domains: HSMDomains
 
 # Some type definitions for the models
-KeyID = NewType('KeyID', Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)])
-KeyLabel = NewType('KeyLabel', Annotated[str, Field(max_length=40)])
-DomainNum = NewType('DomainNum', Annotated[int, Field(strict=True, gt=0, lt=17)])
+KeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
+KeyLabel = Annotated[str, Field(max_length=40)]
+DomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
 
 
 AsymmetricAlgorithm = Literal["rsa2048", "rsa3072", "rsa4096", "ecp256", "ecp384", "ecp521", "eck256", "ecbp256", "ecbp384", "ecbp512", "ed25519", "ecp224"]

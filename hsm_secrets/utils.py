@@ -1,4 +1,5 @@
 from typing import Optional, Sequence
+from contextlib import contextmanager
 
 from click import echo
 import click
@@ -6,12 +7,13 @@ import click
 from yubihsm import YubiHsm # type: ignore
 from yubihsm.core import AuthSession
 from yubihsm.defs import CAPABILITY, ALGORITHM
+from yubihsm.objects import AsymmetricKey, YhsmObject
 
 from yubikit.hsmauth import HsmAuthSession  #, DEFAULT_MANAGEMENT_KEY
 from ykman import scripting
 import yubikit.core
 
-from hsm_secrets.config import AsymmetricAlgorithm, AsymmetricCapabilityName, AuthKeyCapabilityName, HSMConfig
+import hsm_secrets.config as hscfg
 
 
 
@@ -19,7 +21,7 @@ def ask_for_password(title: str) -> str:
     return click.prompt(f"Enter the password for {title}", hide_input=True)
 
 
-def connect_hsm_and_auth_with_yubikey(config: HSMConfig, auth_key_id: int, yubikey_slot_label: str, yubikey_password: Optional[str] = None) -> AuthSession:
+def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, auth_key_id: int, yubikey_slot_label: str, yubikey_password: Optional[str] = None) -> AuthSession:
     """
     Connects to a YubHSM and authenticates a session using the first YubiKey found.
 
@@ -58,6 +60,26 @@ def connect_hsm_and_auth_with_yubikey(config: HSMConfig, auth_key_id: int, yubik
         exit(1)
 
 
+@contextmanager
+def open_hsm_session(ctx: click.Context, hsml_auth_key_label: str, yubikey_slot_prefix: str):
+    """
+    Open a session to the HSM using the first YubiKey found.
+
+    Args:
+        ctx (click.Context): The Click context object
+        hsml_auth_key_label (str): The label of the HSM authentication key (in the config file)
+        yubikey_slot_prefix (str): The prefix for the YubiKey slot label (e.g. "ssh-mgt")
+    """
+    conf: hscfg.HSMConfig = ctx.obj['config']
+    auth_key = conf.find_auth_key(hsml_auth_key_label)
+    yubikey_hsm_slot = yubikey_slot_prefix + "_" + ctx.obj['user']
+    session = connect_hsm_and_auth_with_yubikey(conf, auth_key.id, yubikey_hsm_slot, None)
+    try:
+        yield conf, session
+    finally:
+        session.close()
+
+
 def domains_int(domains: Sequence[int]) -> int:
     """
     Convert a set of domain numbers to a 16-bit bitfield.
@@ -71,7 +93,7 @@ def domains_int(domains: Sequence[int]) -> int:
     return bitfield
 
 
-def encode_capabilities(names: Sequence[AsymmetricCapabilityName]|set[AsymmetricCapabilityName]) -> CAPABILITY:
+def encode_capabilities(names: Sequence[hscfg.AsymmetricCapabilityName] | set[hscfg.AsymmetricCapabilityName]) -> CAPABILITY:
     """
     Convert a list of capability names to a bitfield.
     """
@@ -145,7 +167,7 @@ def encode_capabilities(names: Sequence[AsymmetricCapabilityName]|set[Asymmetric
         return res
 
 
-def encode_algorithm(name_literal: str|AsymmetricAlgorithm) -> ALGORITHM:
+def encode_algorithm(name_literal: str|hscfg.AsymmetricAlgorithm) -> ALGORITHM:
     mapping = {
         "rsa-pkcs1-sha1": ALGORITHM.RSA_PKCS1_SHA1,
         "rsa-pkcs1-sha256": ALGORITHM.RSA_PKCS1_SHA256,
@@ -198,3 +220,34 @@ def encode_algorithm(name_literal: str|AsymmetricAlgorithm) -> ALGORITHM:
     if mapping.get(name_literal.lower(), None) is None:
         raise ValueError(f"Unknown algorithm name '{name_literal}'")
     return mapping[name_literal.lower()]
+
+
+def create_asymmetric_keys_on_hsm(ses: AuthSession, key_defs: Sequence[hscfg.HSMAsymmetricKey]):
+    """
+    Create a set of asymmetric keys in the HSM, optionally deleting and recreating existing keys.
+
+    Args:
+        ses (AuthSession): The authenticated HSM session
+        key_defs (Sequence[HSMAsymmetricKey]): The list of key definitions to create
+    """
+
+    existing: Sequence[YhsmObject] = ses.list_objects()
+    for obj in existing:
+        if isinstance(obj, AsymmetricKey) and obj.id in [d.id for d in key_defs]:
+            click.echo(f"AsymmetricKey ID '{hex(obj.id)}' already exists")
+            if click.confirm("Delete and recreate?"):
+                obj.delete()
+            else:
+                raise click.Abort()
+
+    for kdef in key_defs:
+        click.echo(f"Creating key '{kdef.label}' ID '{hex(kdef.id)}' ({kdef.algorithm}) ...", nl=False)
+        AsymmetricKey.generate(
+                session=ses,
+                object_id=kdef.id,
+                label=kdef.label,
+                domains=domains_int(kdef.domains),
+                capabilities=encode_capabilities(kdef.capabilities),
+                algorithm=encode_algorithm(kdef.algorithm)
+            )
+        click.echo("done")

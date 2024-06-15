@@ -17,7 +17,7 @@ from hsm_secrets.config import load_hsm_config
 @click.option("-U", "--username", required=True, default=lambda: os.environ.get("USER", "").split(".")[0], help="Username for key labels")
 @click.version_option()
 @click.pass_context
-def cli(ctx, debug, config, username):
+def cli(ctx: click.Context, debug: bool, config: str, username: str):
     """HSM secret management tool with HSM integration."""
     ctx.obj = {
         'debug': debug,
