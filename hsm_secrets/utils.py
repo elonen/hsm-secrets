@@ -222,7 +222,7 @@ def encode_algorithm(name_literal: str|hscfg.AsymmetricAlgorithm) -> ALGORITHM:
     return mapping[name_literal.lower()]
 
 
-def create_asymmetric_keys_on_hsm(ses: AuthSession, key_defs: Sequence[hscfg.HSMAsymmetricKey]):
+def create_asymmetric_keys_on_hsm(ses: AuthSession, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
     """
     Create a set of asymmetric keys in the HSM, optionally deleting and recreating existing keys.
 
@@ -240,14 +240,17 @@ def create_asymmetric_keys_on_hsm(ses: AuthSession, key_defs: Sequence[hscfg.HSM
             else:
                 raise click.Abort()
 
+    res = []
     for kdef in key_defs:
         click.echo(f"Creating key '{kdef.label}' ID '{hex(kdef.id)}' ({kdef.algorithm}) ...", nl=False)
-        AsymmetricKey.generate(
+        res.append(AsymmetricKey.generate(
                 session=ses,
                 object_id=kdef.id,
                 label=kdef.label,
                 domains=domains_int(kdef.domains),
                 capabilities=encode_capabilities(kdef.capabilities),
                 algorithm=encode_algorithm(kdef.algorithm)
-            )
+            ))
         click.echo("done")
+
+    return res

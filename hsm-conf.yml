@@ -38,10 +38,14 @@ ssh:
             id: 0x0201
             type: asymmetric-key
             domains: [0x4]
-            algorithm: rsa4096
+            algorithm: rsa2048
             capabilities:
                 - sign-ssh-certificate
                 - sign-pkcs
+
+    template_slots:
+        min: 0x0220
+        max: 0x022F
 
     auth_keys:
         -

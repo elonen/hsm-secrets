@@ -8,3 +8,5 @@ pydantic
 
 pyyaml
 types-pyyaml
+
+yubihsm-ssh-tool @ git+https://github.com/YubicoLabs/yubihsm-ssh-tool@9cec861

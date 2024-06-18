@@ -95,7 +95,11 @@ class HSMAuthKey(BaseModel):
 class Admin(BaseModel):
     auth_keys: list[HSMAuthKey]
 
+class SSHTemplateSlots(BaseModel):
+    min: int
+    max: int
+
 class SSH(BaseModel):
     root_ca_keys: list[HSMAsymmetricKey]
     auth_keys: list[HSMAuthKey]
-
+    template_slots: SSHTemplateSlots
