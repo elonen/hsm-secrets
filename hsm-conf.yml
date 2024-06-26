@@ -1,73 +1,354 @@
+# This is a configuration file for the hsm-secrets tool. It is used to generate keys and certificates for the YubiHSM 2.
+#
+# Most keys are provided in RSA and Ed25519 variants, intentionally leaving out EC keys due to their various issues.
+# Ed25519 is recommended whenever possible, RSA is for compatibility with older systems.
 
 general:
     connector_url: http://localhost:12345
+
     domains:
-        # These are YubiHSM 2 domain numbers that are used to separate
-        # different types of objects. The names here are not used by the device
-        # but the hsm-secrets tool, for clarity.
-        device-admin: 0x1
-        openssh: 0x4
-        tls: 0x5
-        password-derivation: 0x6
+        # These domain numbers separate different types of objects in the YubiHSM 2.
+        # The names are used by the hsm-secrets tool for clarity, not by the device itself.
+        device_admin: 1
+        x509: 2
+        tls: 3
+        nac: 4
+        gpg: 5
+        codesign: 6
+        ssh: 7
+        password_derivation: 8
+        encryption: 9
+
+        service_keys: 0xd
+        user_keys: 0xe
+
+    x509_defaults:
+        is_ca: true
+        key_usage:
+            - digitalSignature
+            - keyAgreement
+            - keyCertSign
+            - cRLSign
+        extended_key_usage:
+            - serverAuth
+            - clientAuth
+            - timeStamping
+        attribs:
+            country: US
+            state: Calisota
+            locality: Duckburg
+            organization: Example Inc
+            common_name: example.com
 
 
+# Subsystem for YubiHSM 2 device admin auth keys.
 admin:
     auth_keys:
-        -
-            label: full-admin
-            id: 0x0001
-            domains: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
-            capabilities: ['all']
-            delegated_capabilities: ['all']
 
+    # Factory default admin key.
+    # Also temporarily re-created (using shared-admin) during air-gapped management sessions.
+    - label: default-admin
+      id: 0x0001
+      domains: ['all']
+      capabilities: ['all']
+      delegated_capabilities: ['all']
+      default_password: 'password'
+
+    # k-of-n shared secret key for device admin.
+    # This key is split among custodians, and is used to unlock the device in the future.
+    - label: shared-admin
+      id: 0x0002
+      domains: ['all']
+      capabilities: ['all']
+      delegated_capabilities: ['all']
+      shared_secret: true
+
+
+# User keys are for general use by human operators.
+#
+# These should be YubiKey -authenticated, and used for interactive operations,
+# i.e. manually calling day-to-day scripts that sign HTTPS certificates, SSH keys, etc.
+#
+# They aren't supposed to be able to export or create other keys, only use them.
+user_keys:
+    - label: ops_john.doe
+      id: 0xE001
+      domains: ['all', 'tls', 'nac', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
+      capabilities:
+        - sign-ssh-certificate          # For SSH certificate creation
+        - sign-hmac                     # For password derivation
+        - verify-hmac                   # For verifying message authenticity
+        - sign-pss                      # X.509 signing in RSA
+        - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
+        - sign-eddsa                    # X.509 signing in EdDSA
+        - encrypt-cbc                   # General AES symmetric data encryption
+        - decrypt-cbc                   # (--||--)
+        - encrypt-ecb                   # (non-chained AES, not recommended for general use)
+        - decrypt-ecb                   # (--||--)
+        - get-pseudo-random             # For generating random salts
+        - change-authentication-key     # For changing this key's credentials
+        - get-log-entries               # For auditing
+        - sign-attestation-certificate  # For proving some other key is protected by an HSM
+        - exportable-under-wrap         # Allows replication of the key to another HSM for backup/HA
+      delegated_capabilities: []        # (No delegated capabilities, as this cannot create new keys to delegate to)
+      # TODO: Need to split this key into separate keys for different purposes? Would it give any real security benefit?
+
+
+# Service keys are for automated use by services, probably less well authenticated than user keys.
+# These should be strictly domain-limited, and have limited capabilities.
+service_keys: []
+
+
+# Subsystem/domain for root CAs.
+# Intermediate CAs in other subsystems (TLS, X.509, ..) are signed by these.
+#
+# Usage: Generate a root CA with OpenSSL using these as private keys.
+# Generate attestation certificates for the root CAs when creating them, and store them separately (they are not sensitive,
+# but cannot be easily recreated), as user keys cannot access the root CA keys directly.
+x509:
+    root_certs:
+        -
+          key:
+            label: x509-rsa-ca-root
+            id: 0x0210
+            domains: ['x509']
+            algorithm: rsa4096
+            capabilities:
+                - sign-pss  # prefer this for RSA
+                - sign-pkcs
+                - exportable-under-wrap
+          x509_info:
+            key_usage:
+                - digitalSignature
+                - nonRepudiation
+                - keyEncipherment
+                - dataEncipherment
+                - keyAgreement
+                - keyCertSign
+                - cRLSign
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - codeSigning
+                - emailProtection
+                - timeStamping
+
+        -
+          key:
+            label: x509-ed25519-ca-root
+            id: 0x0220
+            domains: ['x509']
+            algorithm: ed25519
+            capabilities:
+                - sign-eddsa
+                - exportable-under-wrap
+          x509_info:
+            key_usage:
+                - digitalSignature
+                - nonRepudiation
+                - keyEncipherment
+                - dataEncipherment
+                - keyAgreement
+                - keyCertSign
+                - cRLSign
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - codeSigning
+                - emailProtection
+                - timeStamping
+
+
+# TLS (HTTPS, TCP, ...) intermediate keys.
+tls:
+    intermediate_certs:
+        -
+          key:
+            label: tls-rsa-intermediate
+            id: 0x0310
+            domains: ['tls']
+            algorithm: rsa4096
+            capabilities:
+                - sign-pss
+                - sign-pkcs
+                - exportable-under-wrap
+          x509_info:
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - timeStamping
+        -
+          key:
+            label: tls-ed25519-intermediate
+            id: 0x0320
+            domains: ['tls']
+            algorithm: ed25519
+            capabilities:
+                - sign-pkcs
+                - exportable-under-wrap
+          x509_info:
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - timeStamping
+
+
+# NAC (Network Access Control) intermediate keys for 802.1X
+nac:
+    intermediate_certs:
+        -
+          key:
+            label: nac-rsa-intermediate
+            id: 0x0410
+            domains: ['nac']
+            algorithm: rsa4096
+            capabilities:
+                - sign-pss  # preferred
+                - sign-pkcs
+                - exportable-under-wrap
+          x509_info:
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - timeStamping
+        -
+          key:
+            label: nac-ed25519-intermediate
+            id: 0x0420
+            domains: ['nac']
+            algorithm: ed25519
+            capabilities:
+                - sign-eddsa
+                - exportable-under-wrap
+          x509_info:
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - timeStamping
+
+
+# GPG/OpenPGP keys
+# for future use, PKCS#11 support in GPG is not very good atm
+#
+# RSA keys can be used for both SCA (Sign, Certify, Authenticate) and E (Encrypt) operations in GnuPG, but
+# it is recommended to use separate keys for these purposes, so make two keys here. Allow both sign & crypt
+# operations on both keys though, to avoid future problems.
+#
+# Ed25519 keys are only for SCA operations. There's an X25519 (aka CV25519) key type for E operations,
+# but it's apparently not supported by YubiHSM 2. Create one key for SCA operations here.
+gpg:
+    keys:
+    -
+        label: gpg-main-rsa-sca
+        id: 0x0510
+        domains: ['gpg']
+        algorithm: rsa4096
+        capabilities:
+            - sign-pss  # preferred
+            - sign-pkcs
+            - decrypt-oaep
+            - decrypt-pkcs
+            - exportable-under-wrap
+    -
+        label: gpg-main-rsa-e
+        id: 0x0511
+        domains: ['gpg']
+        algorithm: rsa4096
+        capabilities:
+            - sign-pss  # preferred
+            - sign-pkcs
+            - decrypt-oaep  # preferred
+            - decrypt-pkcs
+            - exportable-under-wrap
+    -
+        label: gpg-main-ed25519
+        id: 0x0520
+        domains: ['gpg']
+        algorithm: ed25519
+        capabilities:
+            - sign-eddsa
+            - exportable-under-wrap
+
+
+# Code signing keys for signing software, firmware, etc.
+codesign:
+    keys:
+    -   label: codesign-rsa
+        id: 0x0610
+        domains: ['codesign']
+        algorithm: rsa4096
+        capabilities:
+            - sign-pss
+            - sign-pkcs
+            - exportable-under-wrap
+    -   label: codesign-ed25519
+        id: 0x0620
+        domains: ['codesign']
+        algorithm: ed25519
+        capabilities:
+            - sign-eddsa
+            - exportable-under-wrap
+
+
+# Certificate-based SSH authentication keys.
+# OpenSSH certificates are in proprietary format, so these are not signed by the X.509 root CAs.
 ssh:
     root_ca_keys:
-        -
-            label: ssh-ed25519-ca-root-key
-            id: 0x0200
-            type: asymmetric-key
-            domains: [0x4]
+
+        -   label: ssh-rsa-ca-root-key
+            id: 0x0710
+            domains: ['ssh']
+            algorithm: rsa4096
+            capabilities:
+                - sign-ssh-certificate
+                - sign-pss
+                - sign-pkcs
+                - exportable-under-wrap
+
+        -   label: ssh-ed25519-ca-root-key
+            id: 0x0720
+            domains: ['ssh']
             algorithm: ed25519
             capabilities:
                 - sign-ssh-certificate
-                - sign-pkcs
+                - sign-eddsa
+                - exportable-under-wrap
             # generate asymmetric 0 0x0200 ssh-ed25519-ca-root-key all sign-pkcs,sign-ssh-certificate ed25519
             # get pubkey 0 0x0200 ssh-ed25519-ca-root-key.pub.pem
-        -
-            label: ssh-rsa-ca-root-key
-            id: 0x0201
-            type: asymmetric-key
-            domains: [0x4]
-            algorithm: rsa2048
-            capabilities:
-                - sign-ssh-certificate
-                - sign-pkcs
 
     template_slots:
-        min: 0x0220
-        max: 0x022F
+        min: 0x0720
+        max: 0x072F
 
-    auth_keys:
-        -
-            label: ssh-auth-mgt
-            id: 0x0250
-            domains: [0x4]
-            capabilities:
-                - generate-asymmetric-key
-                - delete-asymmetric-key
-                - exportable-under-wrap
-                - import-wrapped
-                - sign-ssh-certificate
-                - sign-attestation-certificate
-            delegated_capabilities:
-                - sign-ssh-certificate
-                - sign-attestation-certificate
 
-        -
-            label: ssh-auth-sign_jarno
-            id: 0x0251
-            domains: [0x4]
-            capabilities:
-                - sign-ssh-certificate
-            delegated_capabilities:
-                - sign-ssh-certificate
+# For deriving unique passwords for VMs, services etc.
+#
+# Usage: Use this key with BIP32 to derive unique passwords from service/vm identifier and salt for each service
+# To rotate passwords, generate a new salt and derive a new password from the same service identifier.
+# Save old salt for a while in case of rollback, but do not use it for new passwords.
+password_derivation:
+    keys:
+    - label: host-passwords
+      id: 0x0810
+      domains: ['password_derivation']
+      algorithm: hmac-sha512
+      capabilities:
+        - sign-hmac
+        - verify-hmac
+        - exportable-under-wrap
+
+
+# For generic encryption of secrets, passwords, etc.
+# (For limited and infrequent use, YubiHSM is not very fast)
+encryption:
+    keys:
+    - label: enc-1
+      id: 0x0910
+      domains: ['encryption']
+      algorithm: aes256
+      capabilities:
+        - encrypt-cbc   # prefer CBC over ECB unless you have a good reason
+        - decrypt-cbc
+        - encrypt-ecb
+        - decrypt-ecb
+        - exportable-under-wrap

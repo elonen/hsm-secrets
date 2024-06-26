@@ -1,8 +1,8 @@
 # This file contains the Pydantic validation models for the HSM configuration file.
 
-from pydantic import BaseModel, HttpUrl, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
-from typing import Literal, NewType
+from typing import List, Literal, NewType, Optional, Sequence
 import click
 from click import echo
 import yaml
@@ -22,48 +22,98 @@ def load_hsm_config(file_name: str) -> 'HSMConfig':
 
 # ----------------- Pydantic models -----------------
 
-class HSMConfig(BaseModel):
+class NoExtraBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class HSMConfig(NoExtraBaseModel):
     general: 'General'
+    user_keys: list['HSMAuthKey']
+    service_keys: list['HSMAuthKey']
+
     admin: 'Admin'
+    x509: 'X509'
+    tls: 'TLS'
+    nac: 'NAC'
+    gpg: 'GPG'
+    codesign: 'CodeSign'
     ssh: 'SSH'
+    password_derivation: 'PasswordDerivation'
+    encryption: 'Encryption'
 
     def find_auth_key(self, label: str) -> 'HSMAuthKey':
-        for key_set in [self.admin.auth_keys, self.ssh.auth_keys]:
+        for key_set in [self.user_keys, self.service_keys]:
             for key in key_set:
                 if key.label == label:
                     return key
         raise ValueError(f"Auth key '{label}' not found in the configuration file.")
 
+    def get_domain_nums(self, names: Sequence['HSMDomainName']) -> set['HSMDomainNum']:
+        if 'all' in names:
+            return {i+1 for i in range(16)}
+        else:
+            return {getattr(self.general.domains, name) for name in names}
 
-class HSMDomains(BaseModel):
-    device_admin: Annotated[int, Field(strict=True, gt=0, lt=17, alias='device-admin')]
-    openssh: Annotated[int, Field(strict=True, gt=0, lt=17)]
-    tls: Annotated[int, Field(strict=True, gt=0, lt=17)]
-    password_derivation: Annotated[int, Field(strict=True, gt=0, lt=17, alias='password-derivation')]
-
-class General(BaseModel):
-    connector_url: HttpUrl
-    domains: HSMDomains
 
 # Some type definitions for the models
 KeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
 KeyLabel = Annotated[str, Field(max_length=40)]
-DomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
+HSMDomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
+HSMDomainName = Literal["all", "device_admin", "x509", "tls", "nac", "gpg", "codesign", "ssh", "password_derivation", "encryption", "service_keys", "user_keys"]
+
+class HSMDomains(NoExtraBaseModel):
+    device_admin: HSMDomainNum
+    service_keys: HSMDomainNum
+    user_keys: HSMDomainNum
+
+    x509: HSMDomainNum
+    tls: HSMDomainNum
+    nac: HSMDomainNum
+    gpg: HSMDomainNum
+    codesign: HSMDomainNum
+    ssh: HSMDomainNum
+    password_derivation: HSMDomainNum
+    encryption: HSMDomainNum
 
 
+class General(NoExtraBaseModel):
+    connector_url: HttpUrl
+    domains: HSMDomains
+    x509_defaults: 'X509Info'
+
+
+class HSMKeyBase(NoExtraBaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: KeyLabel
+    id: KeyID
+    domains: set[HSMDomainName]
+
+
+# -- Asymmetric key models --
 AsymmetricAlgorithm = Literal["rsa2048", "rsa3072", "rsa4096", "ecp256", "ecp384", "ecp521", "eck256", "ecbp256", "ecbp384", "ecbp512", "ed25519", "ecp224"]
 AsymmetricCapabilityName = Literal[
     "none", "sign-pkcs", "sign-pss", "sign-ecdsa", "sign-eddsa", "decrypt-pkcs", "decrypt-oaep", "derive-ecdh",
     "exportable-under-wrap", "sign-ssh-certificate", "sign-attestation-certificate"
 ]
-class HSMAsymmetricKey(BaseModel):
-    label: KeyLabel
-    id: KeyID
-    domains: list[Annotated[int, Field(strict=True, gt=0, lt=17)]]
+class HSMAsymmetricKey(HSMKeyBase):
     capabilities: set[AsymmetricCapabilityName]
     algorithm: AsymmetricAlgorithm
 
+# -- Symmetric key models --
+SymmetricAlgorithm = Literal["aes128", "aes192", "aes256"]
+SymmetricCapabilityName = Literal["none", "encrypt-ecb", "decrypt-ecb", "encrypt-cbc", "decrypt-cbc", "exportable-under-wrap"]
+class HSMSymmetricKey(HSMKeyBase):
+    capabilities: set[SymmetricCapabilityName]
+    algorithm: SymmetricAlgorithm
 
+# -- HMAC key models --
+HmacAlgorithm = Literal["hmac-sha1", "hmac-sha256", "hmac-sha384", "hmac-sha512"]
+HmacCapabilityName = Literal["none", "sign-hmac", "verify-hmac", "exportable-under-wrap"]
+class HSMHmacKey(HSMKeyBase):
+    capabilities: set[HmacCapabilityName]
+    algorithm: HmacAlgorithm
+
+# -- Auth key models --
 AuthKeyCapabilityName = Literal[
     "none", "all", "change-authentication-key", "create-otp-aead", "decrypt-oaep", "decrypt-otp", "decrypt-pkcs",
     "delete-asymmetric-key", "delete-authentication-key", "delete-hmac-key", "delete-opaque", "delete-otp-aead-key",
@@ -72,7 +122,8 @@ AuthKeyCapabilityName = Literal[
     "get-pseudo-random", "get-template", "import-wrapped", "put-asymmetric-key", "put-authentication-key", "put-mac-key",
     "put-opaque", "put-otp-aead-key", "put-template", "put-wrap-key", "randomize-otp-aead", "reset-device",
     "rewrap-from-otp-aead-key", "rewrap-to-otp-aead-key", "set-option", "sign-attestation-certificate", "sign-ecdsa",
-    "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data"
+    "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data",
+    "decrypt-ecb", "encrypt-ecb", "decrypt-cbc", "encrypt-cbc",
 ]
 AuthKeyDelegatedCapabilityName = Literal[
     "none", "all", "change-authentication-key", "create-otp-aead", "decrypt-oaep", "decrypt-otp", "decrypt-pkcs",
@@ -82,24 +133,83 @@ AuthKeyDelegatedCapabilityName = Literal[
     "get-pseudo-random", "get-template", "import-wrapped", "put-asymmetric-key", "put-authentication-key", "put-mac-key",
     "put-opaque", "put-otp-aead-key", "put-template", "put-wrap-key", "randomize-otp-aead", "reset-device",
     "rewrap-from-otp-aead-key", "rewrap-to-otp-aead-key", "set-option", "sign-attestation-certificate", "sign-ecdsa",
-    "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data"
+    "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data",
+    "decrypt-ecb", "encrypt-ecb", "decrypt-cbc", "encrypt-cbc",
 ]
-
-class HSMAuthKey(BaseModel):
-    label: Annotated[str, StringConstraints(max_length=40)]
-    id: Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
-    domains: list[Annotated[int, Field(strict=True, gt=0, lt=17)]]
+class HSMAuthKey(HSMKeyBase):
     capabilities: set[AuthKeyCapabilityName]
     delegated_capabilities: set[AuthKeyDelegatedCapabilityName]
 
-class Admin(BaseModel):
-    auth_keys: list[HSMAuthKey]
+    default_password: Optional[str] = Field(default=None)
+    shared_secret: Optional[bool] = Field(default=False)      # If true, use a split custodian shared password (k-of-n scheme)
 
-class SSHTemplateSlots(BaseModel):
+# -- Helper models --
+X509KeyUsage = Literal[
+    "digitalSignature",     # Allow signing files, messages, etc.
+    "nonRepudiation",       # Allow for assurance of the signer's identity, preventing them from denying their actions (e.g. in legal disputes)
+    "keyEncipherment",      # Allow for encrypting other keys
+    "dataEncipherment",     # Allow encrypting data (not usual for certificates)
+    "keyAgreement",         # Allow use in key exchange (Diffie-Hellman)
+    "keyCertSign",          # Allow signing other certificates (=CA)
+    "cRLSign",              # Allow signing certificate revocation lists
+    "encipherOnly",         # In keyAgreement: only allow encryption, not decryption
+    "decipherOnly"          # In keyAgreement: only allow decryption, not encryption
+]
+X509ExtendedKeyUsage = Literal["serverAuth", "clientAuth", "codeSigning", "emailProtection", "timeStamping"]
+
+class X509CertAttribs(NoExtraBaseModel):
+    common_name: Optional[str] = Field(default=None)    # FQDN for host, or username for user, etc.
+    organization: Optional[str] = Field(default=None)   # Legal entity name
+    # organizational_unit: str                          # Deprecated TLS field, so commented out
+    locality: Optional[str] = Field(default=None)       # City
+    state: Optional[str] = Field(default=None)          # State or province where the organization is located
+    country: Optional[str] = Field(default=None)        # Country code (2-letter ISO 3166-1)
+
+class X509Info(NoExtraBaseModel):
+    is_ca: Optional[bool] = Field(default=True)         # Is this a CA certificate? If so, make sure to include keyCertSign and cRLSign in key_usage
+    attribs: Optional[X509CertAttribs] = Field(default=None)
+    key_usage: Optional[set[X509KeyUsage]] = Field(default=None)
+    extended_key_usage: Optional[set[X509ExtendedKeyUsage]] = Field(default=None)
+
+class X509Cert(NoExtraBaseModel):
+    key: HSMAsymmetricKey
+    x509_info: Optional[X509Info] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
+
+
+
+# ----------------- Subsystem models -----------------
+
+class Admin(NoExtraBaseModel):
+    auth_keys: List[HSMAuthKey]
+
+class X509(NoExtraBaseModel):
+    root_certs: List[X509Cert]
+
+class TLS(NoExtraBaseModel):
+    intermediate_certs: List[X509Cert]
+
+class NAC(NoExtraBaseModel):
+    intermediate_certs: List[X509Cert]
+
+class GPG(NoExtraBaseModel):
+    keys: List[HSMAsymmetricKey]
+
+class CodeSign(NoExtraBaseModel):
+    keys: List[HSMAsymmetricKey]
+
+
+class SSHTemplateSlots(NoExtraBaseModel):
     min: int
     max: int
 
-class SSH(BaseModel):
-    root_ca_keys: list[HSMAsymmetricKey]
-    auth_keys: list[HSMAuthKey]
+class SSH(NoExtraBaseModel):
+    root_ca_keys: List[HSMAsymmetricKey]
     template_slots: SSHTemplateSlots
+
+
+class PasswordDerivation(NoExtraBaseModel):
+    keys: List[HSMHmacKey]
+
+class Encryption(NoExtraBaseModel):
+    keys: List[HSMSymmetricKey]
+
