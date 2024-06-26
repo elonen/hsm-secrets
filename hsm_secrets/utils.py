@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Sequence
 from contextlib import contextmanager
 
@@ -12,23 +13,33 @@ from yubihsm.objects import AsymmetricKey, YhsmObject
 from yubikit.hsmauth import HsmAuthSession  #, DEFAULT_MANAGEMENT_KEY
 from ykman import scripting
 import yubikit.core
+import yubikit.hsmauth as hsmauth
 
 import hsm_secrets.config as hscfg
 
 
 
 def ask_for_password(title: str) -> str:
-    return click.prompt(f"Enter the password for {title}", hide_input=True)
+    return click.prompt(f"Enter the password for {title}", hide_input=False)
 
 
-def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, auth_key_id: int, yubikey_slot_label: str, yubikey_password: Optional[str] = None) -> AuthSession:
+def list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
+    """
+    List the labels of all YubiKey HSM auth credentials.
+    """
+    yubikey = scripting.single()    # Connect to the first YubiKey found
+    hsm = hsmauth.HsmAuthSession(connection=yubikey.smart_card())
+    return list(hsm.list_credentials())
+
+
+def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str, yubikey_password: Optional[str] = None) -> AuthSession:
     """
     Connects to a YubHSM and authenticates a session using the first YubiKey found.
+    YubiHSM auth key ID is read from the config file by label (arg yubikey_slot_label).
 
     Args:
         username (str): The username for the key labels.
         config (Config): The configuration object containing the connector URL and user.
-        auth_key_id (int): The ID of the authentication key.
         yubikey_slot_label (str): The label of the YubiKey slot to use for authenticating with the HSM.
         yubikey_password (Optional[str]): The password for the YubiKey HSM slot. If None, the user is asked for the password.
 
@@ -39,6 +50,8 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, auth_key_id: int,
         yubikey = scripting.single()    # Connect to the first YubiKey found
         hsmauth = HsmAuthSession(yubikey.smart_card())
         hsm = YubiHsm.connect(str(config.general.connector_url))
+
+        auth_key_id = config.find_auth_key(yubikey_slot_label).id
 
         symmetric_auth = hsm.init_session(auth_key_id)
         pwd = yubikey_password or ask_for_password(f"YubiKey HSM slot '{yubikey_slot_label}'")
@@ -61,19 +74,18 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, auth_key_id: int,
 
 
 @contextmanager
-def open_hsm_session(ctx: click.Context, hsml_auth_key_label: str, yubikey_slot_prefix: str):
+def open_hsm_session_with_yubikey(ctx: click.Context):
     """
-    Open a session to the HSM using the first YubiKey found.
+    Open a session to the HSM using the first YubiKey found, and authenticate with the YubiKey HSM auth label.
 
     Args:
         ctx (click.Context): The Click context object
-        hsml_auth_key_label (str): The label of the HSM authentication key (in the config file)
-        yubikey_slot_prefix (str): The prefix for the YubiKey slot label (e.g. "ssh-mgt")
     """
     conf: hscfg.HSMConfig = ctx.obj['config']
-    auth_key = conf.find_auth_key(hsml_auth_key_label)
-    yubikey_hsm_slot = yubikey_slot_prefix + "_" + ctx.obj['user']
-    session = connect_hsm_and_auth_with_yubikey(conf, auth_key.id, yubikey_hsm_slot, None)
+    passwd = os.environ.get('YUBIKEY_PASSWORD', None)
+    if passwd:
+        echo("Using YubiKey password from environment variable.")
+    session = connect_hsm_and_auth_with_yubikey(conf, ctx.obj['yk_label'], passwd)
     try:
         yield conf, session
     finally:

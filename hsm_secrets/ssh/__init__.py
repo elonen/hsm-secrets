@@ -6,7 +6,7 @@ from typing import Sequence
 import click
 
 from hsm_secrets.ssh.ssh_utils import create_request, create_template
-from hsm_secrets.utils import connect_hsm_and_auth_with_yubikey, create_asymmetric_keys_on_hsm, domains_int, encode_algorithm, encode_capabilities, open_hsm_session
+from hsm_secrets.utils import connect_hsm_and_auth_with_yubikey, create_asymmetric_keys_on_hsm, domains_int, encode_algorithm, encode_capabilities, open_hsm_session_with_yubikey
 from yubihsm.objects import YhsmObject, AsymmetricKey, Template
 from cryptography.hazmat.primitives import (_serialization, serialization)
 import yubihsm.defs
@@ -26,7 +26,7 @@ def cmd_ssh(ctx: click.Context):
 def new_root_ca(ctx: click.Context, validity: int):
     """Create a new SSH Root CA"""
 
-    with open_hsm_session(ctx, "full-admin", "ssh-mgt") as (conf, ses):
+    with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
         root_keys = create_asymmetric_keys_on_hsm(ses, conf.ssh.root_ca_keys)
         pubkeys = [
             key.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
@@ -43,7 +43,7 @@ def new_root_ca(ctx: click.Context, validity: int):
 def get_root_ca_pubkeys(ctx: click.Context, outdir: str):
     """Write SSH Root CA .pub files"""
     outdir = outdir.rstrip('/')
-    with open_hsm_session(ctx, "full-admin", "ssh-mgt") as (conf, ses):
+    with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
         for key in conf.ssh.root_ca_keys:
             obj = ses.get_object(key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
             assert isinstance(obj, AsymmetricKey)
@@ -65,7 +65,7 @@ def sign_key(ctx: click.Context, keyfile_to_sign: str, validity: int, principals
     """Sign an SSH key with the SSH Root CA"""
     from cryptography.hazmat.primitives.asymmetric import (ed25519, rsa)
 
-    with open_hsm_session(ctx, "full-admin", "ssh-mgt") as (conf, ses):
+    with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
         # Load the public key to sign
         with open(keyfile_to_sign, 'rb') as user_public_key_file:
             user_public_key = serialization.load_ssh_public_key(user_public_key_file.read())

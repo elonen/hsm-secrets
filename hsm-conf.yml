@@ -1,7 +1,12 @@
-# This is a configuration file for the hsm-secrets tool. It is used to generate keys and certificates for the YubiHSM 2.
+# This is a configuration file for the 'hsm-secrets' tool.
+# It is used to generate keys and certificates for the YubiHSM 2.
 #
-# Most keys are provided in RSA and Ed25519 variants, intentionally leaving out EC keys due to their various issues.
-# Ed25519 is recommended whenever possible, RSA is for compatibility with older systems.
+# Most keys are provided in RSA, Ed25519 and NIST EC formats.
+# Ed25519 is recommended whenever possible, RSA (super slow on YubiHSM) is for compatibility with older systems.
+# NIST EC is not recommended unless required by a specific system (due to past implementation weaknesses, backdoor suspicions, etc).
+#
+# Since only the admin keys can export keys (under wrap), the wrap keys are not included here, but rather generated and deleted
+# by the tool itself.
 
 general:
     connector_url: http://localhost:12345
@@ -24,6 +29,7 @@ general:
 
     x509_defaults:
         is_ca: true
+        validity_days: 3650
         key_usage:
             - digitalSignature
             - keyAgreement
@@ -37,17 +43,20 @@ general:
             country: US
             state: Calisota
             locality: Duckburg
-            organization: Example Inc
-            common_name: example.com
-
+            organization: Example Inc.
+            common_name: '__ERROR__UNDEFINED__'
+            subject_alt_names: []
 
 # Subsystem for YubiHSM 2 device admin auth keys.
 admin:
-    auth_keys:
+    wrap_key_id_min: 0x0010   # The tool will store wrap keys in this range
+    wrap_key_id_max: 0x001F
 
+    auth_keys:
     # Factory default admin key.
     # Also temporarily re-created (using shared-admin) during air-gapped management sessions.
-    - label: default-admin
+    -
+      label: default-admin
       id: 0x0001
       domains: ['all']
       capabilities: ['all']
@@ -56,7 +65,8 @@ admin:
 
     # k-of-n shared secret key for device admin.
     # This key is split among custodians, and is used to unlock the device in the future.
-    - label: shared-admin
+    -
+      label: shared-admin
       id: 0x0002
       domains: ['all']
       capabilities: ['all']
@@ -71,7 +81,7 @@ admin:
 #
 # They aren't supposed to be able to export or create other keys, only use them.
 user_keys:
-    - label: ops_john.doe
+    - label: user_john.doe
       id: 0xE001
       domains: ['all', 'tls', 'nac', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
       capabilities:
@@ -96,7 +106,17 @@ user_keys:
 
 # Service keys are for automated use by services, probably less well authenticated than user keys.
 # These should be strictly domain-limited, and have limited capabilities.
-service_keys: []
+service_keys:
+    -
+        label: service_nac_packetfence
+        id: 0xD001
+        domains: ['nac']
+        capabilities:
+                - get-pseudo-random
+                - sign-pss
+                - sign-pkcs
+                - exportable-under-wrap
+        delegated_capabilities: []
 
 
 # Subsystem/domain for root CAs.
@@ -118,21 +138,13 @@ x509:
                 - sign-pkcs
                 - exportable-under-wrap
           x509_info:
+            attribs:
+                common_name: 'Example Root CA (RSA)'
+                subject_alt_names: []
             key_usage:
-                - digitalSignature
-                - nonRepudiation
-                - keyEncipherment
-                - dataEncipherment
-                - keyAgreement
                 - keyCertSign
                 - cRLSign
-            extended_key_usage:
-                - serverAuth
-                - clientAuth
-                - codeSigning
-                - emailProtection
-                - timeStamping
-
+            extended_key_usage: []
         -
           key:
             label: x509-ed25519-ca-root
@@ -143,20 +155,30 @@ x509:
                 - sign-eddsa
                 - exportable-under-wrap
           x509_info:
+            attribs:
+                common_name: 'Example Root CA (ED)'
+                subject_alt_names: []
             key_usage:
-                - digitalSignature
-                - nonRepudiation
-                - keyEncipherment
-                - dataEncipherment
-                - keyAgreement
                 - keyCertSign
                 - cRLSign
-            extended_key_usage:
-                - serverAuth
-                - clientAuth
-                - codeSigning
-                - emailProtection
-                - timeStamping
+            extended_key_usage: []
+        -
+            key:
+                label: x509-ecdsa-ca-root
+                id: 0x0230
+                domains: ['x509']
+                algorithm: ecp384
+                capabilities:
+                    - sign-ecdsa
+                    - exportable-under-wrap
+            x509_info:
+                attribs:
+                    common_name: 'Example Root CA (EC)'
+                    subject_alt_names: []
+                key_usage:
+                    - keyCertSign
+                    - cRLSign
+                extended_key_usage: []
 
 
 # TLS (HTTPS, TCP, ...) intermediate keys.
@@ -173,6 +195,15 @@ tls:
                 - sign-pkcs
                 - exportable-under-wrap
           x509_info:
+            attribs:
+                common_name: '*.hsm.biz'
+                subject_alt_names:
+                    - '*.hsm.ext'
+                    - '*.hsm.local'
+                    - '*.hsm.service'
+                    - '*.example.directory'
+                    - '*.example.com'
+                    - '*.example.biz'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -187,6 +218,15 @@ tls:
                 - sign-pkcs
                 - exportable-under-wrap
           x509_info:
+            attribs:
+                common_name: '*.hsm.biz'
+                subject_alt_names:
+                    - '*.hsm.ext'
+                    - '*.hsm.local'
+                    - '*.hsm.service'
+                    - '*.example.directory'
+                    - '*.example.com'
+                    - '*.example.biz'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -207,6 +247,10 @@ nac:
                 - sign-pkcs
                 - exportable-under-wrap
           x509_info:
+            attribs:
+                common_name: 'nac.hsm.biz'
+                subject_alt_names:
+                    - 'nac.example.directory'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -221,6 +265,10 @@ nac:
                 - sign-eddsa
                 - exportable-under-wrap
           x509_info:
+            attribs:
+                common_name: 'nac.hsm.biz'
+                subject_alt_names:
+                    - 'nac.example.directory'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -234,8 +282,8 @@ nac:
 # it is recommended to use separate keys for these purposes, so make two keys here. Allow both sign & crypt
 # operations on both keys though, to avoid future problems.
 #
-# Ed25519 keys are only for SCA operations. There's an X25519 (aka CV25519) key type for E operations,
-# but it's apparently not supported by YubiHSM 2. Create one key for SCA operations here.
+# Ed25519 keys are only for SCA operations. There's an x25519 (aka cv25519) key type for E operations in GnuPG,
+# but the operation is apparently not supported by YubiHSM 2.
 gpg:
     keys:
     -
@@ -268,12 +316,24 @@ gpg:
         capabilities:
             - sign-eddsa
             - exportable-under-wrap
+    -
+        label: gpg-main-ecp384
+        id: 0x0530
+        domains: ['gpg']
+        algorithm: ecp384
+        capabilities:
+            - sign-ecdsa
+            - derive-ecdh           # derive AES keys for symmetric encryption
+            - exportable-under-wrap
+
 
 
 # Code signing keys for signing software, firmware, etc.
 codesign:
-    keys:
-    -   label: codesign-rsa
+    intermediate_certs:
+    -
+      key:
+        label: codesign-rsa
         id: 0x0610
         domains: ['codesign']
         algorithm: rsa4096
@@ -281,21 +341,45 @@ codesign:
             - sign-pss
             - sign-pkcs
             - exportable-under-wrap
-    -   label: codesign-ed25519
+      x509_info:
+        attribs:
+            common_name: 'Example Code Signing RSA'
+            subject_alt_names: []
+        key_usage:
+            - digitalSignature
+            - keyCertSign
+            - cRLSign
+        extended_key_usage:
+            - codeSigning
+            - timeStamping
+    -
+      key:
+        label: codesign-ed25519
         id: 0x0620
         domains: ['codesign']
         algorithm: ed25519
         capabilities:
             - sign-eddsa
             - exportable-under-wrap
+      x509_info:
+        attribs:
+            common_name: 'Example Code Signing ED'
+            subject_alt_names: []
+        key_usage:
+            - digitalSignature
+            - keyCertSign
+            - cRLSign
+        extended_key_usage:
+            - codeSigning
+            - timeStamping
 
 
 # Certificate-based SSH authentication keys.
 # OpenSSH certificates are in proprietary format, so these are not signed by the X.509 root CAs.
 ssh:
     root_ca_keys:
-
-        -   label: ssh-rsa-ca-root-key
+        -
+            label: ssh-rsa-ca-root-key
             id: 0x0710
             domains: ['ssh']
             algorithm: rsa4096
@@ -304,8 +388,8 @@ ssh:
                 - sign-pss
                 - sign-pkcs
                 - exportable-under-wrap
-
-        -   label: ssh-ed25519-ca-root-key
+        -
+            label: ssh-ed25519-ca-root-key
             id: 0x0720
             domains: ['ssh']
             algorithm: ed25519
@@ -315,6 +399,15 @@ ssh:
                 - exportable-under-wrap
             # generate asymmetric 0 0x0200 ssh-ed25519-ca-root-key all sign-pkcs,sign-ssh-certificate ed25519
             # get pubkey 0 0x0200 ssh-ed25519-ca-root-key.pub.pem
+        -
+            label: ssh-ecdsa-ca-root-key
+            id: 0x0730
+            domains: ['ssh']
+            algorithm: ecp384
+            capabilities:
+                - sign-ssh-certificate
+                - sign-ecdsa
+                - exportable-under-wrap
 
     template_slots:
         min: 0x0720
@@ -331,7 +424,7 @@ password_derivation:
     - label: host-passwords
       id: 0x0810
       domains: ['password_derivation']
-      algorithm: hmac-sha512
+      algorithm: hmac-sha256    # 60x faster than hmac-sha512 on YubiHSM 2
       capabilities:
         - sign-hmac
         - verify-hmac

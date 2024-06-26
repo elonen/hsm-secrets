@@ -158,7 +158,8 @@ X509KeyUsage = Literal[
 X509ExtendedKeyUsage = Literal["serverAuth", "clientAuth", "codeSigning", "emailProtection", "timeStamping"]
 
 class X509CertAttribs(NoExtraBaseModel):
-    common_name: Optional[str] = Field(default=None)    # FQDN for host, or username for user, etc.
+    common_name: str                                    # FQDN for host, or username for user, etc.
+    subject_alt_names: List[str]                        # Subject Alternative Names (SANs)
     organization: Optional[str] = Field(default=None)   # Legal entity name
     # organizational_unit: str                          # Deprecated TLS field, so commented out
     locality: Optional[str] = Field(default=None)       # City
@@ -167,6 +168,7 @@ class X509CertAttribs(NoExtraBaseModel):
 
 class X509Info(NoExtraBaseModel):
     is_ca: Optional[bool] = Field(default=True)         # Is this a CA certificate? If so, make sure to include keyCertSign and cRLSign in key_usage
+    validity_days: Optional[int] = Field(default=3650)  # Default validity period for the certificate
     attribs: Optional[X509CertAttribs] = Field(default=None)
     key_usage: Optional[set[X509KeyUsage]] = Field(default=None)
     extended_key_usage: Optional[set[X509ExtendedKeyUsage]] = Field(default=None)
@@ -181,6 +183,8 @@ class X509Cert(NoExtraBaseModel):
 
 class Admin(NoExtraBaseModel):
     auth_keys: List[HSMAuthKey]
+    wrap_key_id_min: KeyID
+    wrap_key_id_max: KeyID
 
 class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]
@@ -195,8 +199,7 @@ class GPG(NoExtraBaseModel):
     keys: List[HSMAsymmetricKey]
 
 class CodeSign(NoExtraBaseModel):
-    keys: List[HSMAsymmetricKey]
-
+    intermediate_certs: List[X509Cert]
 
 class SSHTemplateSlots(NoExtraBaseModel):
     min: int
@@ -205,7 +208,6 @@ class SSHTemplateSlots(NoExtraBaseModel):
 class SSH(NoExtraBaseModel):
     root_ca_keys: List[HSMAsymmetricKey]
     template_slots: SSHTemplateSlots
-
 
 class PasswordDerivation(NoExtraBaseModel):
     keys: List[HSMHmacKey]
