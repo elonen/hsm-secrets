@@ -1,7 +1,6 @@
 import click
 import yubihsm.defs
 from yubihsm.objects import HmacKey
-import crypt, getpass
 from mnemonic import Mnemonic
 import pyescrypt
 import secrets

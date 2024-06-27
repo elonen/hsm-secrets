@@ -3,10 +3,11 @@
 #
 # Most keys are provided in RSA, Ed25519 and NIST EC formats.
 # Ed25519 is recommended whenever possible, RSA (super slow on YubiHSM) is for compatibility with older systems.
-# NIST EC is not recommended unless required by a specific system (due to past implementation weaknesses, backdoor suspicions, etc).
+# NIST EC is not recommended unless required by a specific system (due to past implementation weaknesses,
+# backdoor suspicions, etc).
 #
-# Since only the admin keys can export keys (under wrap), the wrap keys are not included here, but rather generated and deleted
-# by the tool itself.
+# Since only the admin keys can export keys (under wrap), the wrap keys are not included here, but rather
+# generated and deleted by the tool itself.
 
 general:
     connector_url: http://localhost:12345
@@ -123,8 +124,9 @@ service_keys:
 # Intermediate CAs in other subsystems (TLS, X.509, ..) are signed by these.
 #
 # Usage: Generate a root CA with OpenSSL using these as private keys.
-# Generate attestation certificates for the root CAs when creating them, and store them separately (they are not sensitive,
-# but cannot be easily recreated), as user keys cannot access the root CA keys directly.
+# Generate attestation certificates for the root CAs when creating them, and store them
+# separately (they are not sensitive, but cannot be easily recreated),
+# as user keys cannot access the root CA keys directly.
 x509:
     root_certs:
         -
