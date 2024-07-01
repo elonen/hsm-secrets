@@ -65,7 +65,7 @@ def sign_key(ctx: click.Context, keyfile_to_sign: str, validity: int, principals
     """Sign an SSH key with the SSH Root CA"""
     from cryptography.hazmat.primitives.asymmetric import (ed25519, rsa)
 
-    with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
+    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
         # Load the public key to sign
         with open(keyfile_to_sign, 'rb') as user_public_key_file:
             user_public_key = serialization.load_ssh_public_key(user_public_key_file.read())

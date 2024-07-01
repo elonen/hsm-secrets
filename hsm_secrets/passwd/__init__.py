@@ -2,7 +2,7 @@ import click
 import yubihsm.defs
 from yubihsm.objects import HmacKey
 from mnemonic import Mnemonic
-import pyescrypt
+import pyescrypt    # type: ignore
 import secrets
 
 from hsm_secrets.utils import open_hsm_session_with_yubikey
