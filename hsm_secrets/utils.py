@@ -91,6 +91,22 @@ def open_hsm_session_with_yubikey(ctx: click.Context):
     finally:
         session.close()
 
+@contextmanager
+def open_hsm_session_with_default_admin(ctx: click.Context):
+    """
+    Open a session to the HSM using the first YubiKey found, and authenticate with the YubiKey HSM auth label.
+
+    Args:
+        ctx (click.Context): The Click context object
+    """
+    conf: hscfg.HSMConfig = ctx.obj['config']
+    hsm = YubiHsm.connect(str(conf.general.connector_url))
+    session = hsm.create_session_derived(conf.admin.default_admin_key.id, conf.admin.default_admin_password)
+    try:
+        yield conf, session
+    finally:
+        session.close()
+
 
 def domains_int(domains: Sequence[int]) -> int:
     """

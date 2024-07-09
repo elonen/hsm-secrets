@@ -53,26 +53,21 @@ admin:
     wrap_key_id_min: 0x0010   # The tool will store wrap keys in this range
     wrap_key_id_max: 0x001F
 
-    auth_keys:
-    # Factory default admin key.
-    # Also temporarily re-created (using shared-admin) during air-gapped management sessions.
-    -
-      label: default-admin
-      id: 0x0001
-      domains: ['all']
-      capabilities: ['all']
-      delegated_capabilities: ['all']
-      default_password: 'password'
+    default_admin_password: 'password'
 
-    # k-of-n shared secret key for device admin.
-    # This key is split among custodians, and is used to unlock the device in the future.
-    -
-      label: shared-admin
-      id: 0x0002
-      domains: ['all']
-      capabilities: ['all']
-      delegated_capabilities: ['all']
-      shared_secret: true
+    default_admin_key:
+        label: default-admin
+        id: 0x0014
+        domains: ['all']
+        capabilities: ['all']
+        delegated_capabilities: ['all']
+
+    shared_admin_key:
+        label: shared-admin
+        id: 0x0002
+        domains: ['all']
+        capabilities: ['all']
+        delegated_capabilities: ['all']
 
 
 # User keys are for general use by human operators.

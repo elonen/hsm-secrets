@@ -2,7 +2,8 @@
 
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
-from typing import List, Literal, NewType, Optional, Sequence
+from typing import List, Literal, NewType, Optional, Sequence, Union
+from yubihsm.defs import CAPABILITY
 import click
 from click import echo
 import yaml
@@ -53,6 +54,26 @@ class HSMConfig(NoExtraBaseModel):
             return {i+1 for i in range(16)}
         else:
             return {getattr(self.general.domains, name) for name in names}
+
+    def get_domain_bitfield(self, names: set['HSMDomainName']) -> int:
+        res = sum(1 << (num-1) for num in self.get_domain_nums(tuple(names)))
+        assert 0 <= res <= 0xFFFF, f"Domain bitfield out of range: {res}"
+        return res
+
+    def CapabilityFromNames(self, names: set[Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName']]) -> CAPABILITY:
+        capability = CAPABILITY.NONE
+        for name in names:
+            if name == "none":
+                continue
+            elif name == "all":
+                return CAPABILITY.ALL
+            else:
+                try:
+                    capability |= getattr(CAPABILITY, name.upper().replace("-", "_"))
+                except AttributeError:
+                    raise ValueError(f"Unknown capability name: {name}")
+        return capability
+
 
 
 # Some type definitions for the models
@@ -140,9 +161,6 @@ class HSMAuthKey(HSMKeyBase):
     capabilities: set[AuthKeyCapabilityName]
     delegated_capabilities: set[AuthKeyDelegatedCapabilityName]
 
-    default_password: Optional[str] = Field(default=None)
-    shared_secret: Optional[bool] = Field(default=False)      # If true, use a split custodian shared password (k-of-n scheme)
-
 # -- Helper models --
 X509KeyUsage = Literal[
     "digitalSignature",     # Allow signing files, messages, etc.
@@ -182,9 +200,12 @@ class X509Cert(NoExtraBaseModel):
 # ----------------- Subsystem models -----------------
 
 class Admin(NoExtraBaseModel):
-    auth_keys: List[HSMAuthKey]
     wrap_key_id_min: KeyID
     wrap_key_id_max: KeyID
+    default_admin_password: str
+    default_admin_key: HSMAuthKey
+    shared_admin_key: HSMAuthKey
+
 
 class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]
@@ -214,4 +235,3 @@ class PasswordDerivation(NoExtraBaseModel):
 
 class Encryption(NoExtraBaseModel):
     keys: List[HSMSymmetricKey]
-
