@@ -7,10 +7,11 @@ import click
 
 from yubihsm import YubiHsm # type: ignore
 from yubihsm.core import AuthSession
-from yubihsm.defs import CAPABILITY, ALGORITHM
+from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR
 from yubihsm.objects import AsymmetricKey, YhsmObject
 
 from yubikit.hsmauth import HsmAuthSession  #, DEFAULT_MANAGEMENT_KEY
+from yubihsm.exceptions import YubiHsmDeviceError
 from ykman import scripting
 import yubikit.core
 import yubikit.hsmauth as hsmauth
@@ -52,8 +53,16 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         hsm = YubiHsm.connect(str(config.general.connector_url))
 
         auth_key_id = config.find_auth_key(yubikey_slot_label).id
+        click.echo(f"Using YubiHSM auth key ID '{hex(auth_key_id)}' authed with local YubiKey slot '{yubikey_slot_label}'")
 
-        symmetric_auth = hsm.init_session(auth_key_id)
+        try:
+            symmetric_auth = hsm.init_session(auth_key_id)
+        except YubiHsmDeviceError as e:
+            if e.code == ERROR.OBJECT_NOT_FOUND:
+                echo(click.style(f"YubiHSM auth key '0x{auth_key_id:04x}' not found. Aborting.", fg='red'))
+                exit(1)
+            raise
+
         pwd = yubikey_password or ask_for_password(f"YubiKey HSM slot '{yubikey_slot_label}'")
 
         echo(f"Authenticating... " + click.style("(Touch your YubiKey if it blinks)", fg='yellow'))
@@ -99,26 +108,43 @@ def open_hsm_session_with_default_admin(ctx: click.Context):
     Args:
         ctx (click.Context): The Click context object
     """
+    echo("Using insecure default admin key to authenticate.")
+
     conf: hscfg.HSMConfig = ctx.obj['config']
     hsm = YubiHsm.connect(str(conf.general.connector_url))
-    session = hsm.create_session_derived(conf.admin.default_admin_key.id, conf.admin.default_admin_password)
+    session = None
+
+    try:
+        session = hsm.create_session_derived(conf.admin.default_admin_key.id, conf.admin.default_admin_password)
+    except YubiHsmDeviceError as e:
+        if e.code == ERROR.OBJECT_NOT_FOUND:
+            echo(click.style(f"Default admin key '0x{conf.admin.default_admin_key.id:04x}' not found. Aborting.", fg='red'))
+            exit(1)
+        raise
+
     try:
         yield conf, session
     finally:
         session.close()
 
 
-def domains_int(domains: Sequence[int]) -> int:
+
+@contextmanager
+def open_hsm_session_with_shared_admin(ctx: click.Context, password: str):
     """
-    Convert a set of domain numbers to a 16-bit bitfield.
+    Open a session to the HSM using a share admin password (either reconstructed from shares or from backup).
+    Args:
+        ctx (click.Context): The Click context object
     """
-    bitfield = 0
-    for domain in set(domains):
-        if 1 <= domain <= 16:
-            bitfield |= (1 << (domain - 1))
-        else:
-            raise ValueError(f"Domain {domain} is out of range. Must be between 1 and 16.")
-    return bitfield
+    conf: hscfg.HSMConfig = ctx.obj['config']
+    hsm = YubiHsm.connect(str(conf.general.connector_url))
+    key = conf.admin.shared_admin_key.id
+    click.echo(f"Using shared admin key ID 0x{key:04x}")
+    session = hsm.create_session_derived(key, password)
+    try:
+        yield conf, session
+    finally:
+        session.close()
 
 
 def encode_capabilities(names: Sequence[hscfg.AsymmetricCapabilityName] | set[hscfg.AsymmetricCapabilityName]) -> CAPABILITY:
@@ -250,7 +276,7 @@ def encode_algorithm(name_literal: str|hscfg.AsymmetricAlgorithm) -> ALGORITHM:
     return mapping[name_literal.lower()]
 
 
-def create_asymmetric_keys_on_hsm(ses: AuthSession, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
+def create_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
     """
     Create a set of asymmetric keys in the HSM, optionally deleting and recreating existing keys.
 
@@ -275,10 +301,25 @@ def create_asymmetric_keys_on_hsm(ses: AuthSession, key_defs: Sequence[hscfg.HSM
                 session=ses,
                 object_id=kdef.id,
                 label=kdef.label,
-                domains=domains_int(kdef.domains),
+                domains=conf.get_domain_bitfield(kdef.domains),
                 capabilities=encode_capabilities(kdef.capabilities),
                 algorithm=encode_algorithm(kdef.algorithm)
             ))
         click.echo("done")
 
     return res
+
+
+def print_yubihsm_object(o):
+    info = o.get_info()
+    domains = hscfg.HSMConfig.domain_bitfield_to_nums(info.domains)
+    domains = {"all"} if len(domains) == 16 else domains
+    click.echo(f"0x{o.id:04x}")
+    click.echo(f"  type:           {o.object_type.name} ({o.object_type})")
+    click.echo(f"  label:          {repr(info.label)}")
+    click.echo(f"  algorithm:      {info.algorithm.name} ({info.algorithm})")
+    click.echo(f"  size:           {info.size}")
+    click.echo(f"  origin:         {info.origin.name} ({info.origin})")
+    click.echo(f"  domains:        {domains}")
+    click.echo(f"  capabilities:   {hscfg.HSMConfig.capability_to_names(info.capabilities)}")
+    click.echo(f"  delegated_caps: {hscfg.HSMConfig.capability_to_names(info.delegated_capabilities)}")

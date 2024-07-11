@@ -56,8 +56,8 @@ admin:
     default_admin_password: 'password'
 
     default_admin_key:
-        label: default-admin
-        id: 0x0014
+        label: "DEFAULT AUTHKEY CHANGE THIS ASAP"   # YubiHSM original label for the default key
+        id: 0x0001
         domains: ['all']
         capabilities: ['all']
         delegated_capabilities: ['all']

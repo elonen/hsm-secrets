@@ -6,7 +6,7 @@ from typing import Sequence
 import click
 
 from hsm_secrets.ssh.ssh_utils import create_request, create_template
-from hsm_secrets.utils import connect_hsm_and_auth_with_yubikey, create_asymmetric_keys_on_hsm, domains_int, encode_algorithm, encode_capabilities, open_hsm_session_with_yubikey
+from hsm_secrets.utils import connect_hsm_and_auth_with_yubikey, create_asymmetric_keys_on_hsm, encode_algorithm, encode_capabilities, open_hsm_session_with_yubikey
 from yubihsm.objects import YhsmObject, AsymmetricKey, Template
 from cryptography.hazmat.primitives import (_serialization, serialization)
 import yubihsm.defs
@@ -27,7 +27,7 @@ def new_root_ca(ctx: click.Context, validity: int):
     """Create a new SSH Root CA"""
 
     with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
-        root_keys = create_asymmetric_keys_on_hsm(ses, conf.ssh.root_ca_keys)
+        root_keys = create_asymmetric_keys_on_hsm(ses, conf, conf.ssh.root_ca_keys)
         pubkeys = [
             key.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
             for key in root_keys
@@ -127,7 +127,7 @@ def sign_key(ctx: click.Context, keyfile_to_sign: str, validity: int, principals
                 session=ses,
                 object_id=template_id,
                 label=f"tmp-ssh-template-ses-{sid}",
-                domains=domains_int(ca_key_def.domains),
+                domains=domains_to_bitfield(ca_key_def.domains),
                 capabilities=encode_capabilities(["exportable-under-wrap"]),
                 algorithm=encode_algorithm('template-ssh'),
                 data=template_data)

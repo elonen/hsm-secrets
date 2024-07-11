@@ -60,7 +60,12 @@ class HSMConfig(NoExtraBaseModel):
         assert 0 <= res <= 0xFFFF, f"Domain bitfield out of range: {res}"
         return res
 
-    def CapabilityFromNames(self, names: set[Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName']]) -> CAPABILITY:
+    @staticmethod
+    def domain_bitfield_to_nums(bitfield: int) -> set['HSMDomainNum']:
+        return {i+1 for i in range(16) if bitfield & (1 << i)}
+
+    @staticmethod
+    def capability_from_names(names: set[Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName']]) -> CAPABILITY:
         capability = CAPABILITY.NONE
         for name in names:
             if name == "none":
@@ -74,6 +79,18 @@ class HSMConfig(NoExtraBaseModel):
                     raise ValueError(f"Unknown capability name: {name}")
         return capability
 
+    @staticmethod
+    def capability_to_names(capability: CAPABILITY) -> set:
+        names = set()
+        for name in CAPABILITY.__members__:
+            if capability & getattr(CAPABILITY, name):
+                names.add(name.lower().replace("_", "-"))
+        if len(names) == 0:
+            names.add("none")
+        elif len(names) == len(CAPABILITY.__members__):
+            names.clear()
+            names.add("all")
+        return names
 
 
 # Some type definitions for the models
