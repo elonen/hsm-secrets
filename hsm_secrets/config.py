@@ -3,7 +3,7 @@
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
 from typing import List, Literal, NewType, Optional, Sequence, Union
-from yubihsm.defs import CAPABILITY
+from yubihsm.defs import CAPABILITY, ALGORITHM
 import click
 from click import echo
 import yaml
@@ -65,7 +65,7 @@ class HSMConfig(NoExtraBaseModel):
         return {i+1 for i in range(16) if bitfield & (1 << i)}
 
     @staticmethod
-    def capability_from_names(names: set[Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName']]) -> CAPABILITY:
+    def capability_from_names(names: set[Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'WrapCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName', 'WrapDelegateCapabilityName']]) -> CAPABILITY:
         capability = CAPABILITY.NONE
         for name in names:
             if name == "none":
@@ -91,6 +91,13 @@ class HSMConfig(NoExtraBaseModel):
             names.clear()
             names.add("all")
         return names
+
+    @staticmethod
+    def algorithm_from_name(algo: Union['AsymmetricAlgorithm', 'SymmetricAlgorithm', 'WrapAlgorithm', 'HmacAlgorithm']) -> ALGORITHM:
+        name = algo.upper().replace("-", "_")
+        res = getattr(ALGORITHM, name)
+        assert res is not None, f"Algorithm '{name}' not found in the YubiHSM library."
+        return res
 
 
 # Some type definitions for the models
@@ -146,6 +153,23 @@ SymmetricCapabilityName = Literal["none", "encrypt-ecb", "decrypt-ecb", "encrypt
 class HSMSymmetricKey(HSMKeyBase):
     capabilities: set[SymmetricCapabilityName]
     algorithm: SymmetricAlgorithm
+
+# -- Wrap key models --
+WrapAlgorithm = Literal["aes128-ccm-wrap", "aes192-ccm-wrap", "aes256-ccm-wrap"]
+WrapCapabilityName = Literal["none", "wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
+WrapDelegateCapabilityName = Literal[
+    "none", "all", "change-authentication-key", "create-otp-aead", "decrypt-oaep", "decrypt-otp", "decrypt-pkcs",
+    "delete-asymmetric-key", "delete-authentication-key", "delete-hmac-key", "delete-opaque", "delete-otp-aead-key",
+    "delete-template", "delete-wrap-key", "derive-ecdh", "export-wrapped", "exportable-under-wrap", "generate-asymmetric-key",
+    "generate-hmac-key", "generate-otp-aead-key", "generate-wrap-key", "get-log-entries", "get-opaque", "get-option",
+    "get-pseudo-random", "get-template", "import-wrapped", "put-asymmetric-key", "put-authentication-key", "put-mac-key",
+    "put-opaque", "put-otp-aead-key", "put-template", "put-wrap-key", "randomize-otp-aead", "reset-device",
+    "rewrap-from-otp-aead-key", "rewrap-to-otp-aead-key", "set-option", "sign-attestation-certificate", "sign-ecdsa",
+    "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data"]
+class HSMWrapKey(HSMKeyBase):
+    capabilities: set[WrapCapabilityName]
+    delegated_capabilities: set[WrapDelegateCapabilityName]
+    algorithm: WrapAlgorithm
 
 # -- HMAC key models --
 HmacAlgorithm = Literal["hmac-sha1", "hmac-sha256", "hmac-sha384", "hmac-sha512"]
@@ -220,11 +244,10 @@ class X509Cert(NoExtraBaseModel):
 # ----------------- Subsystem models -----------------
 
 class Admin(NoExtraBaseModel):
-    wrap_key_id: KeyID
     default_admin_password: str
     default_admin_key: HSMAuthKey
     shared_admin_key: HSMAuthKey
-
+    wrap_key: HSMWrapKey
 
 class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]

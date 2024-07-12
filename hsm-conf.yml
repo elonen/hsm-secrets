@@ -3,11 +3,7 @@
 #
 # Most keys are provided in RSA, Ed25519 and NIST EC formats.
 # Ed25519 is recommended whenever possible, RSA (super slow on YubiHSM) is for compatibility with older systems.
-# NIST EC is not recommended unless required by a specific system (due to past implementation weaknesses,
-# backdoor suspicions, etc).
-#
-# Since only the admin keys can export keys (under wrap), the wrap keys are not included here, but rather
-# generated and deleted by the tool itself.
+# NIST EC is not recommended unless required by a specific system (due to past implementation weaknesses, backdoor suspicions, etc).
 
 general:
     master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
@@ -55,21 +51,39 @@ general:
 
 # Subsystem for YubiHSM 2 device admin auth keys.
 admin:
-    wrap_key_id: 0x000F
     default_admin_password: 'password'
 
+    # Default admin key ('password') for the YubiHSM 2.
+    # This is used during intial setup and temporarily restored using the shared key
+    # during subsequent key management operations.
     default_admin_key:
-        label: "DEFAULT AUTHKEY CHANGE THIS ASAP"   # YubiHSM original label for the default key
+        label: "DEFAULT AUTHKEY CHANGE THIS ASAP"   # original label for the default key
         id: 0x0001
         domains: ['all']
         capabilities: ['all']
         delegated_capabilities: ['all']
 
+    # K-of-N split shared secret for super-admin access.
+    # This is a 128 bit password-derived key, split into
+    # custodian shares during setup.
+    #
+    # Sharing and recombining is done in software, not in the HSM,
+    # so it should be done on an air-gapped machine like the initial setup.
     shared_admin_key:
         label: shared-admin
         id: 0x0002
         domains: ['all']
         capabilities: ['all']
+        delegated_capabilities: ['all']
+
+    # Wrap key for exporting/importing keys securely between YubiHSM 2 devices.
+    # Used for cloning devices.
+    wrap_key:
+        label: wrap-key
+        id: 0x000F
+        algorithm: aes256-ccm-wrap
+        domains: ['all']
+        capabilities: ["wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
         delegated_capabilities: ['all']
 
 

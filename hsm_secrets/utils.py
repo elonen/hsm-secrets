@@ -56,7 +56,9 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
 
         yubikey = scripting.single()    # Connect to the first YubiKey found
         hsmauth = HsmAuthSession(yubikey.smart_card())
+
         hsm = YubiHsm.connect(connector_url)
+        verify_hsm_device_info(device_serial, hsm)
 
         auth_key_id = config.find_auth_key(yubikey_slot_label).id
         click.echo(f"Using YubiHSM auth key ID '{hex(auth_key_id)}' authed with local YubiKey slot '{yubikey_slot_label}'")
@@ -87,6 +89,11 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         echo(click.style(str(e), fg='red'))
         exit(1)
 
+def verify_hsm_device_info(device_serial, hsm):
+    info = hsm.get_device_info()
+    if int(device_serial) != int(info.serial):
+        raise ValueError(f"Device serial mismatch! Connected='{hsm.serial}', Expected='{device_serial}'")
+
 
 @contextmanager
 def open_hsm_session_with_yubikey(ctx: click.Context, device_serial: str|None = None):
@@ -116,18 +123,24 @@ def open_hsm_session_with_default_admin(ctx: click.Context, device_serial: str|N
     Args:
         ctx (click.Context): The Click context object
     """
-    echo("Using insecure default admin key to authenticate.")
-
     conf: hscfg.HSMConfig = ctx.obj['config']
-    connector_url = conf.general.all_devices.get(device_serial or ctx.obj['devserial'])
+    device_serial = device_serial or ctx.obj['devserial']
+    assert device_serial, "HSM device serial not provided nor inferred."
+
+    click.echo(click.style(f"Using insecure default admin key to auth on YubiHSM2 {device_serial}.", fg='magenta'))
+
+    connector_url = conf.general.all_devices.get(device_serial)
     if not connector_url:
         raise ValueError(f"Device serial '{device_serial}' not found in config file.")
 
     hsm = YubiHsm.connect(connector_url)
+    verify_hsm_device_info(device_serial, hsm)
+
     session = None
 
     try:
         session = hsm.create_session_derived(conf.admin.default_admin_key.id, conf.admin.default_admin_password)
+        click.echo(click.style(f"HSM session {session.sid} started.", fg='magenta'))
     except YubiHsmDeviceError as e:
         if e.code == ERROR.OBJECT_NOT_FOUND:
             echo(click.style(f"Default admin key '0x{conf.admin.default_admin_key.id:04x}' not found. Aborting.", fg='red'))
@@ -137,7 +150,9 @@ def open_hsm_session_with_default_admin(ctx: click.Context, device_serial: str|N
     try:
         yield conf, session
     finally:
+        click.echo(click.style(f"Closing HSM session {session.sid}.", fg='magenta'))
         session.close()
+        hsm.close()
 
 
 @contextmanager
@@ -149,11 +164,16 @@ def open_hsm_session_with_shared_admin(ctx: click.Context, password: str, device
     """
     conf: hscfg.HSMConfig = ctx.obj['config']
 
-    connector_url = conf.general.all_devices.get(device_serial or ctx.obj['devserial'])
+    device_serial = device_serial or ctx.obj['devserial']
+    assert device_serial, "HSM device serial not provided nor inferred."
+
+    connector_url = conf.general.all_devices.get(device_serial)
     if not connector_url:
         raise ValueError(f"Device serial '{device_serial}' not found in config file.")
 
     hsm = YubiHsm.connect(connector_url)
+    verify_hsm_device_info(device_serial, hsm)
+
     key = conf.admin.shared_admin_key.id
     click.echo(f"Using shared admin key ID 0x{key:04x}")
     session = hsm.create_session_derived(key, password)
@@ -161,6 +181,7 @@ def open_hsm_session_with_shared_admin(ctx: click.Context, password: str, device
         yield conf, session
     finally:
         session.close()
+        hsm.close()
 
 
 def encode_capabilities(names: Sequence[hscfg.AsymmetricCapabilityName] | set[hscfg.AsymmetricCapabilityName]) -> CAPABILITY:
