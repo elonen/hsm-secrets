@@ -6,7 +6,7 @@ from typing import Sequence
 import click
 
 from hsm_secrets.ssh.ssh_utils import create_request, create_template
-from hsm_secrets.utils import connect_hsm_and_auth_with_yubikey, create_asymmetric_keys_on_hsm, encode_algorithm, encode_capabilities, open_hsm_session_with_yubikey
+from hsm_secrets.utils import create_asymmetric_keys_on_hsm, encode_algorithm, encode_capabilities, open_hsm_session_with_yubikey
 from yubihsm.objects import YhsmObject, AsymmetricKey, Template
 from cryptography.hazmat.primitives import (_serialization, serialization)
 import yubihsm.defs
@@ -26,7 +26,7 @@ def cmd_ssh(ctx: click.Context):
 def new_root_ca(ctx: click.Context, validity: int):
     """Create a new SSH Root CA"""
 
-    with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
+    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
         root_keys = create_asymmetric_keys_on_hsm(ses, conf, conf.ssh.root_ca_keys)
         pubkeys = [
             key.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
@@ -43,7 +43,7 @@ def new_root_ca(ctx: click.Context, validity: int):
 def get_root_ca_pubkeys(ctx: click.Context, outdir: str):
     """Write SSH Root CA .pub files"""
     outdir = outdir.rstrip('/')
-    with open_hsm_session_with_yubikey(ctx, "full-admin", "ssh-mgt") as (conf, ses):
+    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
         for key in conf.ssh.root_ca_keys:
             obj = ses.get_object(key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
             assert isinstance(obj, AsymmetricKey)

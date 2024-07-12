@@ -10,7 +10,12 @@
 # generated and deleted by the tool itself.
 
 general:
-    connector_url: http://localhost:12345
+    master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
+    all_devices: {
+        "27600137": "yhusb://serial=27600137",  # For `yubihsm-connector`: http://localhost:12345
+        "27600136": "yhusb://serial=27600136",
+        "27600135": "yhusb://serial=27600135",
+    }
 
     domains:
         # These domain numbers separate different types of objects in the YubiHSM 2.
@@ -50,9 +55,7 @@ general:
 
 # Subsystem for YubiHSM 2 device admin auth keys.
 admin:
-    wrap_key_id_min: 0x0010   # The tool will store wrap keys in this range
-    wrap_key_id_max: 0x001F
-
+    wrap_key_id: 0x000F
     default_admin_password: 'password'
 
     default_admin_key:

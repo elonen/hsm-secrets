@@ -33,7 +33,7 @@ def list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
     return list(hsm.list_credentials())
 
 
-def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str, yubikey_password: Optional[str] = None) -> AuthSession:
+def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str, device_serial: str|None, yubikey_password: Optional[str] = None) -> AuthSession:
     """
     Connects to a YubHSM and authenticates a session using the first YubiKey found.
     YubiHSM auth key ID is read from the config file by label (arg yubikey_slot_label).
@@ -42,15 +42,21 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         username (str): The username for the key labels.
         config (Config): The configuration object containing the connector URL and user.
         yubikey_slot_label (str): The label of the YubiKey slot to use for authenticating with the HSM.
+        device_serial (str): Serial number of the YubiHSM device to connect to.
         yubikey_password (Optional[str]): The password for the YubiKey HSM slot. If None, the user is asked for the password.
 
     Returns:
         HsmAuthSession: The authenticated HSM session.
     """
     try:
+        assert device_serial, "HSM device serial not provided nor inferred."
+        connector_url = config.general.all_devices.get(device_serial)
+        if not connector_url:
+            raise ValueError(f"Device serial '{device_serial}' not found in config file.")
+
         yubikey = scripting.single()    # Connect to the first YubiKey found
         hsmauth = HsmAuthSession(yubikey.smart_card())
-        hsm = YubiHsm.connect(str(config.general.connector_url))
+        hsm = YubiHsm.connect(connector_url)
 
         auth_key_id = config.find_auth_key(yubikey_slot_label).id
         click.echo(f"Using YubiHSM auth key ID '{hex(auth_key_id)}' authed with local YubiKey slot '{yubikey_slot_label}'")
@@ -83,7 +89,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
 
 
 @contextmanager
-def open_hsm_session_with_yubikey(ctx: click.Context):
+def open_hsm_session_with_yubikey(ctx: click.Context, device_serial: str|None = None):
     """
     Open a session to the HSM using the first YubiKey found, and authenticate with the YubiKey HSM auth label.
 
@@ -91,17 +97,19 @@ def open_hsm_session_with_yubikey(ctx: click.Context):
         ctx (click.Context): The Click context object
     """
     conf: hscfg.HSMConfig = ctx.obj['config']
+    device_serial = device_serial or ctx.obj['devserial']
     passwd = os.environ.get('YUBIKEY_PASSWORD', None)
     if passwd:
         echo("Using YubiKey password from environment variable.")
-    session = connect_hsm_and_auth_with_yubikey(conf, ctx.obj['yk_label'], passwd)
+    session = connect_hsm_and_auth_with_yubikey(conf, ctx.obj['yk_label'], device_serial, passwd)
     try:
         yield conf, session
     finally:
         session.close()
 
+
 @contextmanager
-def open_hsm_session_with_default_admin(ctx: click.Context):
+def open_hsm_session_with_default_admin(ctx: click.Context, device_serial: str|None = None):
     """
     Open a session to the HSM using the first YubiKey found, and authenticate with the YubiKey HSM auth label.
 
@@ -111,7 +119,11 @@ def open_hsm_session_with_default_admin(ctx: click.Context):
     echo("Using insecure default admin key to authenticate.")
 
     conf: hscfg.HSMConfig = ctx.obj['config']
-    hsm = YubiHsm.connect(str(conf.general.connector_url))
+    connector_url = conf.general.all_devices.get(device_serial or ctx.obj['devserial'])
+    if not connector_url:
+        raise ValueError(f"Device serial '{device_serial}' not found in config file.")
+
+    hsm = YubiHsm.connect(connector_url)
     session = None
 
     try:
@@ -128,16 +140,20 @@ def open_hsm_session_with_default_admin(ctx: click.Context):
         session.close()
 
 
-
 @contextmanager
-def open_hsm_session_with_shared_admin(ctx: click.Context, password: str):
+def open_hsm_session_with_shared_admin(ctx: click.Context, password: str, device_serial: str|None = None):
     """
     Open a session to the HSM using a share admin password (either reconstructed from shares or from backup).
     Args:
         ctx (click.Context): The Click context object
     """
     conf: hscfg.HSMConfig = ctx.obj['config']
-    hsm = YubiHsm.connect(str(conf.general.connector_url))
+
+    connector_url = conf.general.all_devices.get(device_serial or ctx.obj['devserial'])
+    if not connector_url:
+        raise ValueError(f"Device serial '{device_serial}' not found in config file.")
+
+    hsm = YubiHsm.connect(connector_url)
     key = conf.admin.shared_admin_key.id
     click.echo(f"Using shared admin key ID 0x{key:04x}")
     session = hsm.create_session_derived(key, password)

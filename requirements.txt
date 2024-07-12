@@ -1,4 +1,4 @@
-yubihsm[http]
+yubihsm[http,usb]
 yubikey-manager
 
 click

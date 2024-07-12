@@ -114,8 +114,11 @@ class HSMDomains(NoExtraBaseModel):
     encryption: HSMDomainNum
 
 
+
 class General(NoExtraBaseModel):
-    connector_url: HttpUrl
+    master_device: str              # serial number of the master device
+    all_devices: dict[str, str]     # serial number -> connection URL
+
     domains: HSMDomains
     x509_defaults: 'X509Info'
 
@@ -217,8 +220,7 @@ class X509Cert(NoExtraBaseModel):
 # ----------------- Subsystem models -----------------
 
 class Admin(NoExtraBaseModel):
-    wrap_key_id_min: KeyID
-    wrap_key_id_max: KeyID
+    wrap_key_id: KeyID
     default_admin_password: str
     default_admin_key: HSMAuthKey
     shared_admin_key: HSMAuthKey

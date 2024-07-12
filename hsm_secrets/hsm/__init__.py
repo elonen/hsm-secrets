@@ -2,7 +2,7 @@ import sys
 import click
 from hsm_secrets.config import HSMConfig
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
-from hsm_secrets.utils import connect_hsm_and_auth_with_yubikey, open_hsm_session_with_default_admin, open_hsm_session_with_shared_admin, open_hsm_session_with_yubikey, print_yubihsm_object
+from hsm_secrets.utils import open_hsm_session_with_default_admin, open_hsm_session_with_shared_admin, open_hsm_session_with_yubikey, print_yubihsm_object
 import yubihsm.defs, yubihsm.exceptions, yubihsm.objects
 
 from click import style
@@ -46,7 +46,7 @@ def list_objects(ctx: click.Context, use_default_admin: bool):
 
     def do_it(conf, ses):
         objects = ses.list_objects()
-        click.echo("YubiHSM Objects:")
+        click.echo(f"YubiHSM Objects:")
         for o in objects:
             print_yubihsm_object(o)
 
@@ -63,7 +63,7 @@ def list_objects(ctx: click.Context, use_default_admin: bool):
 @click.pass_context
 @click.option('--use-backup-secret', is_flag=True, help="Use backup secret instead of shared secret")
 def add_insecure_admin_key(ctx: click.Context, use_backup_secret: bool):
-    """Re-add the insecure default admin key, using shared or backup secret
+    """Re-add insecure default admin key for management operations
 
     Using either a shared secret or a backup secret, (re-)create the default admin key on the YubiHSM.
     This is a temporary key that should be removed after the management operations are complete.
@@ -128,6 +128,36 @@ def add_insecure_admin_key(ctx: click.Context, use_backup_secret: bool):
         sys.exit(1)
 
 
+@cmd_hsm.command('remove-insecure-admin-key')
+@click.pass_context
+def remove_insecure_admin_key(ctx: click.Context):
+    """Remove the insecure default admin key"""
+    with open_hsm_session_with_default_admin(ctx) as (conf, ses):
+        default_key = ses.get_object(conf.admin.default_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
+        assert isinstance(default_key, yubihsm.objects.AuthenticationKey)
+        try:
+            _ = default_key.get_info()
+            default_key.delete()
+            click.echo("Ok. Default admin key removed.")
+        except yubihsm.exceptions.YubiHsmDeviceError as e:
+            if e.code == yubihsm.defs.ERROR.OBJECT_NOT_FOUND:
+                click.echo("Default admin key not found. Nothing to remove.")
+            else:
+                raise e
+
+        # Make sure it's really gone
+        try:
+            _ = default_key.get_info()
+            click.echo(click.style("ERROR!!! Insecure admin key still exists. Don't leave the airgapped session before removing it.", fg='red'))
+        except yubihsm.exceptions.YubiHsmDeviceError as e:
+            if e.code == yubihsm.defs.ERROR.OBJECT_NOT_FOUND:
+                pass # Ok, it's gone
+            else:
+                click.echo("ERROR!! Unexpected error while checking that the key is removed. PLEASE VERIFY MANUALLY THAT IT'S GONE!")
+                click.prompt("Press ENTER to continue...", type=str)
+                raise e
+
+
 @cmd_hsm.command('add-shared-admin-key')
 @click.option('--num-shares', type=int, required=True, help="Number of shares to generate")
 @click.option('--threshold', type=int, required=True, help="Number of shares required to reconstruct the key")
@@ -179,42 +209,15 @@ def add_shared_admin_key(ctx: click.Context, num_shares: int, threshold: int, sk
         sys.exit(1)
 
 
-@cmd_hsm.command('remove-insecure-admin-key')
-@click.pass_context
-def remove_insecure_admin_key(ctx: click.Context):
-    """Remove the insecure default admin key"""
-    with open_hsm_session_with_default_admin(ctx) as (conf, ses):
-        default_key = ses.get_object(conf.admin.default_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
-        assert isinstance(default_key, yubihsm.objects.AuthenticationKey)
-        try:
-            _ = default_key.get_info()
-            default_key.delete()
-            click.echo("Ok. Default admin key removed.")
-        except yubihsm.exceptions.YubiHsmDeviceError as e:
-            if e.code == yubihsm.defs.ERROR.OBJECT_NOT_FOUND:
-                click.echo("Default admin key not found. Nothing to remove.")
-            else:
-                raise e
 
-        # Make sure it's really gone
-        try:
-            _ = default_key.get_info()
-            click.echo(click.style("ERROR!!! Insecure admin key still exists. Don't leave the airgapped session before removing it.", fg='red'))
-        except yubihsm.exceptions.YubiHsmDeviceError as e:
-            if e.code == yubihsm.defs.ERROR.OBJECT_NOT_FOUND:
-                pass # Ok, it's gone
-            else:
-                click.echo("ERROR!! Unexpected error while checking that the key is removed. PLEASE VERIFY MANUALLY THAT IT'S GONE!")
-                click.prompt("Press ENTER to continue...", type=str)
-                raise e
-
-
-@cmd_hsm.command('add-wrap-key')
+@cmd_hsm.command('set-wrap-keys')
 @click.option('--key-id', type=int, required=True, help="ID of the wrap key")
 @click.pass_context
 def add_wrap_key(ctx: click.Context, key_id: int):
-    """Add a new wrap key to the YubiHSM"""
-    raise NotImplementedError("This command is not yet implemented.")
+    """Share a new wrap key among YubiHSMs
+
+    Generate a new wrap key and set it to the YubiHSMs.
+    """
 
 
 @cmd_hsm.command('sync-with-config')
