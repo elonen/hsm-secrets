@@ -2,9 +2,9 @@ from typing import Callable
 import click
 from textwrap import dedent
 import re
-import curses
 
 from hsm_secrets.hsm.shared_secret import SecretShare, create_16char_ascii_password, decrypt_share, encrypt_share, recombine_ssss_shares, split_ssss_secret, verify_shares
+from hsm_secrets.utils import group_by_4, secure_display_secret
 
 
 def cli_splitting_ceremony(
@@ -100,35 +100,6 @@ def cli_splitting_ceremony(
     click.pause("Press ENTER to continue...")
     click.clear()
 
-    def display_and_wipe_secret(secret_to_show: str, wipe_char='x'):
-        """
-        Display a secret on the screen, and then wipe it with a wipe_char.
-        """
-        secret = secret_to_show + " "
-        def do_it(stdscr):
-            stdscr.clear()
-
-            # Create a new window
-            height, width = stdscr.getmaxyx()
-            win_height = 3
-            win_width = len(secret) + 4
-            win = curses.newwin(win_height, win_width, height // 2 - 1, width // 2 - win_width // 2)
-
-            # Display the secret
-            win.box()
-            win.addstr(1, 2, secret)
-            win.refresh()
-
-            click.pause("") # Wait for ENTER key
-
-            # Overwrite the secret with wipe_char
-            stdscr.clear()
-            win.box()
-            win.addstr(1, 2, wipe_char * len(secret))
-            win.refresh()
-
-        curses.wrapper(do_it)
-
     # Make the custodian shares
     plain_shares = split_ssss_secret(threshold, num_shares, secret)
     assert set(s.num for s in plain_shares) == set(custodian_passwords.keys())
@@ -144,7 +115,7 @@ def cli_splitting_ceremony(
         click.echo("")
         click.pause("Press ENTER to reveal your share. After writing it down, press ENTER again to continue...")
 
-        display_and_wipe_secret(str(s))
+        secure_display_secret(str(s))
         click.clear()
 
         if with_backup_key:
@@ -156,8 +127,7 @@ def cli_splitting_ceremony(
             click.echo("- KEEP THE ENVELOPE, AND DO NOT SEAL IT YET.")
             click.echo("")
             click.pause("Press ENTER to reveal the key part. After writing it down, press ENTER again to continue...")
-            grouped_in_4 = ' '.join([backup_part.hex()[i:i + 4] for i in range(0, len(backup_part.hex()), 4)])
-            display_and_wipe_secret(f"{s.num}/{num_shares}: " + grouped_in_4)
+            secure_display_secret(f"{s.num}/{num_shares}: " + group_by_4(backup_part.hex()))
             click.clear()
 
     click.echo("All shares have been created.")

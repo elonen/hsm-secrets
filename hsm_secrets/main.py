@@ -27,8 +27,10 @@ def cli(ctx: click.Context, debug: bool, config: str, yklabel: str|None, devseri
     if not yk_label:
         creds = list_yubikey_hsm_creds()
         if not creds:
-            raise click.ClickException("No Yubikey HSM credentials found.")
-        yk_label = creds[0].label
+            click.echo("Note: No Yubikey HSM credentials found, Yubikey auth will be disabled.", err=True)
+            yk_label = ""
+        else:
+            yk_label = creds[0].label
 
     conf = load_hsm_config(config)
     assert conf.general.master_device, "No master YubiHSM serial specified in config file."
@@ -40,8 +42,9 @@ def cli(ctx: click.Context, debug: bool, config: str, yklabel: str|None, devseri
         'devserial': devserial or conf.general.master_device
     }
 
-    echo("Yubikey hsmauth label: " + click.style(yk_label, fg='cyan'))
-    echo("")
+    if yk_label:
+        echo("Yubikey hsmauth label: " + click.style(yk_label, fg='cyan'))
+        echo("")
 
 
 @click.command('nop', short_help='Validate config and exit.')

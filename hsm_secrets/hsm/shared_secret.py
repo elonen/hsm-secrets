@@ -10,6 +10,8 @@ import hashlib
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import scrypt
 
+from hsm_secrets.utils import group_by_4
+
 
 @dataclass
 class SecretShare:
@@ -67,9 +69,9 @@ class SecretShare:
         """
         self.validate()
         if self.encrypted:
-            return f'{self.num} - crypted {self.checksum} - ' + ' '.join([self.data.hex()[i:i + 4] for i in range(0, len(self.data.hex()), 4)])
+            return f'{self.num} - crypted {self.checksum} - ' + group_by_4(self.data.hex())
         else:
-            return f'{self.num} - ' + ' '.join([self.data.hex()[i:i + 4] for i in range(0, len(self.data.hex()), 4)])
+            return f'{self.num} - ' + group_by_4(self.data.hex())
 
 
     @staticmethod
@@ -190,7 +192,7 @@ def _derive_key(password: str, salt: str = '') -> bytes:
         password.encode('latin1', errors='strict')    # Check if password is Latin-1 compatible
     except UnicodeEncodeError:
         raise ValueError("Password must be Latin-1 compatible (due to scrypt)")
-    key = scrypt(password=password, salt=salt, key_len=128//8, N=2**14, r=8, p=1)
+    key = scrypt(password=password, salt=salt, key_len=128//8, N=2**14, r=8, p=1)   # type: ignore
     assert isinstance(key, bytes) and len(key) == 128/8
     return key
 

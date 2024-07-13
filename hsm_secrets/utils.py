@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 from contextlib import contextmanager
 
 from click import echo
@@ -7,8 +7,8 @@ import click
 
 from yubihsm import YubiHsm # type: ignore
 from yubihsm.core import AuthSession
-from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR
-from yubihsm.objects import AsymmetricKey, YhsmObject
+from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT
+from yubihsm.objects import AsymmetricKey, WrapKey, YhsmObject, AuthenticationKey
 
 from yubikit.hsmauth import HsmAuthSession  #, DEFAULT_MANAGEMENT_KEY
 from yubihsm.exceptions import YubiHsmDeviceError
@@ -17,11 +17,60 @@ import yubikit.core
 import yubikit.hsmauth as hsmauth
 
 import hsm_secrets.config as hscfg
+import curses
 
 
+def pw_check_fromhex(pw: str) -> str|None:
+    try:
+        _ = bytes.fromhex(pw)
+        return None
+    except ValueError:
+        return "Must be a hex-encoded string."
 
-def ask_for_password(title: str) -> str:
-    return click.prompt(f"Enter the password for {title}", hide_input=False)
+
+def prompt_for_secret(
+        prompt: str,
+        confirm: bool = False,
+        default: str|None = None,
+        enc_test='utf-8',
+        check_fn: Callable|None = None) -> str:
+    """
+    Prompt the user for a secret string, optionally confirming by typing it again.
+
+    :param prompt: The prompt message to display
+    :param confirm: Whether to confirm by typing it again
+    :param default: The default to use if the user just presses ENTER (None for no default)
+    :param enc_test: The encoding to test with (refuse non-encodable strings)
+    :param check_fn: A function to check the input, returning an error message if invalid
+    :return: The user-entered secret string
+    """
+    check_fn = check_fn or (lambda pw: None)
+    while True:
+        pw = click.prompt(prompt, hide_input=True)
+        assert isinstance(pw, str)
+        try:
+            pw.encode(enc_test)
+            if error := check_fn(pw):
+                echo(click.style(str(error), fg='red'))
+                continue
+
+            if confirm:
+                if click.prompt("Type again to confirm", hide_input=True, default=default) == pw:
+                    return pw
+                echo(click.style("Mismatch. Try again.", fg='red'))
+            else:
+                return pw
+        except UnicodeEncodeError:
+            echo(click.style(f"Failed to encode into {enc_test.upper()}. Try again.", fg='red'))
+
+
+def group_by_4(s: str) -> str:
+    """
+    Group a string into 4-character blocks separated by spaces.
+    """
+    res = " ".join([s[i:i+4] for i in range(0, len(s), 4)])
+    assert s == res.replace(' ', ''), f"Grouping failed: {s} -> {res}"
+    return res
 
 
 def list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
@@ -29,8 +78,8 @@ def list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
     List the labels of all YubiKey HSM auth credentials.
     """
     yubikey = scripting.single()    # Connect to the first YubiKey found
-    hsm = hsmauth.HsmAuthSession(connection=yubikey.smart_card())
-    return list(hsm.list_credentials())
+    auth_ses = hsmauth.HsmAuthSession(connection=yubikey.smart_card())
+    return list(auth_ses.list_credentials())
 
 
 def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str, device_serial: str|None, yubikey_password: Optional[str] = None) -> AuthSession:
@@ -39,7 +88,6 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
     YubiHSM auth key ID is read from the config file by label (arg yubikey_slot_label).
 
     Args:
-        username (str): The username for the key labels.
         config (Config): The configuration object containing the connector URL and user.
         yubikey_slot_label (str): The label of the YubiKey slot to use for authenticating with the HSM.
         device_serial (str): Serial number of the YubiHSM device to connect to.
@@ -61,7 +109,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         verify_hsm_device_info(device_serial, hsm)
 
         auth_key_id = config.find_auth_key(yubikey_slot_label).id
-        click.echo(f"Using YubiHSM auth key ID '{hex(auth_key_id)}' authed with local YubiKey slot '{yubikey_slot_label}'")
+        click.echo(f"Authenticating as YubiHSM key ID '{hex(auth_key_id)}' with local YubiKey ({yubikey.info.serial}) hsmauth slot '{yubikey_slot_label}'")
 
         try:
             symmetric_auth = hsm.init_session(auth_key_id)
@@ -71,7 +119,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
                 exit(1)
             raise
 
-        pwd = yubikey_password or ask_for_password(f"YubiKey HSM slot '{yubikey_slot_label}'")
+        pwd = yubikey_password or prompt_for_secret(f"Enter PIN/password for YubiKey HSM slot '{yubikey_slot_label}'")
 
         echo(f"Authenticating... " + click.style("(Touch your YubiKey if it blinks)", fg='yellow'))
         session_keys = hsmauth.calculate_session_keys_symmetric(
@@ -82,6 +130,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         session = symmetric_auth.authenticate(*session_keys)
 
         echo(f"Session authenticated Ok.")
+        echo("")
         return session
 
     except yubikit.core.InvalidPinError as e:
@@ -185,132 +234,69 @@ def open_hsm_session_with_shared_admin(ctx: click.Context, password: str, device
 
 
 def encode_capabilities(names: Sequence[hscfg.AsymmetricCapabilityName] | set[hscfg.AsymmetricCapabilityName]) -> CAPABILITY:
-    """
-    Convert a list of capability names to a bitfield.
-    """
-    mapping = {
-        "get-opaque": CAPABILITY.GET_OPAQUE,
-        "put-opaque": CAPABILITY.PUT_OPAQUE,
-        "put-authentication-key": CAPABILITY.PUT_AUTHENTICATION_KEY,
-        "put-asymmetric-key": CAPABILITY.PUT_ASYMMETRIC,
-        "generate-asymmetric-key": CAPABILITY.GENERATE_ASYMMETRIC_KEY,
-        "sign-pkcs": CAPABILITY.SIGN_PKCS,
-        "sign-pss": CAPABILITY.SIGN_PSS,
-        "sign-ecdsa": CAPABILITY.SIGN_ECDSA,
-        "sign-eddsa": CAPABILITY.SIGN_EDDSA,
-        "decrypt-pkcs": CAPABILITY.DECRYPT_PKCS,
-        "decrypt-oaep": CAPABILITY.DECRYPT_OAEP,
-        "derive-ecdh": CAPABILITY.DERIVE_ECDH,
-        "export-wrapped": CAPABILITY.EXPORT_WRAPPED,
-        "import-wrapped": CAPABILITY.IMPORT_WRAPPED,
-        "put-wrap-key": CAPABILITY.PUT_WRAP_KEY,
-        "generate-wrap-key": CAPABILITY.GENERATE_WRAP_KEY,
-        "exportable-under-wrap": CAPABILITY.EXPORTABLE_UNDER_WRAP,
-        "set-option": CAPABILITY.SET_OPTION,
-        "get-option": CAPABILITY.GET_OPTION,
-        "get-pseudo-random": CAPABILITY.GET_PSEUDO_RANDOM,
-        "put-mac-key": CAPABILITY.PUT_HMAC_KEY,
-        "generate-hmac-key": CAPABILITY.GENERATE_HMAC_KEY,
-        "sign-hmac": CAPABILITY.SIGN_HMAC,
-        "verify-hmac": CAPABILITY.VERIFY_HMAC,
-        "get-log-entries": CAPABILITY.GET_LOG_ENTRIES,
-        "sign-ssh-certificate": CAPABILITY.SIGN_SSH_CERTIFICATE,
-        "get-template": CAPABILITY.GET_TEMPLATE,
-        "put-template": CAPABILITY.PUT_TEMPLATE,
-        "reset-device": CAPABILITY.RESET_DEVICE,
-        "decrypt-otp": CAPABILITY.DECRYPT_OTP,
-        "create-otp-aead": CAPABILITY.CREATE_OTP_AEAD,
-        "randomize-otp-aead": CAPABILITY.RANDOMIZE_OTP_AEAD,
-        "rewrap-from-otp-aead-key": CAPABILITY.REWRAP_FROM_OTP_AEAD_KEY,
-        "rewrap-to-otp-aead-key": CAPABILITY.REWRAP_TO_OTP_AEAD_KEY,
-        "sign-attestation-certificate": CAPABILITY.SIGN_ATTESTATION_CERTIFICATE,
-        "put-otp-aead-key": CAPABILITY.PUT_OTP_AEAD_KEY,
-        "generate-otp-aead-key": CAPABILITY.GENERATE_OTP_AEAD_KEY,
-        "wrap-data": CAPABILITY.WRAP_DATA,
-        "unwrap-data": CAPABILITY.UNWRAP_DATA,
-        "delete-opaque": CAPABILITY.DELETE_OPAQUE,
-        "delete-authentication-key": CAPABILITY.DELETE_AUTHENTICATION_KEY,
-        "delete-asymmetric-key": CAPABILITY.DELETE_ASYMMETRIC_KEY,
-        "delete-wrap-key": CAPABILITY.DELETE_WRAP_KEY,
-        "delete-hmac-key": CAPABILITY.DELETE_HMAC_KEY,
-        "delete-template": CAPABILITY.DELETE_TEMPLATE,
-        "delete-otp-aead-key": CAPABILITY.DELETE_OTP_AEAD_KEY,
-        "change-authentication-key": CAPABILITY.CHANGE_AUTHENTICATION_KEY,
-        "put-symmetric-key": CAPABILITY.PUT_SYMMETRIC_KEY,
-        "generate-symmetric-key": CAPABILITY.GENERATE_SYMMETRIC_KEY,
-        "delete-symmetric-key": CAPABILITY.DELETE_SYMMETRIC_KEY,
-        "decrypt-ecb": CAPABILITY.DECRYPT_ECB,
-        "encrypt-ecb": CAPABILITY.ENCRYPT_ECB,
-        "decrypt-cbc": CAPABILITY.DECRYPT_CBC,
-        "encrypt-cbc": CAPABILITY.ENCRYPT_CBC,
-    }
-    names = set(names)
-    if 'all' in names:
-        return CAPABILITY.ALL
-    elif 'none' in names:
-        return CAPABILITY.NONE
-    else:
-        res = CAPABILITY.NONE
-        for name in names:
-            if name not in mapping:
-                raise ValueError(f"Unknown capability name '{name}'")
-            res |= mapping[name]
-        return res
-
+    return hscfg.HSMConfig.capability_from_names(set(names))
 
 def encode_algorithm(name_literal: str|hscfg.AsymmetricAlgorithm) -> ALGORITHM:
-    mapping = {
-        "rsa-pkcs1-sha1": ALGORITHM.RSA_PKCS1_SHA1,
-        "rsa-pkcs1-sha256": ALGORITHM.RSA_PKCS1_SHA256,
-        "rsa-pkcs1-sha384": ALGORITHM.RSA_PKCS1_SHA384,
-        "rsa-pkcs1-sha512": ALGORITHM.RSA_PKCS1_SHA512,
-        "rsa-pss-sha1": ALGORITHM.RSA_PSS_SHA1,
-        "rsa-pss-sha256": ALGORITHM.RSA_PSS_SHA256,
-        "rsa-pss-sha384": ALGORITHM.RSA_PSS_SHA384,
-        "rsa-pss-sha512": ALGORITHM.RSA_PSS_SHA512,
-        "rsa2048": ALGORITHM.RSA_2048,
-        "rsa3072": ALGORITHM.RSA_3072,
-        "rsa4096": ALGORITHM.RSA_4096,
-        "ecp256": ALGORITHM.EC_P256,
-        "ecp384": ALGORITHM.EC_P384,
-        "ecp521": ALGORITHM.EC_P521,
-        "eck256": ALGORITHM.EC_K256,
-        "ecbp256": ALGORITHM.EC_BP256,
-        "ecbp384": ALGORITHM.EC_BP384,
-        "ecbp512": ALGORITHM.EC_BP512,
-        "hmac-sha1": ALGORITHM.HMAC_SHA1,
-        "hmac-sha256": ALGORITHM.HMAC_SHA256,
-        "hmac-sha384": ALGORITHM.HMAC_SHA384,
-        "hmac-sha512": ALGORITHM.HMAC_SHA512,
-        "ecdsa-sha1": ALGORITHM.EC_ECDSA_SHA1,
-        "ecdh": ALGORITHM.EC_ECDH,
-        "rsa-oaep-sha1": ALGORITHM.RSA_OAEP_SHA1,
-        "rsa-oaep-sha256": ALGORITHM.RSA_OAEP_SHA256,
-        "rsa-oaep-sha384": ALGORITHM.RSA_OAEP_SHA384,
-        "rsa-oaep-sha512": ALGORITHM.RSA_OAEP_SHA512,
-        "aes128-ccm-wrap": ALGORITHM.AES128_CCM_WRAP,
-        "opaque-data": ALGORITHM.OPAQUE_DATA,
-        "opaque-x509-certificate": ALGORITHM.OPAQUE_X509_CERTIFICATE,
-        "mgf1-sha1": ALGORITHM.RSA_MGF1_SHA1,
-        "mgf1-sha256": ALGORITHM.RSA_MGF1_SHA256,
-        "mgf1-sha384": ALGORITHM.RSA_MGF1_SHA384,
-        "mgf1-sha512": ALGORITHM.RSA_MGF1_SHA512,
-        "template-ssh": ALGORITHM.TEMPLATE_SSH,
-        "aes128-yubico-otp": ALGORITHM.AES128_YUBICO_OTP,
-        "aes128-yubico-authentication": ALGORITHM.AES128_YUBICO_AUTHENTICATION,
-        "aes192-yubico-otp": ALGORITHM.AES192_YUBICO_OTP,
-        "aes256-yubico-otp": ALGORITHM.AES256_YUBICO_OTP,
-        "aes192-ccm-wrap": ALGORITHM.AES192_CCM_WRAP,
-        "aes256-ccm-wrap": ALGORITHM.AES256_CCM_WRAP,
-        "ecdsa-sha256": ALGORITHM.EC_ECDSA_SHA256,
-        "ecdsa-sha384": ALGORITHM.EC_ECDSA_SHA384,
-        "ecdsa-sha512": ALGORITHM.EC_ECDSA_SHA512,
-        "ed25519": ALGORITHM.EC_ED25519,
-        "ecp224": ALGORITHM.EC_P224
-    }
-    if mapping.get(name_literal.lower(), None) is None:
-        raise ValueError(f"Unknown algorithm name '{name_literal}'")
-    return mapping[name_literal.lower()]
+    return hscfg.HSMConfig.algorithm_from_name(name_literal)   # type: ignore
+
+
+def hsm_put_wrap_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMWrapKey, key: bytes) -> WrapKey:
+    """
+    Put a (symmetric) wrap key into the HSM.
+    """
+    wrap_key = ses.get_object(key_def.id, OBJECT.WRAP_KEY)
+    assert isinstance(wrap_key, WrapKey)
+    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, wrap_key)
+    res = wrap_key.put(
+        session = ses,
+        object_id = key_def.id,
+        label = key_def.label,
+        algorithm = conf.algorithm_from_name(key_def.algorithm),
+        domains = conf.get_domain_bitfield(key_def.domains),
+        capabilities = conf.capability_from_names(set(key_def.capabilities)),
+        delegated_capabilities = conf.capability_from_names(set(key_def.delegated_capabilities)),
+        key = key)
+    click.echo(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {dev_serial}")
+    return res
+
+
+def hsm_put_derived_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, password: str) -> AuthenticationKey:
+    """
+    Put a password-derived authentication key into the HSM.
+    """
+    auth_key = ses.get_object(key_def.id, OBJECT.AUTHENTICATION_KEY)
+    assert isinstance(auth_key, AuthenticationKey)
+    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, auth_key)
+    res = auth_key.put_derived(
+        session = ses,
+        object_id = key_def.id,
+        label = key_def.label,
+        domains = conf.get_domain_bitfield(key_def.domains),
+        capabilities = conf.capability_from_names(key_def.capabilities),
+        delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
+        password = password)
+    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    return res
+
+
+def hsm_put_symmetric_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, key_enc: bytes, key_mac: bytes) -> AuthenticationKey:
+    """
+    Put a symmetric authentication key into the HSM.
+    """
+    auth_key = ses.get_object(key_def.id, OBJECT.AUTHENTICATION_KEY)
+    assert isinstance(auth_key, AuthenticationKey)
+    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, auth_key)
+    res = auth_key.put(
+        session = ses,
+        object_id = key_def.id,
+        label = key_def.label,
+        domains = conf.get_domain_bitfield(key_def.domains),
+        capabilities = conf.capability_from_names(key_def.capabilities),
+        delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
+        key_enc = key_enc,
+        key_mac = key_mac)
+    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    return res
 
 
 def create_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
@@ -321,7 +307,6 @@ def create_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_d
         ses (AuthSession): The authenticated HSM session
         key_defs (Sequence[HSMAsymmetricKey]): The list of key definitions to create
     """
-
     existing: Sequence[YhsmObject] = ses.list_objects()
     for obj in existing:
         if isinstance(obj, AsymmetricKey) and obj.id in [d.id for d in key_defs]:
@@ -360,3 +345,67 @@ def print_yubihsm_object(o):
     click.echo(f"  domains:        {domains}")
     click.echo(f"  capabilities:   {hscfg.HSMConfig.capability_to_names(info.capabilities)}")
     click.echo(f"  delegated_caps: {hscfg.HSMConfig.capability_to_names(info.delegated_capabilities)}")
+
+
+def hsm_obj_exists(hsm_key_obj: YhsmObject) -> bool:
+    """
+    Check if a YubiHSM object exists.
+    :param hsm_key_obj: The object to check for
+    :return: True if the object exists
+    """
+    try:
+        _ = hsm_key_obj.get_info()  # Raises an exception if the key does not exist
+        return True
+    except YubiHsmDeviceError as e:
+        if e.code == ERROR.OBJECT_NOT_FOUND:
+            return False
+        raise e
+
+
+def confirm_and_delete_old_yubihsm_object_if_exists(serial: str, obj: YhsmObject, abort=True) -> bool:
+    """
+    Check if a YubiHSM object exists, and if so, ask the user if they want to replace it.
+    :param serial: The serial number of the YubiHSM device
+    :param hsm_key_obj: The object to check for
+    :param abort: Whether to abort (raise) if the user does not want to delete the object
+    :return: True if the object doesn't exist or was deleted, False if the user chose not to delete it
+    """
+    if hsm_obj_exists(obj):
+        click.echo(f"Object 0x{obj.id:04x} already exists on YubiHSM device {serial}:")
+        print_yubihsm_object(obj)
+        click.echo("")
+        if click.confirm("Replace the existing key?", default=False, abort=abort):
+            obj.delete()
+        else:
+            return False
+    return True
+
+
+def secure_display_secret(secret_to_show: str, wipe_char='x'):
+    """
+    Display a secret on the screen, and then wipe from the screen (and scroll buffer).
+    """
+    secret = secret_to_show + " "
+    def do_it(stdscr):
+        stdscr.clear()
+
+        # Create a new window
+        height, width = stdscr.getmaxyx()
+        win_height = 3
+        win_width = len(secret) + 4
+        win = curses.newwin(win_height, win_width, height // 2 - 1, width // 2 - win_width // 2)
+
+        # Display the secret
+        win.box()
+        win.addstr(1, 2, secret)
+        win.refresh()
+
+        click.pause("") # Wait for ENTER key
+
+        # Overwrite the secret with wipe_char
+        stdscr.clear()
+        win.box()
+        win.addstr(1, 2, wipe_char * len(secret))
+        win.refresh()
+
+    curses.wrapper(do_it)
