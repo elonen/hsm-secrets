@@ -258,7 +258,7 @@ tls:
             domains: ['tls']
             algorithm: ed25519
             capabilities:
-                - sign-pkcs
+                - sign-eddsa
                 - exportable-under-wrap
           x509_info:
             attribs:
