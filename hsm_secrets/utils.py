@@ -138,6 +138,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         echo(click.style(str(e), fg='red'))
         exit(1)
 
+
 def verify_hsm_device_info(device_serial, hsm):
     info = hsm.get_device_info()
     if int(device_serial) != int(info.serial):
@@ -299,7 +300,7 @@ def hsm_put_symmetric_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HS
     return res
 
 
-def create_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
+def generate_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
     """
     Create a set of asymmetric keys in the HSM, optionally deleting and recreating existing keys.
 
@@ -310,11 +311,13 @@ def create_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_d
     existing: Sequence[YhsmObject] = ses.list_objects()
     for obj in existing:
         if isinstance(obj, AsymmetricKey) and obj.id in [d.id for d in key_defs]:
-            click.echo(f"AsymmetricKey ID '{hex(obj.id)}' already exists")
-            if click.confirm("Delete and recreate?"):
+            click.echo(f"AsymmetricKey ID '{hex(obj.id)}' already exists:")
+            print_yubihsm_object(obj)
+            if click.confirm("Replace the old key?"):
                 obj.delete()
             else:
-                raise click.Abort()
+                click.echo(f"Skipping key creation for ID '{hex(obj.id)}'")
+                key_defs = [k for k in key_defs if k.id != obj.id]
 
     res = []
     for kdef in key_defs:

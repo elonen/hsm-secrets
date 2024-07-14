@@ -16,7 +16,6 @@ general:
     domains:
         # These domain numbers separate different types of objects in the YubiHSM 2.
         # The names are used by the hsm-secrets tool for clarity, not by the device itself.
-        device_admin: 1
         x509: 2
         tls: 3
         nac: 4
@@ -25,9 +24,6 @@ general:
         ssh: 7
         password_derivation: 8
         encryption: 9
-
-        service_keys: 0xd
-        user_keys: 0xe
 
     x509_defaults:
         is_ca: true
@@ -86,6 +82,17 @@ admin:
         capabilities: ["wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
         delegated_capabilities: ['all']
 
+    # Dedicated audit key for reviewing logs.
+    # The log listings form a continuous blockchain and the `get-log-entries` wipes the log.
+    # => Each call must be made consciously and must store the results to uphold the chain of evidence.
+    # This is why the user keys are not allowed to call this capability wantonly.
+    audit_key:
+        label: log-audit
+        id: 0x0008
+        domains: []
+        capabilities: ['get-log-entries']
+        delegated_capabilities: ['all']
+
 
 # User keys are for general use by human operators.
 #
@@ -96,7 +103,7 @@ admin:
 user_keys:
     - label: user_john.doe
       id: 0xE001
-      domains: ['all', 'tls', 'nac', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
+      domains: ['tls', 'nac', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
       capabilities:
         - sign-ssh-certificate          # For SSH certificate creation
         - sign-hmac                     # For password derivation
@@ -110,9 +117,11 @@ user_keys:
         - decrypt-ecb                   # (--||--)
         - get-pseudo-random             # For generating random salts
         - change-authentication-key     # For changing this key's credentials
-        - get-log-entries               # For auditing
         - sign-attestation-certificate  # For proving some other key is protected by an HSM
         - exportable-under-wrap         # Allows replication of the key to another HSM for backup/HA
+        - get-opaque                    # For getting certificates stored in the HSM
+        - export-wrapped                # For backup
+        - import-wrapped                # For backup restore (in case service keys are DoSed by `change-authentication-key`)
       delegated_capabilities: []        # (No delegated capabilities, as this cannot create new keys to delegate to)
       # TODO: Need to split this key into separate keys for different purposes? Would it give any real security benefit?
 
@@ -121,14 +130,15 @@ user_keys:
 # These should be strictly domain-limited, and have limited capabilities.
 service_keys:
     -
-        label: service_nac_packetfence
-        id: 0xD001
+        label: service_nac
+        id: 0xD010
         domains: ['nac']
         capabilities:
                 - get-pseudo-random
                 - sign-pss
                 - sign-pkcs
                 - exportable-under-wrap
+                - change-authentication-key  # Could allow DoS on the key, but lesser evil than not being able to rotate it
         delegated_capabilities: []
 
 
@@ -143,7 +153,7 @@ x509:
     root_certs:
         -
           key:
-            label: x509-rsa-ca-root
+            label: x509-rsa-ca-root-key
             id: 0x0210
             domains: ['x509']
             algorithm: rsa4096
@@ -159,9 +169,14 @@ x509:
                 - keyCertSign
                 - cRLSign
             extended_key_usage: []
+          cert:
+            id: 0x0211
+            label: x509-rsa-ca-root-cert
+            domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']   # Allow the signed root cert to be read by all services
+            algorithm: opaque-x509-certificate
         -
           key:
-            label: x509-ed25519-ca-root
+            label: x509-ed25519-ca-root-key
             id: 0x0220
             domains: ['x509']
             algorithm: ed25519
@@ -176,9 +191,14 @@ x509:
                 - keyCertSign
                 - cRLSign
             extended_key_usage: []
+          cert:
+            id: 0x0221
+            label: x509-ed25519-ca-root-cert
+            domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
+            algorithm: opaque-x509-certificate
         -
             key:
-                label: x509-ecdsa-ca-root
+                label: x509-ecdsa-ca-root-key
                 id: 0x0230
                 domains: ['x509']
                 algorithm: ecp384
@@ -193,14 +213,18 @@ x509:
                     - keyCertSign
                     - cRLSign
                 extended_key_usage: []
-
+            cert:
+                id: 0x0231
+                label: x509-ecdsa-ca-root-cert
+                domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
+                algorithm: opaque-x509-certificate
 
 # TLS (HTTPS, TCP, ...) intermediate keys.
 tls:
     intermediate_certs:
         -
           key:
-            label: tls-rsa-intermediate
+            label: tls-rsa-intermediate-key
             id: 0x0310
             domains: ['tls']
             algorithm: rsa4096
@@ -222,9 +246,14 @@ tls:
                 - serverAuth
                 - clientAuth
                 - timeStamping
+          cert:
+            id: 0x0311
+            label: tls-rsa-intermediate-cert
+            domains: ['tls']    # Only allow TLS services to read this cert
+            algorithm: opaque-x509-certificate
         -
           key:
-            label: tls-ed25519-intermediate
+            label: tls-ed25519-intermediate-key
             id: 0x0320
             domains: ['tls']
             algorithm: ed25519
@@ -245,6 +274,11 @@ tls:
                 - serverAuth
                 - clientAuth
                 - timeStamping
+          cert:
+            id: 0x0321
+            label: tls-ed25519-intermediate-cert
+            domains: ['tls']
+            algorithm: opaque-x509-certificate
 
 
 # NAC (Network Access Control) intermediate keys for 802.1X
@@ -252,7 +286,7 @@ nac:
     intermediate_certs:
         -
           key:
-            label: nac-rsa-intermediate
+            label: nac-rsa-intermediate-key
             id: 0x0410
             domains: ['nac']
             algorithm: rsa4096
@@ -269,9 +303,14 @@ nac:
                 - serverAuth
                 - clientAuth
                 - timeStamping
+          cert:
+            id: 0x0411
+            label: nac-rsa-intermediate-cert
+            domains: ['nac']
+            algorithm: opaque-x509-certificate
         -
           key:
-            label: nac-ed25519-intermediate
+            label: nac-ed25519-intermediate-key
             id: 0x0420
             domains: ['nac']
             algorithm: ed25519
@@ -287,6 +326,11 @@ nac:
                 - serverAuth
                 - clientAuth
                 - timeStamping
+          cert:
+            id: 0x0421
+            label: nac-ed25519-intermediate-cert
+            domains: ['nac']
+            algorithm: opaque-x509-certificate
 
 
 # GPG/OpenPGP keys
@@ -347,7 +391,7 @@ codesign:
     intermediate_certs:
     -
       key:
-        label: codesign-rsa
+        label: codesign-rsa-intermediate-key
         id: 0x0610
         domains: ['codesign']
         algorithm: rsa4096
@@ -366,9 +410,14 @@ codesign:
         extended_key_usage:
             - codeSigning
             - timeStamping
+      cert:
+        id: 0x0611
+        label: codesign-rsa-intermediate-cert
+        domains: ['codesign']
+        algorithm: opaque-x509-certificate
     -
       key:
-        label: codesign-ed25519
+        label: codesign-ed25519-intermediate-key
         id: 0x0620
         domains: ['codesign']
         algorithm: ed25519
@@ -386,6 +435,11 @@ codesign:
         extended_key_usage:
             - codeSigning
             - timeStamping
+      cert:
+        id: 0x0621
+        label: codesign-ed25519-intermediate-cert
+        domains: ['codesign']
+        algorithm: opaque-x509-certificate
 
 
 # Certificate-based SSH authentication keys.

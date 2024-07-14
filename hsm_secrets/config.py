@@ -93,7 +93,7 @@ class HSMConfig(NoExtraBaseModel):
         return names
 
     @staticmethod
-    def algorithm_from_name(algo: Union['AsymmetricAlgorithm', 'SymmetricAlgorithm', 'WrapAlgorithm', 'HmacAlgorithm']) -> ALGORITHM:
+    def algorithm_from_name(algo: Union['AsymmetricAlgorithm', 'SymmetricAlgorithm', 'WrapAlgorithm', 'HmacAlgorithm', 'OpaqueObjectAlgorithm']) -> ALGORITHM:
         name = algo.upper().replace("-", "_")
         res = getattr(ALGORITHM, name)
         assert res is not None, f"Algorithm '{name}' not found in the YubiHSM library."
@@ -104,13 +104,9 @@ class HSMConfig(NoExtraBaseModel):
 KeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
 KeyLabel = Annotated[str, Field(max_length=40)]
 HSMDomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
-HSMDomainName = Literal["all", "device_admin", "x509", "tls", "nac", "gpg", "codesign", "ssh", "password_derivation", "encryption", "service_keys", "user_keys"]
+HSMDomainName = Literal["all", "x509", "tls", "nac", "gpg", "codesign", "ssh", "password_derivation", "encryption"]
 
 class HSMDomains(NoExtraBaseModel):
-    device_admin: HSMDomainNum
-    service_keys: HSMDomainNum
-    user_keys: HSMDomainNum
-
     x509: HSMDomainNum
     tls: HSMDomainNum
     nac: HSMDomainNum
@@ -205,6 +201,11 @@ class HSMAuthKey(HSMKeyBase):
     capabilities: set[AuthKeyCapabilityName]
     delegated_capabilities: set[AuthKeyDelegatedCapabilityName]
 
+# -- Opaque object models --
+OpaqueObjectAlgorithm = Literal["opaque-data", "opaque-x509-certificate"]
+class OpaqueObject(HSMKeyBase):
+    algorithm: OpaqueObjectAlgorithm
+
 # -- Helper models --
 X509KeyUsage = Literal[
     "digitalSignature",     # Allow signing files, messages, etc.
@@ -238,6 +239,7 @@ class X509Info(NoExtraBaseModel):
 class X509Cert(NoExtraBaseModel):
     key: HSMAsymmetricKey
     x509_info: Optional[X509Info] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
+    cert: OpaqueObject
 
 
 
@@ -248,6 +250,7 @@ class Admin(NoExtraBaseModel):
     default_admin_key: HSMAuthKey
     shared_admin_key: HSMAuthKey
     wrap_key: HSMWrapKey
+    audit_key: HSMAuthKey
 
 class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]
