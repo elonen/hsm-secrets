@@ -9,19 +9,7 @@ from click import echo
 import yaml
 
 
-def load_hsm_config(file_name: str) -> 'HSMConfig':
-    """
-    Load a YAML configuration file, validate with Pydantic, and return a HSMConfig object.
-    """
-    echo("Using config file: " + click.style(file_name, fg='cyan'))
-    with click.open_file(file_name) as f:
-        hsm_conf = yaml.load(f, Loader=yaml.FullLoader)
-    if not isinstance(hsm_conf, dict):
-        raise click.ClickException("Configuration file must be a YAML dictionary.")
-    return HSMConfig(**hsm_conf)
-
-
-# ----------------- Pydantic models -----------------
+# -----  Pydantic models -----
 
 class NoExtraBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -94,6 +82,14 @@ class HSMConfig(NoExtraBaseModel):
 
     @staticmethod
     def algorithm_from_name(algo: Union['AsymmetricAlgorithm', 'SymmetricAlgorithm', 'WrapAlgorithm', 'HmacAlgorithm', 'OpaqueObjectAlgorithm']) -> ALGORITHM:
+        exceptions = {
+            'rsa2048': ALGORITHM.RSA_2048, 'rsa3072': ALGORITHM.RSA_3072, 'rsa4096': ALGORITHM.RSA_4096,
+            'ecp256': ALGORITHM.EC_P256, 'ecp384': ALGORITHM.EC_P384, 'ecp521': ALGORITHM.EC_P521, 'eck256': ALGORITHM.EC_K256,
+            'ecbp256': ALGORITHM.EC_BP256, 'ecbp384': ALGORITHM.EC_BP384, 'ecbp512': ALGORITHM.EC_BP512,
+            'ed25519': ALGORITHM.EC_ED25519, 'ecp224': ALGORITHM.EC_P224,
+        }
+        if algo in exceptions:
+            return exceptions[algo]
         name = algo.upper().replace("-", "_")
         res = getattr(ALGORITHM, name)
         assert res is not None, f"Algorithm '{name}' not found in the YubiHSM library."
@@ -243,7 +239,7 @@ class X509Cert(NoExtraBaseModel):
 
 
 
-# ----------------- Subsystem models -----------------
+# -----  Subsystem models -----
 
 class Admin(NoExtraBaseModel):
     default_admin_password: str
@@ -280,3 +276,63 @@ class PasswordDerivation(NoExtraBaseModel):
 
 class Encryption(NoExtraBaseModel):
     keys: List[HSMSymmetricKey]
+
+
+# ----- Utility functions -----
+
+def load_hsm_config(file_name: str) -> 'HSMConfig':
+    """
+    Load a YAML configuration file, validate with Pydantic, and return a HSMConfig object.
+    """
+    echo("Using config file: " + click.style(file_name, fg='cyan'))
+    with click.open_file(file_name) as f:
+        hsm_conf = yaml.load(f, Loader=yaml.FullLoader)
+    if not isinstance(hsm_conf, dict):
+        raise click.ClickException("Configuration file must be a YAML dictionary.")
+    res = HSMConfig(**hsm_conf)
+
+    items_per_type, _ = find_all_config_items_per_type(res)
+    seen_ids = set()
+    for _, key_list in items_per_type.items():
+        for key in key_list:
+            if key.id in seen_ids:
+                raise click.ClickException(f"Duplicate key ID '{key.id}' found in the configuration file. YubiHSM allows this between different key types, but this tool enforces strict uniqueness.")
+            seen_ids.add(key.id)
+
+    return res
+
+
+def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
+    """
+    Find all instances of each key type in the configuration file.
+    Returns a dictionary with lists of each key type, and a mapping from config type to YubiHSM object type.
+    """
+    from typing import Type, TypeVar, Generator, Any
+    import yubihsm.objects
+
+    # Util function to find all instances of a certain type in a nested structure
+    T = TypeVar('T')
+    def find_instances(obj: Any, target_type: Type[T]) -> Generator[T, None, None]:
+        if isinstance(obj, target_type):
+            yield obj
+        elif isinstance(obj, (list, tuple, set)):
+            for item in obj:
+                yield from find_instances(item, target_type)
+        elif isinstance(obj, dict):
+            for value in obj.values():
+                yield from find_instances(value, target_type)
+        elif hasattr(obj, '__dict__'):
+            for value in vars(obj).values():
+                yield from find_instances(value, target_type)
+
+    from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
+    config_to_hsm_type = {
+        HSMAuthKey: yubihsm.objects.AuthenticationKey,
+        HSMWrapKey: yubihsm.objects.WrapKey,
+        HSMHmacKey: yubihsm.objects.HmacKey,
+        HSMSymmetricKey: yubihsm.objects.SymmetricKey,
+        HSMAsymmetricKey: yubihsm.objects.AsymmetricKey,
+        OpaqueObject: yubihsm.objects.Opaque,
+    }
+    config_items_per_type: dict = {t: list(find_instances(conf, t)) for t in config_to_hsm_type.keys()} # type: ignore
+    return config_items_per_type, config_to_hsm_type

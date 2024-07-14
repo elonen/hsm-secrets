@@ -2,9 +2,9 @@ import re
 import secrets
 import sys
 import click
-from hsm_secrets.config import HSMConfig
+from hsm_secrets.config import HSMConfig, find_all_config_items_per_type
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
-from hsm_secrets.utils import group_by_4, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, hsm_put_wrap_key, list_yubikey_hsm_creds, open_hsm_session_with_default_admin, open_hsm_session_with_shared_admin, open_hsm_session_with_yubikey, print_yubihsm_object, prompt_for_secret, pw_check_fromhex, secure_display_secret
+from hsm_secrets.utils import group_by_4, hsm_generate_asymmetric_key, hsm_generate_hmac_key, hsm_generate_symmetric_key, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, hsm_put_wrap_key, open_hsm_session_with_default_admin, open_hsm_session_with_shared_admin, open_hsm_session_with_yubikey, print_yubihsm_object, prompt_for_secret, pw_check_fromhex, secure_display_secret
 import yubihsm.defs, yubihsm.exceptions, yubihsm.objects
 from yubihsm.core import AuthSession
 
@@ -54,11 +54,12 @@ def cmd_hsm(ctx):
     2. Set a common wrap key to all devices.
     3. Host a Secret Sharing Ceremony to add a super admin key.
     4. Add user keys (Yubikey auth) to master device.
-    5. Generate and store necessary keys on the master device.
-    6. Check that all keys are present on master (`compare-to-config`). Iterate if needed.
-    7. Clone master device to other ones.
-    8. Double check that all keys are present on all devices (`compare-to-config --alldevs`).
-    9. Remove default admin key from all devices.
+    5. Generate keys on master device with `compare-config --create`.
+    6. Create certificates etc from the keys.
+    7. Check that all configure objects are present on master (`compare-config`).
+    8. Clone master device to other ones.
+    9. Double check that all keys are present on all devices (`compare-config --alldevs`).
+    10. Remove default admin key from all devices.
 
     Management workflow:
 
@@ -405,11 +406,44 @@ def add_user_auth(ctx: click.Context, label: str, alldevs: bool):
 
 # ---------------
 
-@cmd_hsm.command('compare-to-config')
+@cmd_hsm.command('delete-object')
+@click.option('--id', required=True, type=str, help="ID of the object to delete (in hex)")
+@click.option('--alldevs', is_flag=True, help="Delete on all devices")
+@click.option('--force', is_flag=True, help="Force deletion without confirmation (use with caution)")
+@click.pass_context
+def delete_object(ctx: click.Context, id: str, alldevs: bool, force: bool):
+    """Delete an object from the YubiHSM
+
+    Deletes an object with the given ID from the YubiHSM.
+    YubiHSM2 identifies objects by type in addition to ID, so the command
+    asks you to confirm the type of the object before deleting it.
+
+    With `--force` ALL objects with the given ID will be deleted
+    without confirmation, regardless of their type.
+    """
+    id_int = int(id.replace('0x', ''), 16)
+
+    dev_serials = ctx.obj['config'].general.all_devices.keys() if alldevs else [ctx.obj['devserial']]
+    for serial in dev_serials:
+        with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
+            objects = ses.list_objects()
+            for o in objects:
+                if o.id == id_int:
+                    click.echo("Object found:")
+                    print_yubihsm_object(o)
+                    if not force:
+                        click.confirm("Delete this object?", default=False, abort=True)
+                    o.delete()
+                    click.echo("Object deleted.")
+
+# ---------------
+
+@cmd_hsm.command('compare-config')
 @click.option('--alldevs', is_flag=True, help="Compare all devices")
 @click.option('--use-user-auth', is_flag=True, help="Use user auth key instead of default admin key")
+@click.option('--create', is_flag=True, help="Create missing keys in the YubiHSM")
 @click.pass_context
-def compare_to_config(ctx: click.Context, alldevs: bool, use_user_auth: bool):
+def compare_config(ctx: click.Context, alldevs: bool, use_user_auth: bool, create: bool):
     """Check that the YubiHSM configuration matches the configuration file (i.e. all keys are present)
 
     Lists all objects by type (auth, wrap, etc.) in the configuration file, and then checks
@@ -417,75 +451,89 @@ def compare_to_config(ctx: click.Context, alldevs: bool, use_user_auth: bool):
 
     By default, only checks the master device, using the default admin key.
     Override with the options as needed.
+
+    If `--create` is given, missing keys will be created in the YubiHSM.
+    It only supports one device at a time, and requires the default admin key.
     """
+
+    if create:
+        if alldevs or use_user_auth:
+            raise click.ClickException("The --create option only supports one device at a time, and requires the default admin key.")
 
     conf = ctx.obj['config']
     assert isinstance(conf, HSMConfig)
-
-    # Util function to find all instances of a certain type in a nested structure
-    from typing import Type, TypeVar, Generator, Any
-    T = TypeVar('T')
-    def find_instances(obj: Any, target_type: Type[T]) -> Generator[T, None, None]:
-        if isinstance(obj, target_type):
-            yield obj
-        elif isinstance(obj, (list, tuple, set)):
-            for item in obj:
-                yield from find_instances(item, target_type)
-        elif isinstance(obj, dict):
-            for value in obj.values():
-                yield from find_instances(value, target_type)
-        elif hasattr(obj, '__dict__'):
-            for value in vars(obj).values():
-                yield from find_instances(value, target_type)
-
-    from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
-    config_to_hsm_type = {
-        HSMAuthKey: yubihsm.objects.AuthenticationKey,
-        HSMWrapKey: yubihsm.objects.WrapKey,
-        HSMHmacKey: yubihsm.objects.HmacKey,
-        HSMSymmetricKey: yubihsm.objects.SymmetricKey,
-        HSMAsymmetricKey: yubihsm.objects.AsymmetricKey,
-        OpaqueObject: yubihsm.objects.Opaque,
-    }
-    config_items_per_type: dict = {t: list(find_instances(conf, t)) for t in config_to_hsm_type.keys()} # type: ignore
+    config_items_per_type, config_to_hsm_type = find_all_config_items_per_type(conf)
 
     click.echo("")
     click.echo("Reading objects from the YubiHSM(s)...")
     dev_serials = conf.general.all_devices.keys() if alldevs else [ctx.obj['devserial']]
     for serial in dev_serials:
 
-        def do_it(conf, ses, serial):
-            device_objs: list[yubihsm.objects.YhsmObject] = list(ses.list_objects())
+        def do_it(_: HSMConfig, ses: AuthSession):
+            device_objs = list(ses.list_objects())
             click.echo("")
             click.echo(f"--- YubiHSM device {serial} ---")
             objects_accounted_for = {}
+            n_created, n_skipped = 0, 0
+
             for t, items in config_items_per_type.items():
                 click.echo(f"{t.__name__}")
                 for it in items:
-                    found = False
-                    for obj in device_objs:
-                        if obj.id == it.id and isinstance(obj, config_to_hsm_type[t]):
-                            found = True
-                            objects_accounted_for[obj.id] = True
+                    obj: yubihsm.objects.YhsmObject|None = None
+                    for o in device_objs:
+                        if o.id == it.id and isinstance(o, config_to_hsm_type[t]):
+                            obj = o
+                            objects_accounted_for[o.id] = True
                             break
-
-                    checkbox = "✅" if found else "❌"
+                    checkbox = "[x]" if obj else "[ ]"
                     click.echo(f" {checkbox} '{it.label}' (0x{it.id:04x})")
+                    if create:
+                        need_create = obj is None
+                        if need_create:
+                            from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
+                            unsupported_types = (HSMWrapKey, HSMAuthKey, OpaqueObject)
+
+                            gear_emoji = click.style("⚙️", fg='cyan')
+
+                            if isinstance(it, unsupported_types):
+                                warn_emoji = click.style("⚠️", fg='yellow')
+                                click.echo(f"  └-> {warn_emoji} Cannot create '{it.__class__.__name__}' objects. Use other commands.")
+                                n_skipped += 1
+                            elif isinstance(it, HSMAsymmetricKey):
+                                click.echo(f"  └-> {gear_emoji} Creating...")
+                                hsm_generate_asymmetric_key(ses, serial, conf, it)
+                                n_created += 1
+                            elif isinstance(it, HSMSymmetricKey):
+                                click.echo(f"  └-> {gear_emoji} Creating...")
+                                hsm_generate_symmetric_key(ses, serial, conf, it)
+                                n_created += 1
+                            elif isinstance(it, HSMHmacKey):
+                                click.echo(f"  └-> {gear_emoji} Creating...")
+                                hsm_generate_hmac_key(ses, serial, conf, it)
+                                n_created += 1
+                            else:
+                                click.echo(click.style(f"  └-> Unsupported object type: {it.__class__.__name__}. This is a bug. SKIPPING.", fg='red'))
+                                n_skipped += 1
 
             if len(objects_accounted_for) < len(device_objs):
                 click.echo("EXTRA OBJECTS (on the device but not in the config)")
-                for obj in device_objs:
-                    if obj.id not in objects_accounted_for:
-                        info = obj.get_info()
-                        click.echo(f" ❓'{info.label}' (0x{obj.id:04x}) <{obj.__class__.__name__}>")
+                for o in device_objs:
+                    if o.id not in objects_accounted_for:
+                        info = o.get_info()
+                        click.echo(f" ??? '{str(info.label)}' (0x{o.id:04x}) <{o.__class__.__name__}>")
+
+            if create:
+                click.echo("")
+                click.echo(f"KEY CREATION REPORT: Created {n_created} objects, skipped {n_skipped} objects. Run the command again without --create to verify status.")
+
             click.echo("")
 
         if use_user_auth:
             with open_hsm_session_with_yubikey(ctx, device_serial=serial) as (conf, ses):
-                do_it(conf, ses, serial)
+                do_it(conf, ses)
         else:
             with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
-                do_it(conf, ses, serial)
+                do_it(conf, ses)
 
 
 

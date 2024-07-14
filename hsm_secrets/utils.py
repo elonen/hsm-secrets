@@ -8,7 +8,7 @@ import click
 from yubihsm import YubiHsm # type: ignore
 from yubihsm.core import AuthSession
 from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT
-from yubihsm.objects import AsymmetricKey, WrapKey, YhsmObject, AuthenticationKey
+from yubihsm.objects import AsymmetricKey, HmacKey, SymmetricKey, WrapKey, YhsmObject, AuthenticationKey
 
 from yubikit.hsmauth import HsmAuthSession  #, DEFAULT_MANAGEMENT_KEY
 from yubihsm.exceptions import YubiHsmDeviceError
@@ -300,38 +300,63 @@ def hsm_put_symmetric_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HS
     return res
 
 
-def generate_asymmetric_keys_on_hsm(ses: AuthSession, conf: hscfg.HSMConfig, key_defs: Sequence[hscfg.HSMAsymmetricKey]) -> list[AsymmetricKey]:
+def hsm_generate_symmetric_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMSymmetricKey) -> SymmetricKey:
     """
-    Create a set of asymmetric keys in the HSM, optionally deleting and recreating existing keys.
-
-    Args:
-        ses (AuthSession): The authenticated HSM session
-        key_defs (Sequence[HSMAsymmetricKey]): The list of key definitions to create
+    Generate a symmetric key on the HSM.
     """
-    existing: Sequence[YhsmObject] = ses.list_objects()
-    for obj in existing:
-        if isinstance(obj, AsymmetricKey) and obj.id in [d.id for d in key_defs]:
-            click.echo(f"AsymmetricKey ID '{hex(obj.id)}' already exists:")
-            print_yubihsm_object(obj)
-            if click.confirm("Replace the old key?"):
-                obj.delete()
-            else:
-                click.echo(f"Skipping key creation for ID '{hex(obj.id)}'")
-                key_defs = [k for k in key_defs if k.id != obj.id]
+    sym_key = ses.get_object(key_def.id, OBJECT.SYMMETRIC_KEY)
+    assert isinstance(sym_key, SymmetricKey)
+    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, sym_key)
+    click.echo(f"Generating symmetric key, type '{key_def.algorithm}'...")
+    res = sym_key.generate(
+        session = ses,
+        object_id = key_def.id,
+        label = key_def.label,
+        domains = conf.get_domain_bitfield(key_def.domains),
+        capabilities = conf.capability_from_names(set(key_def.capabilities)),
+        algorithm = conf.algorithm_from_name(key_def.algorithm))
+    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) generated in YubiHSM device {dev_serial}")
+    return res
 
-    res = []
-    for kdef in key_defs:
-        click.echo(f"Creating key '{kdef.label}' ID '{hex(kdef.id)}' ({kdef.algorithm}) ...", nl=False)
-        res.append(AsymmetricKey.generate(
-                session=ses,
-                object_id=kdef.id,
-                label=kdef.label,
-                domains=conf.get_domain_bitfield(kdef.domains),
-                capabilities=encode_capabilities(kdef.capabilities),
-                algorithm=encode_algorithm(kdef.algorithm)
-            ))
-        click.echo("done")
 
+def hsm_generate_asymmetric_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAsymmetricKey) -> AsymmetricKey:
+    """
+    Generate an asymmetric key on the HSM.
+    """
+    asym_key = ses.get_object(key_def.id, OBJECT.ASYMMETRIC_KEY)
+    assert isinstance(asym_key, AsymmetricKey)
+    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, asym_key)
+    click.echo(f"Generating asymmetric key, type '{key_def.algorithm}'...")
+    if 'rsa' in key_def.algorithm.lower():
+        click.echo("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should be blinking while it works.")
+        click.echo("  If the process aborts / times out, you can rerun this command to resume.")
+    res = asym_key.generate(
+        session = ses,
+        object_id  = key_def.id,
+        label = key_def.label,
+        domains = conf.get_domain_bitfield(key_def.domains),
+        capabilities = conf.capability_from_names(set(key_def.capabilities)),
+        algorithm = conf.algorithm_from_name(key_def.algorithm))
+    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    return res
+
+
+def hsm_generate_hmac_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMHmacKey) -> HmacKey:
+    """
+    Generate an HMAC key on the HSM.
+    """
+    hmac_key = ses.get_object(key_def.id, OBJECT.HMAC_KEY)
+    assert isinstance(hmac_key, HmacKey)
+    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, hmac_key)
+    click.echo(f"Generating HMAC key, type '{key_def.algorithm}'...")
+    res = hmac_key.generate(
+        session = ses,
+        object_id = key_def.id,
+        label = key_def.label,
+        domains = conf.get_domain_bitfield(key_def.domains),
+        capabilities = conf.capability_from_names(set(key_def.capabilities)),
+        algorithm = conf.algorithm_from_name(key_def.algorithm))
+    click.echo(f"HMAC key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
     return res
 
 
