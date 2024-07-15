@@ -1,359 +1,159 @@
-from copy import deepcopy
 from cryptography import x509
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat
+from cryptography.hazmat.primitives.serialization import Encoding
 
-import datetime
-from datetime import timedelta
-import ipaddress
-from typing import Any, Dict, Union, List, Optional, Tuple
+from typing import List
 
-from hsm_secrets.config import HSMConfig, X509Cert, X509Info, load_hsm_config
+from yubihsm.core import AuthSession
 
-import cryptography.hazmat.primitives.asymmetric.rsa as rsa
-from cryptography.hazmat.primitives.asymmetric.padding import AsymmetricPadding
-import cryptography.hazmat.primitives.serialization as serialization
-from cryptography.hazmat.primitives import hashes
+from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_all_config_items_per_type, find_config_items_of_class, load_hsm_config
 
 import yubihsm.objects
 import yubihsm.defs
 
-from hsm_secrets.utils import open_hsm_session_with_default_admin
+from hsm_secrets.utils import confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session_with_default_admin
+
+from hsm_secrets.x509.cert_builder import X509CertBuilder
+from hsm_secrets.x509.def_utils import display_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
 
 import click
 
+from hsm_secrets.x509.key_adapters import make_private_key_adapter
 
-class YubihsmRSAPrivateKey(rsa.RSAPrivateKey):
+
+@click.group()
+@click.pass_context
+def cmd_x509(ctx):
+    """Genral X.509 Certificate Management"""
+    ctx.ensure_object(dict)
+
+# ---------------
+
+@cmd_x509.command('create-cert')
+@click.pass_context
+@click.option('--all', '-a', 'all_certs', is_flag=True, help="Create all certificates")
+@click.option("--dry-run", "-n", is_flag=True, help="Dry run (do not create certificates)")
+@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
+def create_cert(ctx: click.Context, all_certs: bool, dry_run: bool, cert_ids: tuple):
+    """Create certificate(s) on the HSM
+
+    ID is a 16-bit hex value (e.g. '0x12af' or '12af').
+    You can specify multiple IDs to create multiple certificates,
+    or use the --all flag to create all certificates defined in the config.
+
+    Specified certificates will be created in topological order, so that
+    any dependencies are created first.
     """
-    A wrapper around a YubiHSM-stored RSA private key object.
-    This delegates all crypto operations to the device without exposing the key material.
-    """
-    def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
-        self.hsm_obj = hsm_key
+    if not all_certs and not cert_ids:
+        print("Error: No certificates specified for creation.")
+        return
 
-    def sign(self, data: bytes, padding: AsymmetricPadding, algorithm: Any) -> bytes:
-        assert padding.name == "EMSA-PKCS1-v1_5", f"Unsupported padding: {padding.name}"
-        assert algorithm.name == "sha256", f"Unsupported algorithm: {algorithm.name}"
-        return self.hsm_obj.sign_pkcs1v1_5(data, hashes.SHA256())
+    conf = ctx.obj['config']
+    dev_serial = ctx.obj['devserial']
 
-    def decrypt(self, ciphertext: bytes, padding: AsymmetricPadding) -> bytes:
-        assert padding.name == "EMSA-PKCS1-v1_5", f"Unsupported padding: {padding.name}"
-        return self.hsm_obj.decrypt_pkcs1v1_5(ciphertext)
+    # Enumerate all certificate definitions in the config
+    scid_to_opq_def: dict[KeyID, OpaqueObject] = {}
+    scid_to_x509_def: dict[KeyID, X509Cert] = {}
 
-    def public_key(self) -> rsa.RSAPublicKey:
-        res = self.hsm_obj.get_public_key()
-        assert isinstance(res, rsa.RSAPublicKey), f"Unexpected public key type: {type(res)}"
-        return res
+    for x in find_config_items_of_class(conf, X509Cert):
+        assert isinstance(x, X509Cert)
+        for opq in x.signed_certs:
+            scid_to_opq_def[opq.id] = opq
+            scid_to_x509_def[opq.id] = x
 
-    @property
-    def key_size(self) -> int:
-        return self.public_key().key_size
-
-    # Unimplemented methods due to HSM-homed keys not being extractable
-
-    def private_numbers(self) -> rsa.RSAPrivateNumbers:
-        raise NotImplementedError("HSM-backed key: private_numbers() not implemented")
-
-    def private_bytes(self, encoding: Encoding, format: PrivateFormat, encryption_algorithm: serialization.KeySerializationEncryption) -> bytes:
-        raise NotImplementedError("HSM-backed key: private_bytes() not implemented")
-
-
-class YubihsmEd25519PrivateKey(ed25519.Ed25519PrivateKey):
-    """
-    A wrapper around a YubiHSM-stored Ed25519 private key object.
-    This delegates all crypto operations to the device without exposing the key material.
-    """
-    def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
-        self.hsm_obj = hsm_key
-
-    def sign(self, data: bytes) -> bytes:
-        return self.hsm_obj.sign_eddsa(data)
-
-    def public_key(self) -> ed25519.Ed25519PublicKey:
-        res = self.hsm_obj.get_public_key()
-        assert isinstance(res, ed25519.Ed25519PublicKey), f"Unexpected public key type: {type(res)}"
-        return res
-
-    def private_bytes_raw(self) -> bytes:
-         raise NotImplementedError("HSM-backed key: private_bytes_raw() not implemented")
-
-    def private_bytes(self, encoding: Any, format: Any, encryption_algorithm: Any) -> bytes:
-        raise NotImplementedError("HSM-backed key: private_bytes() not implemented")
-
-
-
-class YubihsmECPrivateKey(ec.EllipticCurvePrivateKey):
-    def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
-        self.hsm_obj = hsm_key
-
-    def sign(self, data: bytes, signature_algorithm: ec.EllipticCurveSignatureAlgorithm) -> bytes:
-        if isinstance(signature_algorithm, ec.ECDSA):
-            return self.hsm_obj.sign_ecdsa(data)
+    def _selected_defs() -> list[OpaqueObject]:
+        # Based on cli arguments, select the certificates to create
+        selected: list[OpaqueObject] = []
+        if all_certs:
+            selected = list(scid_to_opq_def.values())
         else:
-            raise ValueError(f"Unsupported signature algorithm: {signature_algorithm}")
-
-    def public_key(self) -> ec.EllipticCurvePublicKey:
-        res = self.hsm_obj.get_public_key()
-        assert isinstance(res, ec.EllipticCurvePublicKey), f"Unexpected public key type: {type(res)}"
-        return res
-
-    @property
-    def curve(self) -> ec.EllipticCurve:
-        return self.public_key().curve
-
-    @property
-    def key_size(self) -> int:
-        return self.public_key().key_size
-
-    def exchange(self, algorithm: ec.ECDH, peer_public_key: ec.EllipticCurvePublicKey) -> bytes:
-        return self.hsm_obj.derive_ecdh(peer_public_key)
-
-    def private_bytes(self, encoding: Any, format: Any, encryption_algorithm: Any) -> bytes:
-        raise NotImplementedError("HSM-backed key: private_bytes() not implemented")
-
-    def private_numbers(self) -> ec.EllipticCurvePrivateNumbers:
-        raise NotImplementedError("HSM-backed key: private_numbers() not implemented")
-
-
-
-YubihsmPrivateKey = Union[YubihsmRSAPrivateKey, YubihsmEd25519PrivateKey, YubihsmECPrivateKey]
-
-
-class X509CertBuilder:
-
-    def __init__(self, hsm_config: HSMConfig, cert_def: X509Cert, hsm_key: yubihsm.objects.AsymmetricKey):
-        self.hsm_config = hsm_config
-        self.cert_def = cert_def
-        self.cert_def_info = _merge_x509_info_with_defaults(cert_def.x509_info, hsm_config)
-
-        public_key = hsm_key.get_public_key()
-        if isinstance(public_key, rsa.RSAPublicKey):
-            self.private_key: YubihsmPrivateKey = YubihsmRSAPrivateKey(hsm_key)
-        elif isinstance(public_key, ed25519.Ed25519PublicKey):
-            self.private_key = YubihsmEd25519PrivateKey(hsm_key)
-        elif isinstance(public_key, ec.EllipticCurvePublicKey):
-            self.private_key = YubihsmECPrivateKey(hsm_key)
-        else:
-            raise ValueError(f"Unsupported key type: {type(public_key)}")
-
-
-    def _mk_name_attribs(self) -> x509.Name:
-        assert self.cert_def_info.attribs, "X509Info.attribs is missing"
-        name_attributes: List[x509.NameAttribute] = [
-            x509.NameAttribute(NameOID.COMMON_NAME, self.cert_def_info.attribs.common_name)
-        ]
-        if self.cert_def_info.attribs.organization:
-            name_attributes.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, self.cert_def_info.attribs.organization))
-        if self.cert_def_info.attribs.locality:
-            name_attributes.append(x509.NameAttribute(NameOID.LOCALITY_NAME, self.cert_def_info.attribs.locality))
-        if self.cert_def_info.attribs.state:
-            name_attributes.append(x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, self.cert_def_info.attribs.state))
-        if self.cert_def_info.attribs.country:
-            name_attributes.append(x509.NameAttribute(NameOID.COUNTRY_NAME, self.cert_def_info.attribs.country))
-        return x509.Name(name_attributes)
-
-
-    def _mkext_alt_name(self) -> x509.SubjectAlternativeName:
-        assert self.cert_def_info.attribs, "X509Info.attribs.subject_alt_names is missing"
-        san: List[Union[x509.DNSName, x509.IPAddress]] = []
-        for name in self.cert_def_info.attribs.subject_alt_names:
             try:
-                ip = ipaddress.ip_address(name)
-                san.append(x509.IPAddress(ip))
+                cert_ids_int = [int(id.replace("0x", ""), 16) for id in cert_ids]
+                selected = [scid_to_opq_def[id] for id in cert_ids_int if id in scid_to_opq_def]
+                missing = [f"0x{id:04x}" for id in (set(cert_ids_int) - set(scid_to_opq_def.keys()))]
+                if missing:
+                    raise click.ClickException(f"Error: Certificate ID(s) not found: {missing}")
             except ValueError:
-                san.append(x509.DNSName(name))
-        return x509.SubjectAlternativeName(san)
+                raise click.ClickException("Invalid certificate ID(s) specified. Must be in hex format (e.g. 0x1234).")
+        return selected
 
+    def _do_it(conf: HSMConfig, ses: AuthSession|None):
+        creation_order = topological_sort_x509_cert_defs( _selected_defs())
+        id_to_cert_obj: dict[KeyID, x509.Certificate] = {}
 
-    def _mkext_key_usage(self) -> x509.KeyUsage:
-        assert self.cert_def_info.key_usage, "X509Info.key_usage is missing"
-        u = self.cert_def_info.key_usage
-        assert len(u) <= 9, "Non-mapped key usage flags in config. Fix the code here."
-        return x509.KeyUsage(
-            digital_signature = "digitalSignature" in u,
-            content_commitment = "nonRepudiation" in u,
-            key_encipherment = "keyEncipherment" in u,
-            data_encipherment = "dataEncipherment" in u,
-            key_agreement = "keyAgreement" in u,
-            key_cert_sign = "keyCertSign" in u,
-            crl_sign = "cRLSign" in u,
-            encipher_only = "encipherOnly" in u,
-            decipher_only = "decipherOnly" in u)
+        # Create the certificates in topological order
+        for cd in creation_order:
+            x509_info = merge_x509_info_with_defaults(scid_to_x509_def[cd.id].x509_info, conf)
+            issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
+            click.echo(f"Creating 0x{cd.id:04x}: '{cd.label}' ({f"signed by: '{issuer.label}'" if issuer else 'self-signed'})")
+            click.echo("    " + display_x509_info(x509_info).replace("\n", "\n    "))
 
+            if not dry_run:
+                assert isinstance(ses, AuthSession)
 
-    def _mkext_extended_key_usage(self) -> x509.ExtendedKeyUsage:
-        eku_map: Dict[str, x509.ObjectIdentifier] = {
-            "serverAuth": ExtendedKeyUsageOID.SERVER_AUTH,
-            "clientAuth": ExtendedKeyUsageOID.CLIENT_AUTH,
-            "codeSigning": ExtendedKeyUsageOID.CODE_SIGNING,
-            "emailProtection": ExtendedKeyUsageOID.EMAIL_PROTECTION,
-            "timeStamping": ExtendedKeyUsageOID.TIME_STAMPING,
-            "OCSPSigning": ExtendedKeyUsageOID.OCSP_SIGNING,
-            "anyExtendedKeyUsage": ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE
-        }
-        assert self.cert_def_info.extended_key_usage, "X509Info.extended_key_usage is missing"
-        usages = [eku_map[usage] for usage in self.cert_def_info.extended_key_usage if usage in eku_map]
-        return x509.ExtendedKeyUsage(usages)
+                x509_def = scid_to_x509_def[cd.id]
+                key = ses.get_object(x509_def.key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
+                assert isinstance(key, yubihsm.objects.AsymmetricKey)
 
+                # If the certificate is signed by another certificate, get the issuer cert and key
+                issuer_cert = None
+                issuer_key = None
 
-    def _build_cert_base(self, issuer: Optional[x509.Name] = None) -> x509.CertificateBuilder:
-        subject = self._mk_name_attribs()
-        builder = x509.CertificateBuilder().subject_name(subject)
+                if cd.sign_by and cd.sign_by != cd.id:
+                    issuer_cert = id_to_cert_obj.get(cd.sign_by)
+                    if not issuer_cert:
+                        # Issuer cert was not created on this run, try to load it from the HSM
+                        issuer_hsm_obj = ses.get_object(cd.sign_by, yubihsm.defs.OBJECT.OPAQUE)
+                        assert isinstance(issuer_hsm_obj, yubihsm.objects.Opaque)
+                        if not hsm_obj_exists(issuer_hsm_obj):
+                            raise click.ClickException(f"ERROR: Certificate 0x{cd.sign_by:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
+                        issuer_cert = issuer_hsm_obj.get_certificate()
 
-        if issuer:
-            builder = builder.issuer_name(issuer)
-        else:
-            builder = builder.issuer_name(subject)  # Self-signed
+                    # Get a HSM-backed key (adapter) for the issuer cert
+                    key_id = scid_to_x509_def[cd.sign_by].key.id
+                    key_obj = ses.get_object(key_id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
+                    assert isinstance(key_obj, yubihsm.objects.AsymmetricKey)
+                    if not hsm_obj_exists(key_obj):
+                        raise click.ClickException(f"ERROR: Key 0x{key_id:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
+                    issuer_key = make_private_key_adapter(key_obj)
 
-        assert self.cert_def_info.validity_days, "X509Info.validity_days is missing"
+                # Create and sign the certificate
+                builder = X509CertBuilder(conf, x509_def, key)
+                if issuer_cert:
+                    assert issuer_key
+                    id_to_cert_obj[cd.id] = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]
+                else:
+                    id_to_cert_obj[cd.id] = builder.generate_self_signed_cert()
 
-        builder = builder.not_valid_before(datetime.datetime.now(datetime.UTC))
-        builder = builder.not_valid_after(datetime.datetime.now(datetime.UTC) + timedelta(days=self.cert_def_info.validity_days))
-        builder = builder.serial_number(x509.random_serial_number())
-        builder = builder.public_key(self.private_key.public_key())
+        # Put the certificates into the HSM
+        for cd in creation_order:
+            if not dry_run:
+                assert isinstance(ses, AuthSession)
+                hsm_obj = ses.get_object(cd.id, yubihsm.defs.OBJECT.OPAQUE)
+                assert isinstance(hsm_obj, yubihsm.objects.Opaque)
+                if confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, hsm_obj, abort=False):
+                    hsm_obj.put_certificate(
+                        session = ses,
+                        object_id = cd.id,
+                        label = cd.label,
+                        domains = conf.get_domain_bitfield(cd.domains),
+                        capabilities = conf.capability_from_names({'exportable-under-wrap'}),
+                        certificate = id_to_cert_obj[cd.id])
+                    click.echo(f"Certificate 0x{cd.id:04x} created and stored in YubiHSM (serial {dev_serial}).")
 
-        builder = builder.add_extension(self._mkext_alt_name(), critical=False)
-
-        if self.cert_def_info.key_usage:
-            builder = builder.add_extension(self._mkext_key_usage(), critical=True)
-
-        if self.cert_def_info.extended_key_usage:
-            builder = builder.add_extension(self._mkext_extended_key_usage(), critical=False)
-
-        if self.cert_def_info.is_ca:
-            path_length = None if issuer is None else 0  # Root CA: None, Intermediate: 0
-            builder = builder.add_extension(x509.BasicConstraints(ca=True, path_length=path_length), critical=True)
-
-        return builder
-
-
-    def generate_csr(self) -> x509.CertificateSigningRequest:
-        builder = x509.CertificateSigningRequestBuilder().subject_name(self._mk_name_attribs())
-
-        builder = builder.add_extension(self._mkext_alt_name(), critical=False)
-
-        if self.cert_def_info.key_usage:
-            builder = builder.add_extension(self._mkext_key_usage(), critical=True)
-
-        if self.cert_def_info.extended_key_usage:
-            builder = builder.add_extension(self._mkext_extended_key_usage(), critical=False)
-
-        ed = isinstance(self.private_key, YubihsmEd25519PrivateKey)
-        return builder.sign(self.private_key, None if ed else hashes.SHA256())
-
-
-    def generate_self_signed_cert(self) -> x509.Certificate:
-        builder = self._build_cert_base()
-        ed = isinstance(self.private_key, YubihsmEd25519PrivateKey)
-        return builder.sign(self.private_key, None if ed else hashes.SHA256())
-
-
-    def generate_cross_signed_intermediate_cert(self, issuer_certs: List[x509.Certificate], issuer_keys: List[YubihsmPrivateKey]) -> List[x509.Certificate]:
-        if len(issuer_certs) != len(issuer_keys):
-            raise ValueError("The number of issuer certificates must match the number of issuer keys")
-
-        cross_signed_certs = []
-
-        for issuer_cert, issuer_key in zip(issuer_certs, issuer_keys):
-            builder = self._build_cert_base(issuer=issuer_cert.subject)
-
-            # Add Authority Key Identifier
-            authority_key_identifier = x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_key.public_key())
-            builder = builder.add_extension(authority_key_identifier, critical=False)
-
-            # Add Subject Key Identifier
-            subject_key_identifier = x509.SubjectKeyIdentifier.from_public_key(self.private_key.public_key())
-            builder = builder.add_extension(subject_key_identifier, critical=False)
-
-            ed = isinstance(issuer_key, YubihsmEd25519PrivateKey)
-            cert = builder.sign(issuer_key, None if ed else hashes.SHA256())
-
-            cross_signed_certs.append(cert)
-
-        return cross_signed_certs
-
-
-
-
-
-def _merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSMConfig) -> X509Info:
-    defaults = hsm_config.general.x509_defaults
-    if x509_info is None:
-        return deepcopy(defaults)
-
-    merged = deepcopy(x509_info)
-
-    if merged.is_ca is None:
-        merged.is_ca = defaults.is_ca
-
-    if merged.validity_days is None:
-        merged.validity_days = defaults.validity_days
-
-    if merged.attribs is None:
-        merged.attribs = deepcopy(defaults.attribs)
+    if dry_run:
+        click.echo(click.style("DRY RUN. Would create the following certificates:", fg='yellow'))
+        _do_it(conf, None)
+        click.echo(click.style("End of dry run. NOTHING WAS ACTUALLY DONE.", fg='yellow'))
     else:
-        for attr in ['organization', 'locality', 'state', 'country']:
-            if getattr(merged.attribs, attr) is None:
-                setattr(merged.attribs, attr, getattr(defaults.attribs, attr))
-
-        if defaults.attribs:
-            if not merged.attribs.subject_alt_names:
-                merged.attribs.subject_alt_names = defaults.attribs.subject_alt_names.copy()
-
-    if merged.key_usage is None:
-        merged.key_usage = defaults.key_usage.copy() if defaults.key_usage else None
-
-    if merged.extended_key_usage is None:
-        merged.extended_key_usage = defaults.extended_key_usage.copy() if defaults.extended_key_usage else None
-
-    return merged
+        with open_hsm_session_with_default_admin(ctx) as (conf, ses):
+            _do_it(conf, ses)
 
 
-# Example usage
-if __name__ == "__main__":
-    hsm_config = load_hsm_config("hsm-conf.yml")
 
-    rsa_root_ca_config = hsm_config.x509.root_certs[0]  # RSA root CA
-    ed25519_root_ca_config = hsm_config.x509.root_certs[1]  # Ed25519 root CA
-    ec_root_ca_config = hsm_config.x509.root_certs[2]  # EC root CA
-    tls_ca_config = hsm_config.tls.intermediate_certs[0]
-
-    ctx = click.Context(
-        command=click.Command('tls', params=[]),
-        obj={
-            'config': hsm_config,
-            'devserial': hsm_config.general.master_device
-        })
-
-    with open_hsm_session_with_default_admin(ctx) as (conf, ses):
-        # Generate root CAs (RSA, Ed25519, EC)
-        root_cas = []
-        for root_config in [rsa_root_ca_config, ed25519_root_ca_config, ec_root_ca_config]:
-            root_hsm_key = ses.get_object(root_config.key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-            assert isinstance(root_hsm_key, yubihsm.objects.AsymmetricKey)
-            root_cert_builder = X509CertBuilder(hsm_config, root_config, root_hsm_key)
-            root_cert = root_cert_builder.generate_self_signed_cert()
-            root_cas.append((root_cert, root_cert_builder.private_key))
-
-        # Generate EC TLS Intermediate CA
-        tls_hsm_key = ses.get_object(tls_ca_config.key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-        assert isinstance(tls_hsm_key, yubihsm.objects.AsymmetricKey)
-        tls_cert_builder = X509CertBuilder(hsm_config, tls_ca_config, tls_hsm_key)
-        tls_csr = tls_cert_builder.generate_csr()
-
-        # Cross-sign the intermediate CA with all root CAs
-        cross_signed_certs = tls_cert_builder.generate_cross_signed_intermediate_cert(
-            [cert for cert, _ in root_cas],
-            [key for _, key in root_cas]
-        )
-
-        # Output results
-        print("\nTLS Intermediate CA CSR:")
-        print(tls_csr.public_bytes(Encoding.PEM).decode())
-
-        for i, cert in enumerate(cross_signed_certs):
-            key_type = type(root_cas[i][1]).__name__.replace('Yubihsm', '').replace('PrivateKey', '')
-            print(f"\nTLS Intermediate CA Certificate (signed by {key_type} Root):")
-            print(cert.public_bytes(Encoding.PEM).decode())
+'''
+def create_pem_bundle(certs: List[x509.Certificate]) -> str:
+    """
+    Create a PEM-encoded bundle of certificates.
+    """
+    return "".join(cert.public_bytes(Encoding.PEM).decode() for cert in certs)
+'''

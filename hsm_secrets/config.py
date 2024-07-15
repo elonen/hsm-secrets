@@ -201,6 +201,7 @@ class HSMAuthKey(HSMKeyBase):
 OpaqueObjectAlgorithm = Literal["opaque-data", "opaque-x509-certificate"]
 class OpaqueObject(HSMKeyBase):
     algorithm: OpaqueObjectAlgorithm
+    sign_by: Optional[KeyID]    # ID of the key to sign the object with (if applicable)
 
 # -- Helper models --
 X509KeyUsage = Literal[
@@ -235,8 +236,7 @@ class X509Info(NoExtraBaseModel):
 class X509Cert(NoExtraBaseModel):
     key: HSMAsymmetricKey
     x509_info: Optional[X509Info] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
-    cert: OpaqueObject
-
+    signed_certs: List[OpaqueObject] = Field(default_factory=list)  # Storage for signed certificates
 
 
 # -----  Subsystem models -----
@@ -295,22 +295,18 @@ def load_hsm_config(file_name: str) -> 'HSMConfig':
     seen_ids = set()
     for _, key_list in items_per_type.items():
         for key in key_list:
-            if key.id in seen_ids:
-                raise click.ClickException(f"Duplicate key ID '{key.id}' found in the configuration file. YubiHSM allows this between different key types, but this tool enforces strict uniqueness.")
-            seen_ids.add(key.id)
-
+            if hasattr(key, 'id'):
+                if key.id in seen_ids:
+                    raise click.ClickException(f"Duplicate key ID '{key.id}' found in the configuration file. YubiHSM allows this between different key types, but this tool enforces strict uniqueness.")
+                seen_ids.add(key.id)
     return res
 
 
-def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
+def find_config_items_of_class(conf: HSMConfig, cls: type) -> list:
     """
-    Find all instances of each key type in the configuration file.
-    Returns a dictionary with lists of each key type, and a mapping from config type to YubiHSM object type.
+    Find all instances of a given class in the configuration object, recursively.
     """
     from typing import Type, TypeVar, Generator, Any
-    import yubihsm.objects
-
-    # Util function to find all instances of a certain type in a nested structure
     T = TypeVar('T')
     def find_instances(obj: Any, target_type: Type[T]) -> Generator[T, None, None]:
         if isinstance(obj, target_type):
@@ -325,6 +321,17 @@ def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
             for value in vars(obj).values():
                 yield from find_instances(value, target_type)
 
+    return list(find_instances(conf, cls))
+
+
+
+def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
+    """
+    Find all instances of each key type in the configuration file.
+    Returns a dictionary with lists of each key type, and a mapping from config type to YubiHSM object type.
+    """
+    import yubihsm.objects
+
     from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
     config_to_hsm_type = {
         HSMAuthKey: yubihsm.objects.AuthenticationKey,
@@ -334,5 +341,5 @@ def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
         HSMAsymmetricKey: yubihsm.objects.AsymmetricKey,
         OpaqueObject: yubihsm.objects.Opaque,
     }
-    config_items_per_type: dict = {t: list(find_instances(conf, t)) for t in config_to_hsm_type.keys()} # type: ignore
+    config_items_per_type: dict = {t: find_config_items_of_class(conf, t) for t in config_to_hsm_type.keys()} # type: ignore
     return config_items_per_type, config_to_hsm_type

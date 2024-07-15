@@ -3,7 +3,7 @@
 #
 # Most keys are provided in RSA, Ed25519 and NIST EC formats.
 # Ed25519 is recommended whenever possible, RSA (super slow on YubiHSM) is for compatibility with older systems.
-# NIST EC is not recommended unless required by a specific system (due to past implementation weaknesses, backdoor suspicions, etc).
+# NIST EC is fast but has suffered from past implementation weaknesses, backdoor suspicions, etc.
 
 general:
     master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
@@ -153,7 +153,7 @@ x509:
     root_certs:
         -
           key:
-            label: x509-rsa-ca-root-key
+            label: rsa-ca-root-key
             id: 0x0210
             domains: ['x509']
             algorithm: rsa4096
@@ -163,20 +163,21 @@ x509:
                 - exportable-under-wrap
           x509_info:
             attribs:
-                common_name: 'Example Root CA (RSA)'
+                common_name: 'Example Root A1'
                 subject_alt_names: []
             key_usage:
                 - keyCertSign
                 - cRLSign
             extended_key_usage: []
-          cert:
-            id: 0x0211
-            label: x509-rsa-ca-root-cert
-            domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']   # Allow the signed root cert to be read by all services
-            algorithm: opaque-x509-certificate
+          signed_certs:
+            - id: 0x0211
+              label: rsa-ca-root-cert
+              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']   # Allow the signed root cert to be read by all services
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0211   # Root CA signs its own certificate
         -
           key:
-            label: x509-ed25519-ca-root-key
+            label: ed25519-ca-root-key
             id: 0x0220
             domains: ['x509']
             algorithm: ed25519
@@ -185,20 +186,21 @@ x509:
                 - exportable-under-wrap
           x509_info:
             attribs:
-                common_name: 'Example Root CA (ED)'
+                common_name: 'Example Root A1'
                 subject_alt_names: []
             key_usage:
                 - keyCertSign
                 - cRLSign
             extended_key_usage: []
-          cert:
-            id: 0x0221
-            label: x509-ed25519-ca-root-cert
-            domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
-            algorithm: opaque-x509-certificate
+          signed_certs:
+            - id: 0x0221
+              label: ed25519-ca-root-cert
+              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0221
         -
             key:
-                label: x509-ecdsa-ca-root-key
+                label: ecp384-ca-root-key
                 id: 0x0230
                 domains: ['x509']
                 algorithm: ecp384
@@ -207,17 +209,18 @@ x509:
                     - exportable-under-wrap
             x509_info:
                 attribs:
-                    common_name: 'Example Root CA (EC)'
+                    common_name: 'Example Root A1'
                     subject_alt_names: []
                 key_usage:
                     - keyCertSign
                     - cRLSign
                 extended_key_usage: []
-            cert:
-                id: 0x0231
-                label: x509-ecdsa-ca-root-cert
-                domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
-                algorithm: opaque-x509-certificate
+            signed_certs:
+                - id: 0x0231
+                  label: ecp384-ca-root-cert
+                  domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
+                  algorithm: opaque-x509-certificate
+                  sign_by: 0x0231
 
 # TLS (HTTPS, TCP, ...) intermediate keys.
 tls:
@@ -246,17 +249,18 @@ tls:
                 - serverAuth
                 - clientAuth
                 - timeStamping
-          cert:
-            id: 0x0311
-            label: tls-rsa-intermediate-cert
-            domains: ['tls']    # Only allow TLS services to read this cert
-            algorithm: opaque-x509-certificate
+          signed_certs:
+            - id: 0x0311
+              label: tls-rsa-intermediate-cert
+              domains: ['tls']    # Only allow TLS services to read this cert
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0211   # RSA Root CA
         -
           key:
-            label: tls-ed25519-intermediate-key
+            label: tls-ecp384-intermediate-key
             id: 0x0320
             domains: ['tls']
-            algorithm: ed25519
+            algorithm: ecp384
             capabilities:
                 - sign-eddsa
                 - exportable-under-wrap
@@ -274,11 +278,12 @@ tls:
                 - serverAuth
                 - clientAuth
                 - timeStamping
-          cert:
-            id: 0x0321
-            label: tls-ed25519-intermediate-cert
-            domains: ['tls']
-            algorithm: opaque-x509-certificate
+          signed_certs:
+            - id: 0x0321
+              label: tls-ed25519-intermediate-cert
+              domains: ['tls']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0221   # Ed25519 Root CA
 
 
 # NAC (Network Access Control) intermediate keys for 802.1X
@@ -303,11 +308,12 @@ nac:
                 - serverAuth
                 - clientAuth
                 - timeStamping
-          cert:
-            id: 0x0411
-            label: nac-rsa-intermediate-cert
-            domains: ['nac']
-            algorithm: opaque-x509-certificate
+          signed_certs:
+            - id: 0x0411
+              label: nac-rsa-intermediate-cert
+              domains: ['nac']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0211
         -
           key:
             label: nac-ed25519-intermediate-key
@@ -326,11 +332,12 @@ nac:
                 - serverAuth
                 - clientAuth
                 - timeStamping
-          cert:
-            id: 0x0421
-            label: nac-ed25519-intermediate-cert
-            domains: ['nac']
-            algorithm: opaque-x509-certificate
+          signed_certs:
+            - id: 0x0421
+              label: nac-ed25519-intermediate-cert
+              domains: ['nac']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0221
 
 
 # GPG/OpenPGP keys
@@ -410,11 +417,12 @@ codesign:
         extended_key_usage:
             - codeSigning
             - timeStamping
-      cert:
-        id: 0x0611
-        label: codesign-rsa-intermediate-cert
-        domains: ['codesign']
-        algorithm: opaque-x509-certificate
+      signed_certs:
+        - id: 0x0611
+          label: codesign-rsa-intermediate-cert
+          domains: ['codesign']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0211
     -
       key:
         label: codesign-ed25519-intermediate-key
@@ -435,11 +443,12 @@ codesign:
         extended_key_usage:
             - codeSigning
             - timeStamping
-      cert:
-        id: 0x0621
-        label: codesign-ed25519-intermediate-cert
-        domains: ['codesign']
-        algorithm: opaque-x509-certificate
+      signed_certs:
+        - id: 0x0621
+          label: codesign-ed25519-intermediate-cert
+          domains: ['codesign']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0221
 
 
 # Certificate-based SSH authentication keys.
@@ -468,7 +477,7 @@ ssh:
             # generate asymmetric 0 0x0200 ssh-ed25519-ca-root-key all sign-pkcs,sign-ssh-certificate ed25519
             # get pubkey 0 0x0200 ssh-ed25519-ca-root-key.pub.pem
         -
-            label: ssh-ecdsa-ca-root-key
+            label: ssh-ecp384-ca-root-key
             id: 0x0730
             domains: ['ssh']
             algorithm: ecp384

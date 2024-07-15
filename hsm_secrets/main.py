@@ -9,6 +9,7 @@ from hsm_secrets.tls import cmd_tls
 from hsm_secrets.passwd import cmd_pass
 from hsm_secrets.config import HSMConfig, load_hsm_config
 from hsm_secrets.utils import list_yubikey_hsm_creds
+from hsm_secrets.x509 import cmd_x509
 
 
 # --- Main CLI Entrypoint ---
@@ -58,6 +59,7 @@ cli.add_command(cmd_tls, "tls")
 cli.add_command(cmd_pass, "pass")
 cli.add_command(cmd_hsm, "hsm")
 cli.add_command(cmd_nop, "nop")
+cli.add_command(cmd_x509, "x509")
 
 if __name__ == '__main__':
     cli()
