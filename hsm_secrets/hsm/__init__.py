@@ -536,6 +536,30 @@ def compare_config(ctx: click.Context, alldevs: bool, use_user_auth: bool, creat
                 do_it(conf, ses)
 
 
+# ---------------
+
+@cmd_hsm.command('attest-key')
+@click.pass_context
+@click.argument('cert_id', required=True, type=str, metavar='<id>')
+@click.option('--out', '-o', type=click.File('w', encoding='utf8'), help='Output file (default: stdout)', default=click.get_text_stream('stdout'))
+def attest_key(ctx: click.Context, cert_id: str, out: click.File):
+    """Attest an asymmetric key in the YubiHSM
+
+    Create an a key attestation certificate, signed by the
+    Yubico attestation key, for the given key ID (in hex).
+    """
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    id = int(cert_id.replace('0x', ''), 16)
+    with open_hsm_session_with_default_admin(ctx) as (conf, ses):
+        key = ses.get_object(id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
+        assert isinstance(key, yubihsm.objects.AsymmetricKey)
+        if not hsm_obj_exists(key):
+            raise click.ClickException(f"Key with ID 0x{id:04x} not found in the YubiHSM.")
+        cert = key.attest()
+        pem = cert.public_bytes(Encoding.PEM).decode('UTF-8')
+        out.write(pem)  # type: ignore
+        click.echo(f"Key 0x{id:04x} attestation certificate written to '{out.name}'")
 
 # ---------------
 

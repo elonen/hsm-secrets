@@ -134,9 +134,12 @@ service_keys:
         id: 0xD010
         domains: ['nac']
         capabilities:
-                - get-pseudo-random
                 - sign-pss
                 - sign-pkcs
+                - sign-ecdsa
+                - sign-eddsa
+                - sign-hmac
+                - get-pseudo-random
                 - exportable-under-wrap
                 - change-authentication-key  # Could allow DoS on the key, but lesser evil than not being able to rotate it
         delegated_capabilities: []

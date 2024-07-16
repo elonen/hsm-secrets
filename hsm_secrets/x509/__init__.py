@@ -1,8 +1,4 @@
 from cryptography import x509
-from cryptography.hazmat.primitives.serialization import Encoding
-
-from typing import List
-
 from yubihsm.core import AuthSession
 
 from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_all_config_items_per_type, find_config_items_of_class, load_hsm_config
