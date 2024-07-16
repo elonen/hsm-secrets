@@ -69,7 +69,7 @@ def show(ctx: click.Context, hostname: str, salt_file: str, salt: str):
         password = generate_password(conf, ses, hostname, salt, salt_file)
 
         hasher = pyescrypt.Yescrypt(mode=pyescrypt.Mode.MCF)
-        hashed = hasher.digest(password=password.encode('utf8'), salt=secrets.token_bytes(32))
+        hashed = hasher.digest(password=password.encode('utf8'), salt=ses.get_pseudo_random(32))
         hasher.compare(password.encode('utf-8'), hashed)
 
         click.echo(f"\nDerived 128 bit BIP39 password for '{hostname}':")

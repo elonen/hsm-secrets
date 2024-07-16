@@ -40,7 +40,7 @@ def swear_you_are_on_airgapped_computer():
 @click.group()
 @click.pass_context
 def cmd_hsm(ctx):
-    """YubiHSM2 management / super admin commands
+    """YubiHSM2 device management commands
 
     These commands generally require a group of HSM custodians working together
     on an airgapped machine to perform security-sensitive operations on the YubiHSMs.
@@ -214,7 +214,8 @@ def add_shared_admin_key(ctx: click.Context, num_shares: int, threshold: int, sk
         if skip_ceremony:
             apply_password_fn(prompt_for_secret("Enter the (new) shared admin password to store", confirm=True))
         else:
-            cli_splitting_ceremony(num_shares, threshold, apply_password_fn)
+            secret = ses.get_pseudo_random(256//8)
+            cli_splitting_ceremony(num_shares, threshold, apply_password_fn, pre_secret=secret)
 
         click.echo("OK. Shared admin key added successfully.")
 
@@ -322,12 +323,12 @@ def set_yubikey_hsm_auth_mgt_key(ctx: click.Context):
 
 # ---------------
 
-@cmd_hsm.command('add-user-auth')
+@cmd_hsm.command('add-user-yubikey')
 @click.pass_context
-@click.option('--label', required=True, help="Label of the Yubikey hsmauth slot (in config file)")
+@click.option('--label', required=True, help="Label of the Yubikey hsmauth slot / HSM key label")
 @click.option('--alldevs', is_flag=True, help="Add to all devices")
-def add_user_auth(ctx: click.Context, label: str, alldevs: bool):
-    """Add a new user auth key to a) Yubikey hsmauth slot and b) the YubiHSM(s)
+def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
+    """Add a new user auth key to a) Yubikey hsmauth slot, and b) the YubiHSM(s)
 
     Generate a new password-protected public auth key, and store it in the
     YubiHSM(s) as a user key. The same label will be used on both the Yubikey and the YubiHSM.
@@ -374,7 +375,10 @@ def add_user_auth(ctx: click.Context, label: str, alldevs: bool):
         click.echo(f"NOTE: This Yubikey's version is {ykver} (< 5.6.0). (Only symmetric keys supported.)")
 
     click.echo("Generating symmetric key for the slot...")
-    key_enc, key_mac = secrets.token_bytes(16), secrets.token_bytes(16)  # key pair, 128 bits each
+    key_enc, key_mac = None, None
+    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+        key_enc = ses.get_pseudo_random(128//8)
+        key_mac = ses.get_pseudo_random(128//8)
 
     # Store the auth key on Yubikey
     cred = yk_auth_ses.put_credential_symmetric(
