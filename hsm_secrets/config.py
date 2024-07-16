@@ -246,7 +246,6 @@ class Admin(NoExtraBaseModel):
     default_admin_key: HSMAuthKey
     shared_admin_key: HSMAuthKey
     wrap_key: HSMWrapKey
-    audit_key: HSMAuthKey
 
 class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]

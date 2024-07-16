@@ -1,15 +1,10 @@
-import re
-import secrets
 import sys
 import click
 from hsm_secrets.config import HSMConfig, find_all_config_items_per_type
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
-from hsm_secrets.utils import group_by_4, hsm_generate_asymmetric_key, hsm_generate_hmac_key, hsm_generate_symmetric_key, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, hsm_put_wrap_key, open_hsm_session_with_default_admin, open_hsm_session_with_shared_admin, open_hsm_session_with_yubikey, print_yubihsm_object, prompt_for_secret, pw_check_fromhex, secure_display_secret
+from hsm_secrets.utils import hsm_generate_asymmetric_key, hsm_generate_hmac_key, hsm_generate_symmetric_key, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_wrap_key, open_hsm_session_with_default_admin, open_hsm_session_with_shared_admin, open_hsm_session_with_yubikey, print_yubihsm_object, prompt_for_secret, pw_check_fromhex, secure_display_secret
 import yubihsm.defs, yubihsm.exceptions, yubihsm.objects
 from yubihsm.core import AuthSession
-
-import yubikit.hsmauth
-import ykman.scripting
 
 from click import style
 
@@ -98,14 +93,14 @@ def list_objects(ctx: click.Context, use_default_admin: bool, alldevs: bool):
 
 # ---------------
 
-@cmd_hsm.command('add-insecure-admin-key')
+@cmd_hsm.command('insecure-admin-key-enable')
 @click.pass_context
 @click.option('--use-backup-secret', is_flag=True, help="Use backup secret instead of shared secret")
 @click.option('--alldevs', is_flag=True, help="Add on all devices")
-def add_insecure_admin_key(ctx: click.Context, use_backup_secret: bool, alldevs: bool):
-    """Re-add insecure default admin key for management operations
+def insecure_admin_key_enable(ctx: click.Context, use_backup_secret: bool, alldevs: bool):
+    """Re-add insecure default admin key to HSM
 
-    Using either a shared secret or a backup secret, (re-)create the default admin key on the YubiHSM.
+    Using either a shared secret or a backup secret, (re-)create the default admin key on the YubiHSM(s).
     This is a temporary key that should be removed after the management operations are complete.
     """
     swear_you_are_on_airgapped_computer()
@@ -144,11 +139,11 @@ def add_insecure_admin_key(ctx: click.Context, use_backup_secret: bool, alldevs:
 
 # ---------------
 
-@cmd_hsm.command('remove-insecure-admin-key')
+@cmd_hsm.command('insecure-admin-key-disable')
 @click.pass_context
 @click.option('--alldevs', is_flag=True, help="Remove on all devices")
 @click.option('--force', is_flag=True, help="Force removal even if no other admin key exists")
-def remove_insecure_admin_key(ctx: click.Context, alldevs: bool, force: bool):
+def insecure_admin_key_disable(ctx: click.Context, alldevs: bool, force: bool):
     """Remove insecure default admin key from the YubiHSM(s)
 
     Last step in the management workflow. Remove the default admin key from the YubiHSM(s).
@@ -189,13 +184,13 @@ def remove_insecure_admin_key(ctx: click.Context, alldevs: bool, force: bool):
 
 # ---------------
 
-@cmd_hsm.command('add-shared-admin-key')
+@cmd_hsm.command('make-shared-admin-key')
 @click.option('--num-shares', type=int, required=True, help="Number of shares to generate")
 @click.option('--threshold', type=int, required=True, help="Number of shares required to reconstruct the key")
 @click.option('--skip-ceremony', is_flag=True, default=False, help="Skip the secret sharing ceremony, ask for password directly")
 @click.pass_context
-def add_shared_admin_key(ctx: click.Context, num_shares: int, threshold: int, skip_ceremony: bool):
-    """Host a Secret Sharing Ceremony to add admin key to the master YubiHSM
+def make_shared_admin_key(ctx: click.Context, num_shares: int, threshold: int, skip_ceremony: bool):
+    """Host an admin key Secret Sharing Ceremony
 
     The ceremony is a formal multi-step process where the system generates a new shared admin key
     and splits it into multiple shares. The shares are then distributed to the custodians.
@@ -259,157 +254,6 @@ def make_wrap_key(ctx: click.Context):
 
 # ---------------
 
-def ask_yubikey_hsm_mgt_key(prompt: str, confirm = False, default = False) -> tuple[str, bytes]:
-    """Prompt user for a Yubikey hsmauth Management Key (32 hex characters)"""
-
-    def validate_mgt_key(value: str) -> str|None:
-        value = value.replace(' ', '')
-        if not re.match(r'^[0-9a-f]{32}$', value):
-            return "Management Key must be 32 lower case hex digit."
-        if pw_check_fromhex(value) is not None:
-            return "Failed to decode hex string."
-        return None
-
-    default_str = "0000 0000 0000 0000 0000 0000 0000 0000" if default else None    # Yubico's default mgt key
-    key_str = prompt_for_secret(prompt, default=default_str, confirm=confirm, check_fn=validate_mgt_key).replace(' ', '')
-    key_bytes = bytes.fromhex(key_str)
-    return (key_str, key_bytes)
-
-# ---------------
-
-def change_yubikey_hsm_mgt_key(auth_ses: yubikit.hsmauth.HsmAuthSession, old_key_bin=None, ask_before_change=True):
-    """Change the Yubikey hsmauth Management Key (aka. Admin Access Code)"""
-
-    click.echo("A 'Management Key' is required to edit the Yubikey hsmauth slots.")
-    click.echo("It must be a 32 hex characters long, e.g. '0011 2233 4455 6677 8899 aabb ccdd eeff'")
-    click.echo("This unwieldy key is used rarely. You should probably store it in a password manager.")
-    click.echo("")
-
-    if old_key_bin is None:
-        _, old_key_bin = ask_yubikey_hsm_mgt_key("Enter the OLD Management Key", default=True)
-
-    if not ask_before_change or click.confirm("Change Management Key now?", default=False, abort=False):
-        new_mgt_key = None
-        if click.prompt("Generate the key ('n' = enter manually)?", type=bool, default="y"):
-            new_mgt_key_bin = secrets.token_bytes(16)
-            new_mgt_key = new_mgt_key_bin.hex().lower()
-            assert len(new_mgt_key) == 32
-
-            click.echo("Key generated. It will be now shown on screen. Everyone else should look away.")
-            click.echo("When you have stored the key, press ENTER again to continue.")
-            click.echo("")
-            click.pause("Press ENTER to reveal the key.")
-            secure_display_secret(group_by_4(new_mgt_key))
-        else:
-            new_mgt_key, new_mgt_key_bin = ask_yubikey_hsm_mgt_key("Enter the new Management Key", confirm=True)
-
-        auth_ses.put_management_key(old_key_bin, new_mgt_key_bin)
-        click.echo("Management Key changed.")
-
-# ---------------
-
-@cmd_hsm.command('set-yubikey-hsmauth-mgt-key')
-@click.pass_context
-def set_yubikey_hsm_auth_mgt_key(ctx: click.Context):
-    """Set the Yubikey hsmauth Management Key (aka. Admin Access Code)
-
-    This can also be done with the `yubihsm-auth -a change-mgmkey -k <oldkey>` command.
-    It's included here for convenience.
-    """
-    yubikey = ykman.scripting.single()    # Connect to the first Yubikey found, prompt user to insert one if not found
-    auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
-    _, old_mgt_key_bin = ask_yubikey_hsm_mgt_key("Enter the old Management Key", default=True)
-    change_yubikey_hsm_mgt_key(auth_ses, old_mgt_key_bin, ask_before_change=False)
-
-# ---------------
-
-@cmd_hsm.command('add-user-yubikey')
-@click.pass_context
-@click.option('--label', required=True, help="Label of the Yubikey hsmauth slot / HSM key label")
-@click.option('--alldevs', is_flag=True, help="Add to all devices")
-def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
-    """Add a new user auth key to a) Yubikey hsmauth slot, and b) the YubiHSM(s)
-
-    Generate a new password-protected public auth key, and store it in the
-    YubiHSM(s) as a user key. The same label will be used on both the Yubikey and the YubiHSM.
-    """
-    conf: HSMConfig = ctx.obj['config']
-    user_key_configs = [uk for uk in conf.user_keys if uk.label == label]
-    if not user_key_configs:
-        raise click.ClickException(f"User key with label '{label}' not found in the configuration file.")
-    elif len(user_key_configs) > 1:
-        raise click.ClickException(f"Multiple user keys with label '{label}' found in the configuration file.")
-
-    user_key_conf = user_key_configs[0]
-
-    yubikey = ykman.scripting.single()    # Connect to the first Yubikey found, prompt user to insert one if not found
-    yk_auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
-    existing_slots = list(yk_auth_ses.list_credentials())
-
-    old_slot = None
-    for slot in existing_slots:
-        if slot.label == label:
-            old_slot = slot
-            click.echo(f"Yubikey hsmauth slot with label '{label}' already exists.")
-            click.confirm("Overwrite the existing slot?", default=False, abort=True)    # Abort if user doesn't want to overwrite
-
-    click.echo("Changing Yubikey hsmauth slots requires the Management Key (aka. Admin Access Code)")
-    click.echo("(Note: this tool removes spaces, so you can enter the mgt key with or without grouping.)")
-
-    mgt_key, mgt_key_bin = ask_yubikey_hsm_mgt_key("Enter the Management Key", default=True)
-    if old_slot:
-        yk_auth_ses.delete_credential(mgt_key_bin, old_slot.label)
-        click.echo(f"Old key in slot '{old_slot.label}' deleted.")
-
-    click.echo("")
-    click.echo("Yubikey hsmauth slots are protected by a password.")
-    click.echo("It doesn't have to be very strong, as it's only used as a second factor for the Yubikey.")
-    click.echo("It should be something you can remember, but also stored in a password manager.")
-    click.echo("")
-    cred_password = prompt_for_secret("Enter (ascii-only) password or PIN for the slot", confirm=True, enc_test='ascii')
-
-    ykver = str(yubikey.info.version)
-    if ykver >= "5.6.0":
-        click.echo(f"NOTE: This Yubikey's version {ykver} would support asymmetric keys. Maybe add support for this command?")
-    else:
-        click.echo(f"NOTE: This Yubikey's version is {ykver} (< 5.6.0). (Only symmetric keys supported.)")
-
-    click.echo("Generating symmetric key for the slot...")
-    key_enc, key_mac = None, None
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
-        key_enc = ses.get_pseudo_random(128//8)
-        key_mac = ses.get_pseudo_random(128//8)
-
-    # Store the auth key on Yubikey
-    cred = yk_auth_ses.put_credential_symmetric(
-        management_key=mgt_key_bin,
-        label=label,
-        key_enc=key_enc,
-        key_mac=key_mac,
-        credential_password=cred_password,
-        touch_required=True)
-
-    click.echo(f"Auth key added to the Yubikey (serial {yubikey.info.serial}) hsmauth slot '{cred.label}' (type: {repr(cred.algorithm)})")
-
-    # Store it in the YubiHSMs
-    dev_serials = conf.general.all_devices.keys() if alldevs else [ctx.obj['devserial']]
-    for serial in dev_serials:
-        with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
-            hsm_put_symmetric_auth_key(ses, serial, conf, user_key_conf, key_enc, key_mac)
-
-    click.echo("OK. User key added" + (f" to all devices (serials: {', '.join(dev_serials)})" if alldevs else "") + ".")
-    click.echo("")
-    click.echo("TIP! Test with the `list-objects` command to check that Yubikey hsmauth method works correctly.")
-
-    # Also offer to change Yubikey hsmauth Management Key if it's the default one
-    if mgt_key == "00000000000000000000000000000000":
-        click.echo("")
-        click.echo("WARNING! You are using factory default for Yubikey hsmauth Management Key.")
-        click.echo("")
-        change_yubikey_hsm_mgt_key(yk_auth_ses, mgt_key_bin, ask_before_change=True)
-
-# ---------------
-
 @cmd_hsm.command('delete-object')
 @click.option('--id', required=True, type=str, help="ID of the object to delete (in hex)")
 @click.option('--alldevs', is_flag=True, help="Delete on all devices")
@@ -444,11 +288,11 @@ def delete_object(ctx: click.Context, id: str, alldevs: bool, force: bool):
 
 @cmd_hsm.command('compare-config')
 @click.option('--alldevs', is_flag=True, help="Compare all devices")
-@click.option('--use-user-auth', is_flag=True, help="Use user auth key instead of default admin key")
+@click.option('--user-auth', is_flag=True, help="Auth with user key instead of default admin key")
 @click.option('--create', is_flag=True, help="Create missing keys in the YubiHSM")
 @click.pass_context
-def compare_config(ctx: click.Context, alldevs: bool, use_user_auth: bool, create: bool):
-    """Check that the YubiHSM configuration matches the configuration file (i.e. all keys are present)
+def compare_config(ctx: click.Context, alldevs: bool, user_auth: bool, create: bool):
+    """Compare config file with device contents
 
     Lists all objects by type (auth, wrap, etc.) in the configuration file, and then checks
     that they exist in the YubiHSM(s). Shows which objects are missing and which are found.
@@ -461,7 +305,7 @@ def compare_config(ctx: click.Context, alldevs: bool, use_user_auth: bool, creat
     """
 
     if create:
-        if alldevs or use_user_auth:
+        if alldevs or user_auth:
             raise click.ClickException("The --create option only supports one device at a time, and requires the default admin key.")
 
     conf = ctx.obj['config']
@@ -532,7 +376,7 @@ def compare_config(ctx: click.Context, alldevs: bool, use_user_auth: bool, creat
 
             click.echo("")
 
-        if use_user_auth:
+        if user_auth:
             with open_hsm_session_with_yubikey(ctx, device_serial=serial) as (conf, ses):
                 do_it(conf, ses)
         else:
@@ -570,5 +414,5 @@ def attest_key(ctx: click.Context, cert_id: str, out: click.File):
 @cmd_hsm.command('clone-master-hsm')
 @click.pass_context
 def clone_master_hsm(ctx: click.Context):
-    """Clone the keys from the master YubiHSM to other connected YubiHSMs"""
+    """Clone master device contents to other YubiHSMs"""
     raise NotImplementedError("This command is not yet implemented.")

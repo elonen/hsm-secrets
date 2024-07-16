@@ -82,17 +82,6 @@ admin:
         capabilities: ["wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
         delegated_capabilities: ['all']
 
-    # Dedicated audit key for reviewing logs.
-    # The log listings form a continuous blockchain and the `get-log-entries` wipes the log.
-    # => Each call must be made consciously and must store the results to uphold the chain of evidence.
-    # This is why the user keys are not allowed to call this capability wantonly.
-    audit_key:
-        label: log-audit
-        id: 0x0008
-        domains: []
-        capabilities: ['get-log-entries']
-        delegated_capabilities: ['all']
-
 
 # User keys are for general use by human operators.
 #
@@ -129,6 +118,20 @@ user_keys:
 # Service keys are for automated use by services, probably less well authenticated than user keys.
 # These should be strictly domain-limited, and have limited capabilities.
 service_keys:
+
+    # Dedicated audit key for reviewing logs.
+    # The log listings form a continuous blockchain and the `get-log-entries` wipes the log.
+    # => Each call must be made consciously and must store the results to uphold the chain of evidence.
+    # This is why the user keys are not allowed to call this capability wantonly.
+    -
+        label: log-audit
+        id: 0x0008
+        domains: ['all']
+        capabilities: ['get-log-entries']
+        delegated_capabilities: []
+
+    # Service key for NAC (Network Access Control) for
+    # signing 802.1X EAP-TLS certificates.
     -
         label: service_nac
         id: 0xD010
