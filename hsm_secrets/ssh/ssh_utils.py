@@ -16,7 +16,7 @@ def create_template(ts_public_key: rsa.RSAPublicKey | ed25519.Ed25519PublicKey,
                     not_after: int,
                     principals_blacklist: Sequence[str]) -> bytes:
     """
-    Creates an OpenSSH certificate template for YubiHSM2.
+    Create an OpenSSH certificate template for YubiHSM2.
 
     Args:
         ts_public_key (str): The public key of the timestamp authority.

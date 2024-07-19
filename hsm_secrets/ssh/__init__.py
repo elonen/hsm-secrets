@@ -1,12 +1,16 @@
 from base64 import b64encode
 from math import floor
+from pathlib import Path
 import struct
+from textwrap import dedent
 import time
 from typing import Sequence
 import click
 
+from hsm_secrets.config import HSMConfig
+from hsm_secrets.ssh.openssh.ssh_certificate import ExtensionLabelType
 from hsm_secrets.ssh.ssh_utils import create_request, create_template
-from hsm_secrets.utils import encode_algorithm, encode_capabilities, hsm_generate_asymmetric_key, open_hsm_session_with_yubikey
+from hsm_secrets.utils import click_echo_colored_commands, encode_algorithm, encode_capabilities, hsm_generate_asymmetric_key, open_hsm_session_with_yubikey
 from yubihsm.objects import YhsmObject, AsymmetricKey, Template
 from cryptography.hazmat.primitives import (_serialization, serialization)
 import yubihsm.defs
@@ -19,167 +23,139 @@ def cmd_ssh(ctx: click.Context):
     ctx.ensure_object(dict)
 
 
-@cmd_ssh.command('create-ca-keys')
+@cmd_ssh.command('get-ca')
 @click.pass_context
-#@click.option('--name', required=True, help="Name for the new root CA")
-@click.option('--validity', default=3650, help="Validity period in days")
-def new_root_ca(ctx: click.Context, validity: int):
-    """Create a new SSH Root CA"""
+@click.option('--all', '-a', 'get_all', is_flag=True, help="Get all certificates")
+@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
+def get_ca(ctx: click.Context, get_all: bool, cert_ids: Sequence[str]):
+    """Get the public keys of the SSH CA keys"""
+    conf: HSMConfig = ctx.obj['config']
+
+    all_ids = set([str(ca.id) for ca in conf.ssh.root_ca_keys])
+    selected_ids = all_ids if get_all else set(cert_ids)
+
+    if not selected_ids:
+        click.echo("ERROR: specify at least one CA key ID")
+        return
+
+    if len(selected_ids - all_ids) > 0:
+        raise ValueError(f"Unknown CA key IDs: {selected_ids - all_ids}")
+    selected_keys = [ca for ca in conf.ssh.root_ca_keys if str(ca.id) in selected_ids]
+
+    if not selected_keys:
+        click.echo("No CA keys selected")
+        return
 
     with open_hsm_session_with_yubikey(ctx) as (conf, ses):
-        root_keys = []
-        for key_def in conf.ssh.root_ca_keys:
-            root_keys.append(hsm_generate_asymmetric_key(ses, ctx.obj['devserial'], conf, key_def))
-        pubkeys = [
-            key.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
-            for key in root_keys
-        ]
-        print("Public keys:")
-        for key in pubkeys:
-            print(key)
-
-
-@cmd_ssh.command('get-ca-pubkeys')
-@click.pass_context
-@click.option('--outdir', required=True, type=click.Path(), default='./OUT/', help="Directory to write public keys to")
-def get_root_ca_pubkeys(ctx: click.Context, outdir: str):
-    """Write SSH Root CA .pub files"""
-    outdir = outdir.rstrip('/')
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
-        for key in conf.ssh.root_ca_keys:
+        for key in selected_keys:
             obj = ses.get_object(key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
             assert isinstance(obj, AsymmetricKey)
-            pubkey = obj.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
-            with open(f"{outdir}/{key.label}.pub", "wb") as f:
-                f.write(pubkey)
-            click.echo(f"Wrote '{outdir}/{key.label}.pub'")
-
+            pubkey = obj.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH).decode('ascii')
+            click.echo(f"{pubkey} {key.label}")
 
 
 @cmd_ssh.command('sign-key')
-@click.option('--keyfile-to-sign', required=True, type=click.Path(), help="Public key file to sign")
-@click.option('--validity', default=365*24*60*60, help="Validity period in seconds (default: 1 year)")
-@click.option('--principals', required=True, help="Comma-separated list of principals")
-@click.option('--outfile', required=True, type=click.Path(), help="Output file for signed certificate")
-@click.option('--subject', required=True, help="Name (arbitrary id) for user/host whose key is being signed")
+@click.option('--out', '-o', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), help="Output file (default: deduce from input)", default=None)
+@click.option('--ca', '-c', required=False, help="CA key ID (hex) to sign with. Default: read from config", default=None)
+@click.option('--username', '-u', required=False, help="Key owner's name (for auditing)", default=None)
+@click.option('--certid', '-n', required=False, help="Explicit certificate ID (default: auto-generated)", default=None)
+@click.option('--validity', '-t', required=False, default=365*24*60*60, help="Validity period in seconds (default: 1 year)")
+@click.option('--principals', '-p', required=False, help="Comma-separated list of principals", default='')
+@click.option('--extentions', '-e', help="Comma-separated list of SSH extensions", default='permit-X11-forwarding,permit-agent-forwarding,permit-port-forwarding,permit-pty,permit-user-rc')
+@click.argument('keyfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-')
 @click.pass_context
-def sign_key(ctx: click.Context, keyfile_to_sign: str, validity: int, principals: str, outfile: str, subject: str):
-    """Sign an SSH key with the SSH Root CA"""
-    from cryptography.hazmat.primitives.asymmetric import (ed25519, rsa)
+def sign_key(ctx: click.Context, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extentions: str, keyfile: str):
+    """Make and sign an SSH user certificate
 
+    [keyfile]: file containing the public key to sign (default: stdin)
+
+    If --ca is not specified, the default CA key is used (as specified in the config file).
+
+    Either --username or explicit --certid must be specified. If --certid is not specified,
+    a certificate ID is auto-generated key owner name, current time and principal list.
+    Unique and clear certificate IDs are important for auditing and revocation.
+
+    Output file is deduced from input file if not specified with --out (or '-' for stdout).
+    For example, 'id_rsa.pub' will be signed to 'id_rsa-cert.pub'.
+    """
+    from hsm_secrets.ssh.openssh.signing import sign_ssh_cert
+    from hsm_secrets.ssh.openssh.ssh_certificate import cert_for_ssh_pub_id, str_to_extension
+    from hsm_secrets.key_adapters import make_private_key_adapter
+
+    conf: HSMConfig = ctx.obj['config']
+    ca_key_id = int(ca.replace('0x',''), 16) if ca else conf.ssh.default_ca
+
+    ca_def = [c for c in conf.ssh.root_ca_keys if c.id == ca_key_id]
+    if not ca_def:
+        raise ValueError(f"CA key 0x{ca_key_id:04x} not found in config")
+
+    if not username and not certid:
+        raise click.ClickException("Either --username or --certid must be specified")
+    elif username and certid:
+        raise click.ClickException("Only one of --username or --certid must be specified")
+
+    # Read public key
+    key_str = ""
+    if keyfile == '-':
+        click.echo(click.style("Reading key from stdin...", fg='yellow'))
+        key_str = click.get_text_stream('stdin').readline().strip()
+    else:
+        with open(keyfile, 'r') as f:
+            key_str = f.read()
+
+    # Last part of the key file, user-added comment
+    # This won't be part of the certificate ID, but will added to the signed -cert.pub file for user reference
+    key_comment = ""
+    parts = key_str.split(' ')
+    if len(parts) >= 3:
+        key_comment = "__"+parts[2]
+
+    timestamp = int(time.time())
+    princ_list = [s.strip() for s in principals.split(',')] if principals else []
+    certid = certid or (f"{username}-{timestamp}-{'+'.join(principals.split(','))}").strip().lower().replace(' ', '_')
+    click_echo_colored_commands(f"Signing key with CA `{ca_def[0].label}` as cert ID `{certid}` with principals: `{princ_list}`")
+
+    # Create certificate from public key
+    cert = cert_for_ssh_pub_id(
+        key_str,
+        certid,
+        valid_seconds = validity,
+        principals = princ_list,
+        serial = timestamp,
+        extensions = {str_to_extension(s.strip()): b'' for s in extentions.split(',')})
+
+    # Figre out output file
+    out_fp = None
+    path = None
+    if out == '-' or (keyfile == '-' and not out):
+        out_fp = click.get_text_stream('stdout')
+        path = '-'
+    else:
+        p = Path(out) if out else (Path(keyfile).parent / (Path(keyfile).stem + "-cert.pub"))
+        if p.exists():
+            click.confirm(f"Overwrite existing file '{p}'?", abort=True)
+        path = str(p)
+
+    # Sign & write out
     with open_hsm_session_with_yubikey(ctx) as (conf, ses):
-        # Load the public key to sign
-        with open(keyfile_to_sign, 'rb') as user_public_key_file:
-            user_public_key = serialization.load_ssh_public_key(user_public_key_file.read())
+        obj = ses.get_object(ca_key_id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
+        assert isinstance(obj, AsymmetricKey)
 
-        # Find the CA key that matches the user key type
-        if isinstance(user_public_key, rsa.RSAPublicKey):
-            key_type = "rsa"
-            key_bits = user_public_key.key_size
-        elif isinstance(user_public_key, ed25519.Ed25519PublicKey):
-            key_type = "ed25519"
-            key_bits = 32*8
-        else:
-            raise ValueError(f"Unsupported user key type: {type(user_public_key)}")
+        ca_pubkey = obj.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
+        ca_key = make_private_key_adapter(obj)
 
-        click.echo(f"Read in SSH key of type '{key_type}' ({key_bits} bits) for subject '{subject}'...")
+        sign_ssh_cert(cert, ca_key)
+        cert_str = cert.to_string_fmt().replace(certid, f"{certid}{key_comment}").strip()
 
-        ca_key_def = [key for key in conf.ssh.root_ca_keys if key_type in key.algorithm][0]
-        assert ca_key_def is not None, f"No CA key found for user SSH key type '{key_type}'"
-
-        # Load the CA public key
-        ca_key_obj = ses.get_object(ca_key_def.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-        assert isinstance(ca_key_obj, AsymmetricKey)
-        ca_pubkey = ca_key_obj.get_public_key()  #.public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
-        if not isinstance(ca_pubkey, (rsa.RSAPublicKey, ed25519.Ed25519PublicKey)):
-            raise ValueError(f"Unsupported CA key type: {type(ca_pubkey)}")
-
-        # Some sanity checks
-        assert validity > 0, "Validity period must be positive"
-        assert not " " in principals, "Principal list must not contain spaces"
-        principal_list = sorted(list(set(principals.split(','))))
-        assert all(len(p) > 0 for p in principal_list), "Principal list must not contain empty strings"
-
-        # Create a template
-        template_data = create_template(
-            ts_public_key = ca_pubkey,
-            key_whitelist = [ca_key_obj.id],
-            not_before = 5*60,  # 5 minutes ago, to allow for clock skew
-            not_after = validity + 5*60,
-            principals_blacklist = [])
-
-        # Select slot for SSH template based on current HSM session ID (to avoid collisions)
-        sid = ses.sid or 0
-        template_id = conf.ssh.template_slots.min + sid % (conf.ssh.template_slots.max - conf.ssh.template_slots.min + 1)
-
-        # Load the template into the HSM
-        old_tmpl_obj = Template(session=ses, object_id=template_id)
-        old_tmpl_data = old_tmpl_obj.get()
-
-        if old_tmpl_data and old_tmpl_data == template_data:
-            click.echo(f"Template {hex(template_id)} on HSM is current. Using it.")
-        else:
-            if old_tmpl_data:
-                click.echo(f"Template ID {hex(template_id)} differs on HSM. Deleting old template... ", nl=False)
-                old_tmpl_obj.delete()
-                click.echo("Ok")
-
-            click.echo(f"Loading new template {hex(template_id)} into HSM... ", nl=False)
-            Template.put(
-                session=ses,
-                object_id=template_id,
-                label=f"tmp-ssh-template-ses-{sid}",
-                domains=conf.get_domain_bitfield(ca_key_def.domains),
-                capabilities=encode_capabilities(["exportable-under-wrap"]),
-                algorithm=encode_algorithm('template-ssh'),
-                data=template_data)
-            click.echo("Ok")
-
-
-        # Create a request
-        ts_now = floor(time.time())
-        allowed_ssh_extensions = ['permit-X11-forwarding','permit-agent-forwarding', 'permit-port-forwarding', 'permit-pty', 'permit-user-rc']
-
-        req_data = create_request(
-            ca_public_key = ca_pubkey,
-            user_public_key = user_public_key,
-            key_id = subject,
-            principals = principal_list,
-            options = [],
-            not_before = ts_now,
-            not_after = ts_now + validity,
-            serial = None,       # Use timestamp for cert serial number
-            host_key = False,
-            extensions = [(k,b'') for k in allowed_ssh_extensions])
-
-        def sha256(data: bytes) -> bytes:
-            from hashlib import sha256
-            return sha256(data).digest()
-
-        # Build the SSH signing request from timestamp + signature + request data
-        ts_bytes = struct.pack('!I', ts_now)
-        request_hash = sha256(req_data)
-        message_hash = sha256(request_hash + ts_bytes)
-        click.echo(f"Signing current timestamp + request hash with CA key '{ca_key_def.label}'... ", nl=False)
-        req_sig = ca_key_obj.sign_pkcs1v1_5(message_hash)
-        click.echo("Ok")
-        sig_req_message = ts_bytes + req_sig + req_data
-
-        # Sign the request
-        click.echo(f"Signing SSH key with CA key '{ca_key_def.label}'... ", nl=False)
-        signature = ca_key_obj.sign_ssh_certificate(
-            template_id = template_id,
-            request = sig_req_message,
-            algorithm = encode_algorithm('rsa-pkcs1-sha256'))
-        click.echo("Ok")
-
-        # Build the OpenSSH certificate format
-        cert_data = req_data + signature
-        cert_type = f"ssh-{key_type}-cert-v01@openssh.com".encode('ascii')
-        comment = f"signed-by-{ca_key_def.label}-for-{subject}".encode('utf-8')
-        ssh_cert = cert_type + b" " + b64encode(cert_data) + b" " + comment
-
-        # Write the certificate to a file
-        with open(outfile, "wb") as f:
-            f.write(ssh_cert)
-        click.echo(f"Wrote signed SSH certificate in '{outfile}'")
+        if not out_fp:
+            out_fp = open(path, 'w')
+        out_fp.write(cert_str.strip() + "\n")   # type: ignore
+        out_fp.close()
+        if str(path) != '-':
+            click_echo_colored_commands(dedent(f"""
+                Certificate written to: {path}
+                  - Send it to the user and ask them to put it in `~/.ssh/` along with the private key
+                  - To view it, run: `ssh-keygen -L -f {path}`
+                  - To allow access (adapt principals as neede), add this to your server authorized_keys file(s):
+                    `cert-authority,principals="{','.join(cert.valid_principals)}" {ca_pubkey.decode()} HSM_{ca_def[0].label}`
+                """).strip())

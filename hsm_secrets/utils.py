@@ -409,6 +409,22 @@ def confirm_and_delete_old_yubihsm_object_if_exists(serial: str, obj: YhsmObject
     return True
 
 
+def click_echo_colored_commands(msg: str, color: str = 'cyan'):
+    """
+    Print a message with colored commands.
+    Commands are assumed to be enclosed in `backticks` and not span multiple lines.
+    """
+    lines = msg.split('\n')
+    for l in lines:
+        parts = l.split('`')
+        for i, p in enumerate(parts):
+            if i % 2 == 0:
+                echo(p, nl=False)
+            else:
+                echo(click.style(p, fg=color), nl=False)
+        echo("")
+
+
 def secure_display_secret(secret_to_show: str, wipe_char='x'):
     """
     Display a secret on the screen, and then wipe from the screen (and scroll buffer).

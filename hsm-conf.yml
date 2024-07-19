@@ -26,7 +26,8 @@ general:
         encryption: 9
 
     x509_defaults:
-        is_ca: true
+        ca: true
+        path_len: 0             # Allow end-entity certificate signing only by default
         validity_days: 3650
         key_usage:
             - digitalSignature
@@ -168,6 +169,7 @@ x509:
                 - sign-pkcs
                 - exportable-under-wrap
           x509_info:
+            path_len: 2
             attribs:
                 common_name: 'Example Root A1'
                 subject_alt_names: []
@@ -191,6 +193,7 @@ x509:
                 - sign-eddsa
                 - exportable-under-wrap
           x509_info:
+            path_len: 2
             attribs:
                 common_name: 'Example Root A1'
                 subject_alt_names: []
@@ -214,6 +217,7 @@ x509:
                     - sign-ecdsa
                     - exportable-under-wrap
             x509_info:
+                path_len: 2
                 attribs:
                     common_name: 'Example Root A1'
                     subject_alt_names: []
@@ -243,14 +247,21 @@ tls:
                 - exportable-under-wrap
           x509_info:
             attribs:
-                common_name: '*.hsm.biz'
-                subject_alt_names:
-                    - '*.hsm.ext'
-                    - '*.hsm.local'
-                    - '*.hsm.service'
-                    - '*.example.directory'
-                    - '*.example.com'
-                    - '*.example.biz'
+                common_name: 'Example TLS Intermediate I1'
+            name_constraints:
+                permitted:
+                    dns:
+                        - hsm.biz
+                        - hsm.ext
+                        - hsm.local
+                        - hsm.service
+                        - example.directory
+                        - example.com
+                        - example.biz
+                    ip:
+                        - 10.123.0.0/21
+                        - fd12:3456:78::/48
+                        - 2a01:2345:6::/48
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -263,33 +274,92 @@ tls:
               sign_by: 0x0211   # RSA Root CA
         -
           key:
-            label: tls-ecp384-intermediate-key
+            label: tls-ed25519-intermediate-key
             id: 0x0320
             domains: ['tls']
-            algorithm: ecp384
+            algorithm: ed25519
             capabilities:
                 - sign-eddsa
                 - exportable-under-wrap
           x509_info:
             attribs:
-                common_name: '*.hsm.biz'
-                subject_alt_names:
-                    - '*.hsm.ext'
-                    - '*.hsm.local'
-                    - '*.hsm.service'
-                    - '*.example.directory'
-                    - '*.example.com'
-                    - '*.example.biz'
+                common_name: 'Example TLS Intermediate I1'
+            name_constraints:
+                permitted:
+                    dns:
+                        - hsm.biz
+                        - hsm.ext
+                        - hsm.local
+                        - hsm.service
+                        - example.directory
+                        - example.com
+                        - example.biz
+                    ip:
+                        - 10.123.0.0/21
+                        - fd12:3456:78::/48
+                        - 2a01:2345:6::/48
             extended_key_usage:
                 - serverAuth
                 - clientAuth
                 - timeStamping
           signed_certs:
             - id: 0x0321
-              label: tls-ed25519-intermediate-cert
+              label: tls-ed25519-intermediate-cert-rsaroot
+              domains: ['tls']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0211   # RSA Root CA
+            - id: 0x0322
+              label: tls-ed25519-intermediate-cert-edroot
               domains: ['tls']
               algorithm: opaque-x509-certificate
               sign_by: 0x0221   # Ed25519 Root CA
+            - id: 0x0323
+              label: tls-ed25519-intermediate-cert-ecroot
+              domains: ['tls']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0231   # ECP384 Root CA
+
+        -
+          key:
+            label: tls-ecp384-intermediate-key
+            id: 0x0330
+            domains: ['tls']
+            algorithm: ecp384
+            capabilities:
+                - sign-ecdsa
+                - exportable-under-wrap
+          x509_info:
+            attribs:
+                common_name: 'Example TLS Intermediate I1'
+            name_constraints:
+                permitted:
+                    dns:
+                        - hsm.biz
+                        - hsm.ext
+                        - hsm.local
+                        - hsm.service
+                        - example.directory
+                        - example.com
+                        - example.biz
+                    ip:
+                        - 10.123.0.0/21
+                        - fd12:3456:78::/48
+                        - 2a01:2345:6::/48
+            extended_key_usage:
+                - serverAuth
+                - clientAuth
+                - timeStamping
+          signed_certs:
+            - id: 0x0331
+              label: tls-ecp384-intermediate-cert-rsaroot
+              domains: ['tls']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0211   # RSA Root CA
+            - id: 0x0333
+              label: tls-ecp384-intermediate-cert-ecroot
+              domains: ['tls']
+              algorithm: opaque-x509-certificate
+              sign_by: 0x0231   # ECP384 Root CA
 
 
 # NAC (Network Access Control) intermediate keys for 802.1X
@@ -307,8 +377,9 @@ nac:
                 - exportable-under-wrap
           x509_info:
             attribs:
-                common_name: 'nac.hsm.biz'
+                common_name: 'Example NAC Intermediate N1'
                 subject_alt_names:
+                    - 'nac.hsm.biz'
                     - 'nac.example.directory'
             extended_key_usage:
                 - serverAuth
@@ -322,28 +393,29 @@ nac:
               sign_by: 0x0211
         -
           key:
-            label: nac-ed25519-intermediate-key
-            id: 0x0420
+            label: nac-ecp384-intermediate-key
+            id: 0x0430
             domains: ['nac']
-            algorithm: ed25519
+            algorithm: ecp384
             capabilities:
-                - sign-eddsa
+                - sign-ecdsa
                 - exportable-under-wrap
           x509_info:
             attribs:
-                common_name: 'nac.hsm.biz'
+                common_name: 'Example NAC Intermediate N1'
                 subject_alt_names:
+                    - 'nac.hsm.biz'
                     - 'nac.example.directory'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
                 - timeStamping
           signed_certs:
-            - id: 0x0421
-              label: nac-ed25519-intermediate-cert
+            - id: 0x0433
+              label: nac-ecp384-intermediate-cert
               domains: ['nac']
               algorithm: opaque-x509-certificate
-              sign_by: 0x0221
+              sign_by: 0x0231
 
 
 # GPG/OpenPGP keys
@@ -414,7 +486,7 @@ codesign:
             - exportable-under-wrap
       x509_info:
         attribs:
-            common_name: 'Example Code Signing RSA'
+            common_name: 'Example Code Signing Intermediate S1'
             subject_alt_names: []
         key_usage:
             - digitalSignature
@@ -431,16 +503,16 @@ codesign:
           sign_by: 0x0211
     -
       key:
-        label: codesign-ed25519-intermediate-key
+        label: codesign-ecp384-intermediate-key
         id: 0x0620
         domains: ['codesign']
-        algorithm: ed25519
+        algorithm: ecp384
         capabilities:
             - sign-eddsa
             - exportable-under-wrap
       x509_info:
         attribs:
-            common_name: 'Example Code Signing ED'
+            common_name: 'Example Code Signing Intermediate S1'
             subject_alt_names: []
         key_usage:
             - digitalSignature
@@ -450,16 +522,17 @@ codesign:
             - codeSigning
             - timeStamping
       signed_certs:
-        - id: 0x0621
-          label: codesign-ed25519-intermediate-cert
+        - id: 0x0633
+          label: codesign-ecp384-intermediate-cert
           domains: ['codesign']
           algorithm: opaque-x509-certificate
-          sign_by: 0x0221
+          sign_by: 0x0231
 
 
 # Certificate-based SSH authentication keys.
 # OpenSSH certificates are in proprietary format, so these are not signed by the X.509 root CAs.
 ssh:
+    default_ca: 0x0720
     root_ca_keys:
         -
             label: ssh-rsa-ca-root-key
@@ -491,10 +564,6 @@ ssh:
                 - sign-ssh-certificate
                 - sign-ecdsa
                 - exportable-under-wrap
-
-    template_slots:
-        min: 0x0720
-        max: 0x072F
 
 
 # For deriving unique passwords for VMs, services etc.

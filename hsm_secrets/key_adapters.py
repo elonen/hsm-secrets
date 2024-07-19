@@ -18,9 +18,22 @@ This allows the keys to be used in the same way as regular keys in the `cryptogr
 but all crypto operations are delegated to the HSM.
 """
 
-
 PrivateKeyHSMAdapter = Union['RSAPrivateKeyHSMAdapter', 'Ed25519PrivateKeyHSMAdapter', 'ECPrivateKeyHSMAdapter']
 
+
+def make_private_key_adapter(hsm_key: yubihsm.objects.AsymmetricKey) -> PrivateKeyHSMAdapter:
+    """
+    Create a PrivateKeyHSMAdapter object for the given YubiHSM-stored key.
+    """
+    info = hsm_key.get_info()
+    if "RSA_" in str(info.algorithm.name.upper()):
+        return RSAPrivateKeyHSMAdapter(hsm_key)
+    elif "ED25519" in str(info.algorithm.name.upper()):
+        return Ed25519PrivateKeyHSMAdapter(hsm_key)
+    elif "EC_" in str(info.algorithm.name.upper()):
+        return ECPrivateKeyHSMAdapter(hsm_key)
+    else:
+        raise ValueError(f"Unsupported key type: {info.algorithm}")
 
 # ----- RSA -----
 
@@ -34,8 +47,8 @@ class RSAPrivateKeyHSMAdapter(rsa.RSAPrivateKey):
 
     def sign(self, data: bytes, padding: AsymmetricPadding, algorithm: Any) -> bytes:
         assert padding.name == "EMSA-PKCS1-v1_5", f"Unsupported padding: {padding.name}"
-        assert algorithm.name == "sha256", f"Unsupported algorithm: {algorithm.name}"
-        return self.hsm_obj.sign_pkcs1v1_5(data, hashes.SHA256())
+        assert algorithm.name in ("sha256", "sha512"), f"Unsupported algorithm: {algorithm.name}"
+        return self.hsm_obj.sign_pkcs1v1_5(data, hashes.SHA256() if algorithm.name == "sha256" else hashes.SHA512())
 
     def decrypt(self, ciphertext: bytes, padding: AsymmetricPadding) -> bytes:
         assert padding.name == "EMSA-PKCS1-v1_5", f"Unsupported padding: {padding.name}"
@@ -56,9 +69,7 @@ class RSAPrivateKeyHSMAdapter(rsa.RSAPrivateKey):
     def private_bytes(self, encoding: Encoding, format: PrivateFormat, encryption_algorithm: serialization.KeySerializationEncryption) -> bytes:
         raise NotImplementedError("HSM-backed key: private_bytes() not implemented")
 
-
 # ----- Ed25519 -----
-
 
 class Ed25519PrivateKeyHSMAdapter(ed25519.Ed25519PrivateKey):
     """
@@ -82,9 +93,7 @@ class Ed25519PrivateKeyHSMAdapter(ed25519.Ed25519PrivateKey):
     def private_bytes(self, encoding: Any, format: Any, encryption_algorithm: Any) -> bytes:
         raise NotImplementedError("HSM-backed key: private_bytes() not implemented")
 
-
-# ----- EC -----
-
+# ----- NIST EC -----
 
 class ECPrivateKeyHSMAdapter(ec.EllipticCurvePrivateKey):
     def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
@@ -117,18 +126,3 @@ class ECPrivateKeyHSMAdapter(ec.EllipticCurvePrivateKey):
 
     def private_numbers(self) -> ec.EllipticCurvePrivateNumbers:
         raise NotImplementedError("HSM-backed key: private_numbers() not implemented")
-
-
-def make_private_key_adapter(hsm_key: yubihsm.objects.AsymmetricKey) -> PrivateKeyHSMAdapter:
-    """
-    Create a PrivateKeyHSMAdapter object for the given YubiHSM-stored key.
-    """
-    info = hsm_key.get_info()
-    if "RSA_" in str(info.algorithm.name.upper()):
-        return RSAPrivateKeyHSMAdapter(hsm_key)
-    elif "ED25519" in str(info.algorithm.name.upper()):
-        return Ed25519PrivateKeyHSMAdapter(hsm_key)
-    elif "EC_" in str(info.algorithm.name.upper()):
-        return ECPrivateKeyHSMAdapter(hsm_key)
-    else:
-        raise ValueError(f"Unsupported key type: {info.algorithm}")

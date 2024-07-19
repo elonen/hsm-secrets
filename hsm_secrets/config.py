@@ -219,19 +219,25 @@ X509ExtendedKeyUsage = Literal["serverAuth", "clientAuth", "codeSigning", "email
 
 class X509CertAttribs(NoExtraBaseModel):
     common_name: str                                    # FQDN for host, or username for user, etc.
-    subject_alt_names: List[str]                        # Subject Alternative Names (SANs)
+    subject_alt_names: Optional[List[str]] = Field(default=None) # Subject Alternative Names (SANs)
     organization: Optional[str] = Field(default=None)   # Legal entity name
     # organizational_unit: str                          # Deprecated TLS field, so commented out
     locality: Optional[str] = Field(default=None)       # City
     state: Optional[str] = Field(default=None)          # State or province where the organization is located
     country: Optional[str] = Field(default=None)        # Country code (2-letter ISO 3166-1)
 
+class X509NameConstraint(NoExtraBaseModel):
+    permitted: Optional[dict[Literal["dns", "ip", "rfc822", "uri", "directory", "registered_id", "other"], list[str]]] = Field(default_factory=dict)
+    excluded: Optional[dict[Literal["dns", "ip", "rfc822", "uri", "directory", "registered_id", "other"], list[str]]] = Field(default_factory=dict)
+
 class X509Info(NoExtraBaseModel):
-    is_ca: Optional[bool] = Field(default=True)         # Is this a CA certificate? If so, make sure to include keyCertSign and cRLSign in key_usage
-    validity_days: Optional[int] = Field(default=3650)  # Default validity period for the certificate
+    ca: Optional[bool] = Field(default=None)  # Whether this certificate is a CA (able to sign other certificates)
+    path_len: Optional[int] = Field(default=None)  # Maximum number of intermediate CAs that can be signed by this CA
+    validity_days: Optional[int] = Field(default=None)  # Default validity period for the certificate
     attribs: Optional[X509CertAttribs] = Field(default=None)
     key_usage: Optional[set[X509KeyUsage]] = Field(default=None)
     extended_key_usage: Optional[set[X509ExtendedKeyUsage]] = Field(default=None)
+    name_constraints: Optional[X509NameConstraint] = Field(default=None)
 
 class X509Cert(NoExtraBaseModel):
     key: HSMAsymmetricKey
@@ -267,8 +273,8 @@ class SSHTemplateSlots(NoExtraBaseModel):
     max: int
 
 class SSH(NoExtraBaseModel):
+    default_ca: KeyID
     root_ca_keys: List[HSMAsymmetricKey]
-    template_slots: SSHTemplateSlots
 
 class PasswordDerivation(NoExtraBaseModel):
     keys: List[HSMHmacKey]
