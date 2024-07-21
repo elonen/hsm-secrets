@@ -27,7 +27,7 @@ general:
 
     x509_defaults:
         ca: true
-        path_len: 0             # Allow end-entity certificate signing only by default
+        path_len: 0             # Allow end-entity certificate signing only, by default
         validity_days: 3650
         key_usage:
             - digitalSignature
@@ -44,7 +44,6 @@ general:
             locality: Duckburg
             organization: Example Inc.
             common_name: '__ERROR__UNDEFINED__'
-            subject_alt_names: []
 
 # Subsystem for YubiHSM 2 device admin auth keys.
 admin:
@@ -100,7 +99,8 @@ user_keys:
         - verify-hmac                   # For verifying message authenticity
         - sign-pss                      # X.509 signing in RSA
         - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
-        - sign-eddsa                    # X.509 signing in EdDSA
+        - sign-eddsa                    # X.509 signing in Ed25519
+        - sign-ecdsa                    # X.509 signing in EC
         - encrypt-cbc                   # General AES symmetric data encryption
         - decrypt-cbc                   # (--||--)
         - encrypt-ecb                   # (non-chained AES, not recommended for general use)
@@ -172,7 +172,6 @@ x509:
             path_len: 2
             attribs:
                 common_name: 'Example Root A1'
-                subject_alt_names: []
             key_usage:
                 - keyCertSign
                 - cRLSign
@@ -196,7 +195,6 @@ x509:
             path_len: 2
             attribs:
                 common_name: 'Example Root A1'
-                subject_alt_names: []
             key_usage:
                 - keyCertSign
                 - cRLSign
@@ -220,7 +218,6 @@ x509:
                 path_len: 2
                 attribs:
                     common_name: 'Example Root A1'
-                    subject_alt_names: []
                 key_usage:
                     - keyCertSign
                     - cRLSign
@@ -234,6 +231,7 @@ x509:
 
 # TLS (HTTPS, TCP, ...) intermediate keys.
 tls:
+    default_ca_id: 0x0333
     intermediate_certs:
         -
           key:
@@ -251,13 +249,13 @@ tls:
             name_constraints:
                 permitted:
                     dns:
-                        - hsm.biz
-                        - hsm.ext
-                        - hsm.local
-                        - hsm.service
-                        - example.directory
-                        - example.com
-                        - example.biz
+                        - .hsm.biz
+                        - .hsm.ext
+                        - .hsm.local
+                        - .hsm.service
+                        - .example.directory
+                        - .example.com
+                        - .example.biz
                     ip:
                         - 10.123.0.0/21
                         - fd12:3456:78::/48
@@ -287,13 +285,13 @@ tls:
             name_constraints:
                 permitted:
                     dns:
-                        - hsm.biz
-                        - hsm.ext
-                        - hsm.local
-                        - hsm.service
-                        - example.directory
-                        - example.com
-                        - example.biz
+                        - .hsm.biz
+                        - .hsm.ext
+                        - .hsm.local
+                        - .hsm.service
+                        - .example.directory
+                        - .example.com
+                        - .example.biz
                     ip:
                         - 10.123.0.0/21
                         - fd12:3456:78::/48
@@ -334,13 +332,13 @@ tls:
             name_constraints:
                 permitted:
                     dns:
-                        - hsm.biz
-                        - hsm.ext
-                        - hsm.local
-                        - hsm.service
-                        - example.directory
-                        - example.com
-                        - example.biz
+                        - .hsm.biz
+                        - .hsm.ext
+                        - .hsm.local
+                        - .hsm.service
+                        - .example.directory
+                        - .example.com
+                        - .example.biz
                     ip:
                         - 10.123.0.0/21
                         - fd12:3456:78::/48
@@ -376,11 +374,13 @@ nac:
                 - sign-pkcs
                 - exportable-under-wrap
           x509_info:
+            path_len: 1  # NAC servers may need their own CAs, so allow one level of intermediates
             attribs:
                 common_name: 'Example NAC Intermediate N1'
                 subject_alt_names:
-                    - 'nac.hsm.biz'
-                    - 'nac.example.directory'
+                    dns:
+                      - 'nac.hsm.biz'
+                      - 'nac.example.directory'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -401,11 +401,13 @@ nac:
                 - sign-ecdsa
                 - exportable-under-wrap
           x509_info:
+            path_len: 1
             attribs:
                 common_name: 'Example NAC Intermediate N1'
                 subject_alt_names:
-                    - 'nac.hsm.biz'
-                    - 'nac.example.directory'
+                    dns:
+                      - 'nac.hsm.biz'
+                      - 'nac.example.directory'
             extended_key_usage:
                 - serverAuth
                 - clientAuth
@@ -487,7 +489,6 @@ codesign:
       x509_info:
         attribs:
             common_name: 'Example Code Signing Intermediate S1'
-            subject_alt_names: []
         key_usage:
             - digitalSignature
             - keyCertSign
@@ -513,7 +514,6 @@ codesign:
       x509_info:
         attribs:
             common_name: 'Example Code Signing Intermediate S1'
-            subject_alt_names: []
         key_usage:
             - digitalSignature
             - keyCertSign

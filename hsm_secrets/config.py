@@ -216,10 +216,11 @@ X509KeyUsage = Literal[
     "decipherOnly"          # In keyAgreement: only allow decryption, not encryption
 ]
 X509ExtendedKeyUsage = Literal["serverAuth", "clientAuth", "codeSigning", "emailProtection", "timeStamping"]
+X509NameType = Literal["dns", "ip", "rfc822", "uri", "directory", "registered_id", "other"]
 
 class X509CertAttribs(NoExtraBaseModel):
     common_name: str                                    # FQDN for host, or username for user, etc.
-    subject_alt_names: Optional[List[str]] = Field(default=None) # Subject Alternative Names (SANs)
+    subject_alt_names: Optional[dict[X509NameType, list[str]]] = Field(default=None) # Subject Alternative Names (SANs)
     organization: Optional[str] = Field(default=None)   # Legal entity name
     # organizational_unit: str                          # Deprecated TLS field, so commented out
     locality: Optional[str] = Field(default=None)       # City
@@ -227,8 +228,8 @@ class X509CertAttribs(NoExtraBaseModel):
     country: Optional[str] = Field(default=None)        # Country code (2-letter ISO 3166-1)
 
 class X509NameConstraint(NoExtraBaseModel):
-    permitted: Optional[dict[Literal["dns", "ip", "rfc822", "uri", "directory", "registered_id", "other"], list[str]]] = Field(default_factory=dict)
-    excluded: Optional[dict[Literal["dns", "ip", "rfc822", "uri", "directory", "registered_id", "other"], list[str]]] = Field(default_factory=dict)
+    permitted: Optional[dict[X509NameType, list[str]]] = Field(default_factory=dict)
+    excluded: Optional[dict[X509NameType, list[str]]] = Field(default_factory=dict)
 
 class X509Info(NoExtraBaseModel):
     ca: Optional[bool] = Field(default=None)  # Whether this certificate is a CA (able to sign other certificates)
@@ -257,6 +258,7 @@ class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]
 
 class TLS(NoExtraBaseModel):
+    default_ca_id: KeyID
     intermediate_certs: List[X509Cert]
 
 class NAC(NoExtraBaseModel):

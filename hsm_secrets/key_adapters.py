@@ -19,6 +19,7 @@ but all crypto operations are delegated to the HSM.
 """
 
 PrivateKeyHSMAdapter = Union['RSAPrivateKeyHSMAdapter', 'Ed25519PrivateKeyHSMAdapter', 'ECPrivateKeyHSMAdapter']
+PrivateKey = Union[rsa.RSAPrivateKey, ed25519.Ed25519PrivateKey, ec.EllipticCurvePrivateKey, 'RSAPrivateKeyHSMAdapter', 'Ed25519PrivateKeyHSMAdapter', 'ECPrivateKeyHSMAdapter']
 
 
 def make_private_key_adapter(hsm_key: yubihsm.objects.AsymmetricKey) -> PrivateKeyHSMAdapter:

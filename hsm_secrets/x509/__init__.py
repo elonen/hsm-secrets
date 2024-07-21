@@ -3,7 +3,7 @@ from cryptography import x509
 from yubihsm.core import AuthSession
 
 from cryptography.hazmat.primitives import serialization
-from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_all_config_items_per_type, find_config_items_of_class, load_hsm_config
+from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_config_items_of_class
 
 import yubihsm.objects
 import yubihsm.defs
@@ -184,7 +184,8 @@ def create_certs_impl(ctx: click.Context, all_certs: bool, dry_run: bool, cert_i
                     issuer_key = make_private_key_adapter(key_obj)
 
                 # Create and sign the certificate
-                builder = X509CertBuilder(conf, x509_def, key)
+                assert x509_def.x509_info, "X.509 certificate definition is missing x509_info"
+                builder = X509CertBuilder(conf, x509_def.x509_info, key)
                 if issuer_cert:
                     assert issuer_key
                     id_to_cert_obj[cd.id] = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]

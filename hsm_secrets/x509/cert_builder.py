@@ -8,24 +8,25 @@ from datetime import timedelta
 import ipaddress
 from typing import Dict, Union, List, Optional
 
-from hsm_secrets.config import HSMConfig, X509Cert
+from hsm_secrets.config import HSMConfig, X509Cert, X509Info
 
-import cryptography.hazmat.primitives.asymmetric.rsa as rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 from cryptography.hazmat.primitives import hashes
 
 import yubihsm.objects
 import yubihsm.defs
 
 from hsm_secrets.x509.def_utils import merge_x509_info_with_defaults
-from hsm_secrets.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter
+from hsm_secrets.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter, PrivateKey
 
 
 class X509CertBuilder:
     """
     Ephemeral class for building and signing X.509 certificates using the YubiHSM as a key store.
     """
+    private_key: PrivateKey
 
-    def __init__(self, hsm_config: HSMConfig, cert_def: X509Cert, hsm_key: yubihsm.objects.AsymmetricKey):
+    def __init__(self, hsm_config: HSMConfig, cert_def_info: X509Info, priv_key: PrivateKey|yubihsm.objects.AsymmetricKey):
         """
         Initialize a new X.509 certificate builder.
 
@@ -34,19 +35,20 @@ class X509CertBuilder:
         :param hsm_key: The YubiHSM-stored asymmetric key object to use for signing and for getting public key.
         """
         self.hsm_config = hsm_config
-        self.cert_def = cert_def
-        self.cert_def_info = merge_x509_info_with_defaults(cert_def.x509_info, hsm_config)
+        self.cert_def_info = merge_x509_info_with_defaults(cert_def_info, hsm_config)
 
-        public_key = hsm_key.get_public_key()
-
-        if isinstance(public_key, rsa.RSAPublicKey):
-            self.private_key: PrivateKeyHSMAdapter = RSAPrivateKeyHSMAdapter(hsm_key)
-        elif isinstance(public_key, ed25519.Ed25519PublicKey):
-            self.private_key = Ed25519PrivateKeyHSMAdapter(hsm_key)
-        elif isinstance(public_key, ec.EllipticCurvePublicKey):
-            self.private_key = ECPrivateKeyHSMAdapter(hsm_key)
+        if isinstance(priv_key, yubihsm.objects.AsymmetricKey):
+            public_key = priv_key.get_public_key()
+            if isinstance(public_key, rsa.RSAPublicKey):
+                self.private_key = RSAPrivateKeyHSMAdapter(priv_key)
+            elif isinstance(public_key, ed25519.Ed25519PublicKey):
+                self.private_key = Ed25519PrivateKeyHSMAdapter(priv_key)
+            elif isinstance(public_key, ec.EllipticCurvePublicKey):
+                self.private_key = ECPrivateKeyHSMAdapter(priv_key)
+            else:
+                raise ValueError(f"Unsupported key type: {type(public_key)}")
         else:
-            raise ValueError(f"Unsupported key type: {type(public_key)}")
+            self.private_key = priv_key
 
 
     def generate_self_signed_cert(self) -> x509.Certificate:
@@ -141,10 +143,9 @@ class X509CertBuilder:
             builder = builder.add_extension(self._mkext_name_constraints(), critical=False)
 
         ca = self.cert_def_info.ca or False
-        path_len = self.cert_def_info.path_len or 0
-        if path_len and not ca:
-            raise ValueError("Path length > 0 is only valid for CA certificates")
-
+        path_len: int|None = self.cert_def_info.path_len or 0
+        if not ca:
+            path_len = None
         builder = builder.add_extension(x509.BasicConstraints(ca, path_len), critical=True)
 
         return builder
@@ -170,13 +171,19 @@ class X509CertBuilder:
 
     def _mkext_alt_name(self) -> x509.SubjectAlternativeName:
         assert self.cert_def_info.attribs, "X509Info.attribs.subject_alt_names is missing"
-        san: List[Union[x509.DNSName, x509.IPAddress]] = []
-        for name in self.cert_def_info.attribs.subject_alt_names or []:
-            try:
-                ip = ipaddress.ip_address(name)
-                san.append(x509.IPAddress(ip))
-            except ValueError:
-                san.append(x509.DNSName(name))
+        type_to_cls = {
+            "dns": x509.DNSName,
+            "ip": x509.IPAddress,
+            "rfc822": x509.RFC822Name,
+            "uri": x509.UniformResourceIdentifier,
+            "directory": x509.DirectoryName,
+            "registered_id": x509.RegisteredID,
+            "other": x509.OtherName
+        }
+        san: List[x509.GeneralName] = []
+        for san_type, names in (self.cert_def_info.attribs.subject_alt_names or {}).items():
+            dst_cls = type_to_cls[san_type]
+            san.extend([dst_cls(name) for name in names])
         return x509.SubjectAlternativeName(san)
 
     def _mkext_key_usage(self) -> x509.KeyUsage:

@@ -2,7 +2,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, List, Optional
 
-from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Info
+from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, KeyID, OpaqueObject, X509Cert, X509Info, find_config_items_of_class
 
 """
 Utility functions for working with certificate definitions from the HSMConfig object.
@@ -122,3 +122,15 @@ def topological_sort_x509_cert_defs(cert_defs: List[OpaqueObject]) -> list[Opaqu
     assert len(sorted_certs) == len(cert_defs), "Topological sort failed to include all certificate definitions"
     sorted_certs.reverse()
     return sorted_certs
+
+
+def find_cert_def(conf: HSMConfig, opaque_id: KeyID|int) -> Optional[X509Cert]:
+    """
+    Find a certificate definition by its opaque ID.
+    """
+    for cd in find_config_items_of_class(conf, X509Cert):
+        assert isinstance(cd, X509Cert)
+        for cs in cd.signed_certs:
+            if cs.id == opaque_id:
+                return cd
+    return None
