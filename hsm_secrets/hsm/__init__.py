@@ -255,11 +255,11 @@ def make_wrap_key(ctx: click.Context):
 # ---------------
 
 @cmd_hsm.command('delete-object')
-@click.option('--id', required=True, type=str, help="ID of the object to delete (in hex)")
+@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
 @click.option('--alldevs', is_flag=True, help="Delete on all devices")
 @click.option('--force', is_flag=True, help="Force deletion without confirmation (use with caution)")
 @click.pass_context
-def delete_object(ctx: click.Context, id: str, alldevs: bool, force: bool):
+def delete_object(ctx: click.Context, cert_ids: tuple, alldevs: bool, force: bool):
     """Delete an object from the YubiHSM
 
     Deletes an object with the given ID from the YubiHSM.
@@ -269,20 +269,20 @@ def delete_object(ctx: click.Context, id: str, alldevs: bool, force: bool):
     With `--force` ALL objects with the given ID will be deleted
     without confirmation, regardless of their type.
     """
-    id_int = int(id.replace('0x', ''), 16)
-
     dev_serials = ctx.obj['config'].general.all_devices.keys() if alldevs else [ctx.obj['devserial']]
     for serial in dev_serials:
         with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
-            objects = ses.list_objects()
-            for o in objects:
-                if o.id == id_int:
-                    click.echo("Object found:")
-                    print_yubihsm_object(o)
-                    if not force:
-                        click.confirm("Delete this object?", default=False, abort=True)
-                    o.delete()
-                    click.echo("Object deleted.")
+            for id in cert_ids:
+                id_int = int(id.replace('0x', ''), 16)
+                objects = ses.list_objects()
+                for o in objects:
+                    if o.id == id_int:
+                        click.echo("Object found:")
+                        print_yubihsm_object(o)
+                        if not force:
+                            click.confirm("Delete this object?", default=False, abort=True)
+                        o.delete()
+                        click.echo("Object deleted.")
 
 # ---------------
 

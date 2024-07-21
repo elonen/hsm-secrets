@@ -160,7 +160,7 @@ x509:
     root_certs:
         -
           key:
-            label: rsa-ca-root-key
+            label: ca-root-key-rsa
             id: 0x0210
             domains: ['x509']
             algorithm: rsa4096
@@ -179,13 +179,13 @@ x509:
             extended_key_usage: []
           signed_certs:
             - id: 0x0211
-              label: rsa-ca-root-cert
-              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']   # Allow the signed root cert to be read by all services
+              label: ca-root-cert-rsa
+              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign']   # Allow the signed root cert to be read by all services
               algorithm: opaque-x509-certificate
               sign_by: 0x0211   # Root CA signs its own certificate
         -
           key:
-            label: ed25519-ca-root-key
+            label: ca-root-key-ed25519
             id: 0x0220
             domains: ['x509']
             algorithm: ed25519
@@ -203,13 +203,13 @@ x509:
             extended_key_usage: []
           signed_certs:
             - id: 0x0221
-              label: ed25519-ca-root-cert
-              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
+              label: ca-root-cert-ed25519
+              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign']
               algorithm: opaque-x509-certificate
               sign_by: 0x0221
         -
             key:
-                label: ecp384-ca-root-key
+                label: ca-root-key-ecp384
                 id: 0x0230
                 domains: ['x509']
                 algorithm: ecp384
@@ -227,8 +227,8 @@ x509:
                 extended_key_usage: []
             signed_certs:
                 - id: 0x0231
-                  label: ecp384-ca-root-cert
-                  domains: ['x509', 'tls', 'nac', 'gpg', 'codesign', 'ssh']
+                  label: ca-root-cert-ecp384
+                  domains: ['x509', 'tls', 'nac', 'gpg', 'codesign']
                   algorithm: opaque-x509-certificate
                   sign_by: 0x0231
 

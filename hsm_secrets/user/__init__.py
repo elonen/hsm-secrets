@@ -89,7 +89,7 @@ def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
 
     click.echo("Generating symmetric key for the slot...")
     key_enc, key_mac = None, None
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+    with open_hsm_session_with_default_admin(ctx) as (conf, ses):
         key_enc = ses.get_pseudo_random(128//8)
         key_mac = ses.get_pseudo_random(128//8)
 

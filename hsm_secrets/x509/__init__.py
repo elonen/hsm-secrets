@@ -1,19 +1,21 @@
+from pathlib import Path
 from cryptography import x509
 from yubihsm.core import AuthSession
 
+from cryptography.hazmat.primitives import serialization
 from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_all_config_items_per_type, find_config_items_of_class, load_hsm_config
 
 import yubihsm.objects
 import yubihsm.defs
 
-from hsm_secrets.utils import confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session_with_default_admin
+from hsm_secrets.utils import confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session_with_default_admin, open_hsm_session_with_yubikey, click_echo_colored_commands
 
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import display_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
 
 import click
 
-from hsm_secrets.x509.key_adapters import make_private_key_adapter
+from hsm_secrets.key_adapters import make_private_key_adapter
 
 
 @click.group()
@@ -29,7 +31,7 @@ def cmd_x509(ctx):
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Create all certificates")
 @click.option("--dry-run", "-n", is_flag=True, help="Dry run (do not create certificates)")
 @click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
-def create_cert(ctx: click.Context, all_certs: bool, dry_run: bool, cert_ids: tuple):
+def create_cert_cmd(ctx: click.Context, all_certs: bool, dry_run: bool, cert_ids: tuple):
     """Create certificate(s) on the HSM
 
     ID is a 16-bit hex value (e.g. '0x12af' or '12af').
@@ -42,7 +44,76 @@ def create_cert(ctx: click.Context, all_certs: bool, dry_run: bool, cert_ids: tu
     if not all_certs and not cert_ids:
         print("Error: No certificates specified for creation.")
         return
+    create_certs_impl(ctx, all_certs, dry_run, cert_ids)
 
+
+@cmd_x509.command('get-cert')
+@click.pass_context
+@click.option('--all', '-a', 'all_certs', is_flag=True, help="Get all certificates")
+@click.option('--outdir', '-o', type=click.Path(), required=False, help="Write PEMs into files here")
+@click.option('--bundle', '-b', type=click.Path(), required=False, help="Write a single PEM bundle file")
+@click.option('--use-default-admin', is_flag=True, help="Use the default admin key (instead of Yubikey)")
+@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
+def get_cert_cmd(ctx: click.Context, all_certs: bool, outdir: str|None, bundle: str|None, cert_ids: tuple, use_default_admin: bool):
+    """Get certificate(s) from the HSM
+
+    You can specify multiple IDs to get multiple certificates,
+    or use the --all flag to get all certificates defined in the config.
+    Specify --bundle to get a single PEM file with all selected certificates.
+    """
+    conf = ctx.obj['config']
+
+    if outdir and bundle:
+        raise click.ClickException("Error: --outdir and --bundle options are mutually exclusive.")
+
+    cert_def_for_id = {c.id: c for c in find_config_items_of_class(conf, OpaqueObject)}
+    all_cert_ids = [f"0x{c.id:04x}" for c in cert_def_for_id.values()]
+
+    selected_ids = all_cert_ids if all_certs else list(cert_ids)
+    if len(set(selected_ids) - set(all_cert_ids)) > 0:
+        raise click.ClickException(f"Unknown certificate ID(s): {set(selected_ids) - set(all_cert_ids)}.\nValid IDs are: {all_cert_ids}")
+    if not selected_ids:
+        raise click.ClickException("No certificates specified for retrieval.")
+
+    for cd in [cert_def_for_id[int(id.replace("0x", ""), 16)] for id in selected_ids]:
+        click.echo(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'")
+    click.echo()
+
+    def do_it(conf: HSMConfig, ses: AuthSession):
+        for cert_id in selected_ids:
+            cert_id_int = int(cert_id.replace("0x", ""), 16)
+            obj = ses.get_object(cert_id_int, yubihsm.defs.OBJECT.OPAQUE)
+            assert isinstance(obj, yubihsm.objects.Opaque)
+            cert_def = cert_def_for_id[cert_id_int]
+            pem = obj.get_certificate().public_bytes(encoding=serialization.Encoding.PEM).decode()
+            if outdir:
+                pem_file = Path(outdir) / f"{cert_def.label}.pem"
+                pem_file.write_text(pem.strip() + "\n")
+                click.echo(f"Wrote 0x{cert_id_int:04x} to {pem_file}")
+            elif bundle:
+                pem_file = Path(bundle)
+                with open(pem_file, "a") as f:
+                    f.write(pem.strip() + "\n")
+                click.echo(f"Appended 0x{cert_id_int:04x} to {pem_file}")
+            else:
+                click.echo(pem)
+
+        click_echo_colored_commands("To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile <CERT_FILE.pem> | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
+
+
+    if use_default_admin:
+        with open_hsm_session_with_default_admin(ctx) as (conf, ses):
+            do_it(conf, ses)
+    else:
+        with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+            do_it(conf, ses)
+
+# ---------------
+
+def create_certs_impl(ctx: click.Context, all_certs: bool, dry_run: bool, cert_ids: tuple):
+    """
+    Create certificates on a YubiHSM2, based on the configuration file and CLI arguments.
+    """
     conf = ctx.obj['config']
     dev_serial = ctx.obj['devserial']
 
@@ -143,13 +214,3 @@ def create_cert(ctx: click.Context, all_certs: bool, dry_run: bool, cert_ids: tu
     else:
         with open_hsm_session_with_default_admin(ctx) as (conf, ses):
             _do_it(conf, ses)
-
-
-
-'''
-def create_pem_bundle(certs: List[x509.Certificate]) -> str:
-    """
-    Create a PEM-encoded bundle of certificates.
-    """
-    return "".join(cert.public_bytes(Encoding.PEM).decode() for cert in certs)
-'''

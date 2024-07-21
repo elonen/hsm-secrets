@@ -17,7 +17,7 @@ import yubihsm.objects
 import yubihsm.defs
 
 from hsm_secrets.x509.def_utils import merge_x509_info_with_defaults
-from hsm_secrets.x509.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter
+from hsm_secrets.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter
 
 
 class X509CertBuilder:
@@ -94,7 +94,8 @@ class X509CertBuilder:
         """
         builder = x509.CertificateSigningRequestBuilder().subject_name(self._mk_name_attribs())
 
-        builder = builder.add_extension(self._mkext_alt_name(), critical=False)
+        if self.cert_def_info.attribs and self.cert_def_info.attribs.subject_alt_names:
+            builder = builder.add_extension(self._mkext_alt_name(), critical=False)
 
         if self.cert_def_info.key_usage:
             builder = builder.add_extension(self._mkext_key_usage(), critical=True)
@@ -136,11 +137,18 @@ class X509CertBuilder:
         if self.cert_def_info.extended_key_usage:
             builder = builder.add_extension(self._mkext_extended_key_usage(), critical=False)
 
-        if self.cert_def_info.is_ca:
-            path_length = None if issuer is None else 0  # Root CA: None, Intermediate: 0
-            builder = builder.add_extension(x509.BasicConstraints(ca=True, path_length=path_length), critical=True)
+        if self.cert_def_info.name_constraints:
+            builder = builder.add_extension(self._mkext_name_constraints(), critical=False)
+
+        ca = self.cert_def_info.ca or False
+        path_len = self.cert_def_info.path_len or 0
+        if path_len and not ca:
+            raise ValueError("Path length > 0 is only valid for CA certificates")
+
+        builder = builder.add_extension(x509.BasicConstraints(ca, path_len), critical=True)
 
         return builder
+
 
     # ----- Extension (OID) converters -----
     # These read the config object and convert it to the appropriate `cryptography` OID objects
@@ -163,7 +171,7 @@ class X509CertBuilder:
     def _mkext_alt_name(self) -> x509.SubjectAlternativeName:
         assert self.cert_def_info.attribs, "X509Info.attribs.subject_alt_names is missing"
         san: List[Union[x509.DNSName, x509.IPAddress]] = []
-        for name in self.cert_def_info.attribs.subject_alt_names:
+        for name in self.cert_def_info.attribs.subject_alt_names or []:
             try:
                 ip = ipaddress.ip_address(name)
                 san.append(x509.IPAddress(ip))
@@ -199,3 +207,48 @@ class X509CertBuilder:
         assert self.cert_def_info.extended_key_usage, "X509Info.extended_key_usage is missing"
         usages = [eku_map[usage] for usage in self.cert_def_info.extended_key_usage if usage in eku_map]
         return x509.ExtendedKeyUsage(usages)
+
+    def _mkext_name_constraints(self) -> x509.NameConstraints:
+        assert self.cert_def_info.name_constraints, "X509Info.name_constraints is missing"
+        type_str_map = {
+            "dns": x509.DNSName,
+            "ip": x509.IPAddress,
+            "rfc822": x509.RFC822Name,
+            "uri": x509.UniformResourceIdentifier,
+            "directory": x509.DirectoryName,
+            "registered_id": x509.RegisteredID,
+            "other": x509.OtherName
+        }
+
+        permitted = []
+        if name_dict := self.cert_def_info.name_constraints.permitted:
+            for (name_type, names) in name_dict.items():
+                dst_cls = type_str_map[name_type]
+
+                if dst_cls == x509.IPAddress:
+                    def ip_or_network(n: str) -> Union[ipaddress.IPv4Address, ipaddress.IPv6Address, ipaddress.IPv4Network, ipaddress.IPv6Network]:
+                        try:
+                            return ipaddress.ip_address(n)
+                        except ValueError:
+                            return ipaddress.ip_network(n, strict=False)
+                    vals = [dst_cls(ip_or_network(name)) for name in names]
+                else:
+                    vals = [dst_cls(name) for name in names]
+
+                permitted.extend(vals)
+
+        excluded = []
+        if name_dict := self.cert_def_info.name_constraints.excluded:
+            for (name_type, names) in name_dict.items():
+                excluded.extend([type_str_map[name_type](name) for name in names])
+
+        if len(set(permitted)) != len(permitted):
+            raise ValueError("Duplicate permitted name constraints")
+        if len(set(excluded)) != len(excluded):
+            raise ValueError("Duplicate excluded name constraints")
+        if set(permitted) & set(excluded):
+            raise ValueError("Permitted and excluded name constraints overlap")
+
+        return x509.NameConstraints(
+            permitted_subtrees = None if not permitted else permitted,
+            excluded_subtrees = None if not excluded else excluded)
