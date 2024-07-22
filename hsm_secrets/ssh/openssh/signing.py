@@ -90,7 +90,7 @@ def verify_ssh_cert(cert: OpenSSHCertificate) -> bool:
         data_to_verify = cert.make_signing_request()
 
         encoded_sig_key = cert.encode_signature_key_as_string()
-        issuer = cert_for_ssh_pub_id(encoded_sig_key, ssh.SSHCertificateType.USER)
+        issuer = cert_for_ssh_pub_id(encoded_sig_key, cert_id=cert.cert_id, cert_type=ssh.SSHCertificateType.USER)
 
         # Parse the signature format and signature data
         sig_data = cert.signature

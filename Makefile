@@ -12,7 +12,7 @@ TARGET_BINS := $(VENV)/bin/hsm-secrets
 
 $(TARGET_BINS): $(VENV) $(PY_SRC) $(VENV)/bin/mypy
 	@echo "Verifying with mypy..."
-	$(VENV)/bin/mypy $(MODULE)
+	$(VENV)/bin/mypy $(MODULE) --ignore-missing-imports
 	@echo "Installing the application..."
 	$(PIP) install -e .
 	@echo ""

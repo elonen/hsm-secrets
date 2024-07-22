@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 
 def print_certificate_details(cert: OpenSSHCertificate) -> None:
     print(f"  Key Cipher: {cert.cert_cipher_string()}")
-    print(f"  Key ID: {cert.key_id}")
+    print(f"  ID: {cert.cert_id}")
     print(f"  Serial: {cert.serial}")
     print(f"  Nonce: {base64.b64encode(cert.nonce).decode('ascii')}")
     print(f"  Type: {cert.cert_type}")
@@ -81,7 +81,8 @@ def parsepub(args: argparse.Namespace) -> None:
 
     cert = cert_for_ssh_pub_id(
         file_contents,
-        ssh.SSHCertificateType.USER,
+        cert_id = args.pub_file,
+        cert_type = ssh.SSHCertificateType.USER,
         principals=["basic_users", "admins"])
 
     print("Parsed public key into a certificate:")
