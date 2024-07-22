@@ -128,7 +128,7 @@ service_keys:
         label: log-audit
         id: 0x0008
         domains: ['all']
-        capabilities: ['get-log-entries']
+        capabilities: ['get-log-entries', 'exportable-under-wrap']
         delegated_capabilities: []
 
     # Service key for NAC (Network Access Control) for

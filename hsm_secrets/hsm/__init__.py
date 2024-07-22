@@ -1,4 +1,8 @@
+import datetime
+from io import BytesIO
+from pathlib import Path
 import sys
+import tarfile
 import click
 from hsm_secrets.config import HSMConfig, find_all_config_items_per_type
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
@@ -52,7 +56,7 @@ def cmd_hsm(ctx):
     5. Generate keys on master device with `compare-config --create`.
     6. Create certificates etc from the keys.
     7. Check that all configure objects are present on master (`compare-config`).
-    8. Clone master device to other ones.
+    8. Clone master device to other ones (backup + restore).
     9. Double check that all keys are present on all devices (`compare-config --alldevs`).
     10. Remove default admin key from all devices.
 
@@ -411,8 +415,139 @@ def attest_key(ctx: click.Context, cert_id: str, out: click.File):
 
 # ---------------
 
-@cmd_hsm.command('clone-master-hsm')
+@cmd_hsm.command('backup-hsm')
 @click.pass_context
-def clone_master_hsm(ctx: click.Context):
-    """Clone master device contents to other YubiHSMs"""
-    raise NotImplementedError("This command is not yet implemented.")
+@click.option('--out', '-o', type=click.Path(exists=False, allow_dash=False), required=False, help='Output file', default=None)
+def backup_hsm(ctx: click.Context, out: click.File|None):
+    """Make a .tar.gz backup of HSM
+
+    Exports all objects under wrap from the YubiHSM and saves them
+    to a .tar.gz file. The file can be used to restore the objects
+    to the same or another YubiHSM device that has the same wrap key.
+    """
+    conf = ctx.obj['config']
+    assert isinstance(conf, HSMConfig)
+
+    click.echo("")
+    serial = ctx.obj['devserial']
+    click.echo(f"Reading objects from YubiHSM device {serial}...")
+
+    # Open the output file
+    fh = None
+    if out is None:
+        p = Path(f"yubihsm2-device-{serial}-wrapped-backup.tar.gz")
+        if p.exists():
+            click.confirm(f"File '{p}' already exists. Overwrite?", abort=True)
+        fh = p.open('wb')
+    else:
+        click.echo(f"Writing tar.gz format to '{out}'")
+        fh = Path(str(out)).open('wb')
+    tar = tarfile.open(fileobj=fh, mode='w:gz')
+
+    skipped = 0
+    with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
+
+        wrap_key = ses.get_object(conf.admin.wrap_key.id, yubihsm.defs.OBJECT.WRAP_KEY)
+        assert isinstance(wrap_key, yubihsm.objects.WrapKey)
+        if not hsm_obj_exists(wrap_key):
+            raise click.ClickException("Configured wrap key not found in the YubiHSM.")
+
+        device_objs = list(ses.list_objects())
+        for obj in device_objs:
+
+            # Try to export the object
+            try:
+                key_bytes = wrap_key.export_wrapped(obj)
+            except yubihsm.exceptions.YubiHsmDeviceError as e:
+                skipped += 1
+                if e.code == yubihsm.defs.ERROR.INSUFFICIENT_PERMISSIONS:
+                    click.echo(click.style(f"- Warning: Skipping 0x{obj.id:04x}: Insufficient permissions to export object.", fg='yellow'))
+                    continue
+                else:
+                    click.echo(click.style(f"- Error: Failed to export object 0x{obj.id:04x}: {e}", fg='red'))
+                    continue
+
+            # Write to tar
+            file_name = f"{obj.object_type.name}--0x{obj.id:04x}--{obj.get_info().label}.bin"
+            tarinfo = tarfile.TarInfo(name=file_name)
+            tarinfo.size = len(key_bytes)
+            tarinfo.mtime = int(datetime.datetime.now().timestamp())
+            tar.addfile(tarinfo, fileobj=BytesIO(key_bytes))
+
+            click.echo(f"- Exported 0x{obj.id:04x}: ({obj.object_type.name}): {obj.get_info().label}")
+
+    tar.close()
+    click.echo("")
+    click.echo("Backup complete.")
+    if skipped:
+        click.echo(click.style(f"Skipped {skipped} objects due to errors or insufficient permissions.", fg='yellow'))
+
+
+@cmd_hsm.command('restore-hsm')
+@click.pass_context
+@click.argument('backup_file', type=click.Path(exists=True, allow_dash=False), required=True, metavar='<backup_file>')
+@click.option('--force', is_flag=True, help="Don't ask for confirmation before restoring")
+def restore_hsm(ctx: click.Context, backup_file: str, force: bool):
+    """Restore a .tar.gz backup to HSM
+
+    Imports all objects from a .tar.gz backup file to the YubiHSM.
+    The backup file must have been created with the `backup-hsm` command, file names
+    must be in the format `object_type--id--label.bin`.
+
+    The same wrap key must be present in the YubiHSM to restore the objects as they were exported with.
+    """
+    conf = ctx.obj['config']
+    assert isinstance(conf, HSMConfig)
+
+    click.echo("")
+    serial = ctx.obj['devserial']
+    if not force:
+        click.confirm(f"WARNING: This will overwrite existing objects in the YubiHSM device {serial}. Continue?", abort=True)
+        if serial == conf.general.master_device:
+            click.confirm("This is the configured master device. Are you ABSOLUTELY sure you want to continue?", abort=True)
+
+    with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
+
+        wrap_key = ses.get_object(conf.admin.wrap_key.id, yubihsm.defs.OBJECT.WRAP_KEY)
+        assert isinstance(wrap_key, yubihsm.objects.WrapKey)
+        if not hsm_obj_exists(wrap_key):
+            raise click.ClickException("Configured wrap key not found in the YubiHSM.")
+
+        with open(backup_file, 'rb') as fh:
+            tar = tarfile.open(fileobj=fh, mode='r:gz')
+            for tarinfo in tar:
+                name = tarinfo.name
+                assert name.endswith('.bin'), f"Unexpected file extension in tar archive: '{name}'"
+                assert name.count('--') == 2, f"Unexpected file name format in tar archive: '{name}'"
+                obj_id = int(name.split('--')[1].replace('0x', ''), 16)
+                obj_type = name.split('--')[0]
+
+                click.echo(f"- Importing object from '{tarinfo.name}'...")
+
+                obj_enum = yubihsm.defs.OBJECT.__members__.get(obj_type)
+                if obj_enum is None:
+                    click.echo(click.style(f"   └-> Skipping unknown object type '{obj_type}' in backup. File: '{name}'", fg='yellow'))
+                    continue
+
+                if obj_enum == yubihsm.defs.OBJECT.WRAP_KEY and obj_id == wrap_key.id:
+                    click.echo(click.style(f"   └-> Skipping wrap key 0x{obj_id:04x} that we are currently using for restoring.", fg='yellow'))
+                    continue
+
+                obj = ses.get_object(obj_id, obj_enum)
+                if hsm_obj_exists(obj):
+                    if force or click.confirm(f"   └-> Object 0x{obj_id:04x} ({obj_type}) already exists. Overwrite?", default=False):
+                        click.echo(f"      └-> Deleting existing {obj_type} 0x{obj_id:04x}'")
+                        obj.delete()
+                    else:
+                        click.echo(click.style(f"      └-> Skipping existing {obj_type} 0x{obj_id:04x}'", fg='yellow'))
+                        continue
+
+                tarfh = tar.extractfile(tarinfo)
+                assert tarfh is not None, f"Failed to extract file '{tarinfo.name}' from tar archive."
+                key_bytes = tarfh.read()
+                obj = wrap_key.import_wrapped(key_bytes)
+                click.echo(f"   └-> Restored: 0x{obj.id:04x}: ({obj.object_type.name}): {str(obj.get_info().label)}")
+                click.echo("")
+
+    click.echo("")
+    click.echo("Restore complete.")
