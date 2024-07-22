@@ -23,7 +23,7 @@ from hsm_secrets.x509 import cmd_x509
 @click.version_option()
 @click.pass_context
 def cli(ctx: click.Context, config: str, yklabel: str|None, devserial: str|None):
-    """HSM secret management tool with HSM integration."""
+    """Centralized secret management tool for YubiHSM2."""
 
     yk_label = yklabel
     if not yk_label:

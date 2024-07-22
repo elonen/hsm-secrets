@@ -4,6 +4,8 @@ dist/
 dist_deb
 build/
 
+.DS_Store
+
 _venv
 .vscode
 __pycache__
