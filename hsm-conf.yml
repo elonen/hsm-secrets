@@ -566,21 +566,37 @@ ssh:
                 - exportable-under-wrap
 
 
-# For deriving unique passwords for VMs, services etc.
-#
-# Usage: Use this key with BIP32 to derive unique passwords from service/vm identifier and salt for each service
-# To rotate passwords, generate a new salt and derive a new password from the same service identifier.
-# Save old salt for a while in case of rollback, but do not use it for new passwords.
+# For deriving unique passwords from usernames, hostnames, etc.
 password_derivation:
     keys:
-    - label: host-passwords
-      id: 0x0810
-      domains: ['password_derivation']
-      algorithm: hmac-sha256    # 60x faster than hmac-sha512 on YubiHSM 2
-      capabilities:
-        - sign-hmac
-        - verify-hmac
-        - exportable-under-wrap
+      - label: pw-derivation-1
+        id: 0x0810
+        domains: ['password_derivation']
+        algorithm: hmac-sha256    # 60x faster than hmac-sha512 on YubiHSM 2
+        capabilities:
+          - sign-hmac
+          - verify-hmac
+          - exportable-under-wrap
+
+    default_rule: host-root-passwords
+
+    rules:
+      - id: host-root-passwords
+        key: 0x0810
+        format: bip39
+        separator: '.'      # Separate password parts with a '.' instead of '-' (or space) to avoid keyboard layout issues
+        bits: 64            # 64 should be fine for yescrypt / bcrypt etc, Use 128 if the password is hashed with a weak scheme like NTLM
+        rotation_tokens:
+          # List of tool-generated tokens that rotate password for a specific host (or all if name_hmac is None).
+          # - `name_hmac` is the HMAC of the name, so each name can be rotated independently. If missing, the rule applies to all passwords.
+          # - Nonce prevents current HSM operators from pre-generating rotated passwords before they leave the team.
+          # - Timestamp is used to order the rotations, so that displayng previous passwords (e.g. in case of a rollback) is possible.
+          - {name_hmac: 0x4b2d9547f720ec540a9edda5d33f3aa68719cc5891a9b08df3382229cfc90670, nonce: 0x379cb049d15b37ab, ts: 1721727172}
+
+#class PwRotationToken(NoExtraBaseModel):
+#    name_sha256: Optional[Annotated[int, Field(strict=True, gt=0)]] = Field(default=None)
+#    nonce: Annotated[int, Field(strict=True, gt=0)] = Field(default_factory=lambda: int.from_bytes(os.urandom(16), 'big'))
+#    ts: Annotated[int, Field(strict=True, ge=0)] = Field(default_factory=lambda: int(datetime.now().timestamp()))
 
 
 # For generic encryption of secrets, passwords, etc.

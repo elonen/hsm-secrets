@@ -1,5 +1,8 @@
 # This file contains the Pydantic validation models for the HSM configuration file.
 
+from dataclasses import dataclass
+from datetime import datetime
+import os
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
 from typing import List, Literal, NewType, Optional, Sequence, Union
@@ -278,8 +281,25 @@ class SSH(NoExtraBaseModel):
     default_ca: KeyID
     root_ca_keys: List[HSMAsymmetricKey]
 
+
+class PwRotationToken(NoExtraBaseModel):
+    name_hmac: Optional[Annotated[int, Field(strict=True, gt=0)]] = Field(default=None)
+    nonce: Annotated[int, Field(strict=True, gt=0)]
+    ts: Annotated[int, Field(strict=True, ge=0)]
+
+class PasswordDerivationRule(NoExtraBaseModel):
+    id: KeyLabel
+    key: KeyID
+    format: Literal["bip39", "hex"] = Field(default="bip39")
+    separator: str = Field(default=".")
+    bits: Literal[64, 128, 256] = Field(default=64)
+    rotation_tokens: List[PwRotationToken] = Field(default_factory=list)
+
 class PasswordDerivation(NoExtraBaseModel):
     keys: List[HSMHmacKey]
+    default_rule: KeyLabel
+    rules: List[PasswordDerivationRule]
+
 
 class Encryption(NoExtraBaseModel):
     keys: List[HSMSymmetricKey]
