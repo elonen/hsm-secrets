@@ -1,23 +1,60 @@
+from dataclasses import dataclass
+from enum import Enum
 import os
-from typing import Callable, Optional, Sequence
-from contextlib import contextmanager
+from typing import Callable, Generator, Optional, Sequence
+from contextlib import _GeneratorContextManager, contextmanager
 
 from click import echo
 import click
 
-from yubihsm import YubiHsm # type: ignore
-from yubihsm.core import AuthSession
-from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT
-from yubihsm.objects import AsymmetricKey, HmacKey, SymmetricKey, WrapKey, YhsmObject, AuthenticationKey
+from yubihsm import YubiHsm     # type: ignore [import]
+from yubihsm.core import AuthSession     # type: ignore [import]
+from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT     # type: ignore [import]
+from yubihsm.objects import AsymmetricKey, HmacKey, SymmetricKey, WrapKey, YhsmObject, AuthenticationKey     # type: ignore [import]
+from yubikit.hsmauth import HsmAuthSession     # type: ignore [import]
+from yubihsm.exceptions import YubiHsmDeviceError     # type: ignore [import]
 
-from yubikit.hsmauth import HsmAuthSession  #, DEFAULT_MANAGEMENT_KEY
-from yubihsm.exceptions import YubiHsmDeviceError
 from ykman import scripting
 import yubikit.core
 import yubikit.hsmauth as hsmauth
 
 import hsm_secrets.config as hscfg
 import curses
+import click
+
+from functools import wraps
+
+class HSMAuthMethod(Enum):
+    YUBIKEY = 1
+    DEFAULT_ADMIN = 2
+    PASSWORD = 3
+
+
+@dataclass
+class HsmSecretsCtx:
+    click_ctx: click.Context
+    conf: hscfg.HSMConfig
+    hsm_serial: str
+    yubikey_label: str
+    forced_auth_method: Optional[HSMAuthMethod] = None
+    auth_password: Optional[str] = None
+    auth_password_id: Optional[int] = None
+
+
+def pass_common_args(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        click_ctx = click.get_current_context()
+        ctx = HsmSecretsCtx(
+            click_ctx = click_ctx,
+            conf = click_ctx.obj['config'],
+            hsm_serial = click_ctx.obj.get('hsmserial'),
+            yubikey_label = click_ctx.obj.get('yubikey_label'),
+            forced_auth_method = click_ctx.obj.get('forced_auth_method'),
+            auth_password = click_ctx.obj.get('auth_password'),
+            auth_password_id = click_ctx.obj.get('auth_password_id'))
+        return f(ctx, *args, **kwargs)
+    return wrapper
 
 
 def pw_check_fromhex(pw: str) -> str|None:
@@ -144,42 +181,59 @@ def verify_hsm_device_info(device_serial, hsm):
     if int(device_serial) != int(info.serial):
         raise ValueError(f"Device serial mismatch! Connected='{hsm.serial}', Expected='{device_serial}'")
 
+@contextmanager
+def open_hsm_session(
+        ctx: HsmSecretsCtx,
+        default_auth_method: HSMAuthMethod = HSMAuthMethod.YUBIKEY,
+        device_serial: str | None = None) -> Generator[AuthSession, None, None]:
+    """
+    Open a session to the HSM using forced or given default auth method.
+    This is an auto-selecting wrapper for the specific session context managers.
+    """
+    auth_method = ctx.forced_auth_method or default_auth_method
+    device_serial = device_serial or ctx.hsm_serial
+
+    if auth_method == HSMAuthMethod.YUBIKEY:
+        ctxman = open_hsm_session_with_yubikey(ctx, device_serial)
+    elif auth_method == HSMAuthMethod.DEFAULT_ADMIN:
+        ctxman = open_hsm_session_with_default_admin(ctx, device_serial)
+    elif auth_method == HSMAuthMethod.PASSWORD:
+        assert device_serial, "HSM device serial not provided nor inferred. Cannot use shared secret auth."
+        assert ctx.auth_password and ctx.auth_password_id
+        ctxman = open_hsm_session_with_password(ctx, ctx.auth_password_id, ctx.auth_password, device_serial)
+    else:
+        raise ValueError(f"Unknown auth method: {auth_method}")
+    with ctxman as session:
+        yield session
+
 
 @contextmanager
-def open_hsm_session_with_yubikey(ctx: click.Context, device_serial: str|None = None):
+def open_hsm_session_with_yubikey(ctx: HsmSecretsCtx, device_serial: str|None = None) -> Generator[AuthSession, None, None]:
     """
     Open a session to the HSM using the first YubiKey found, and authenticate with the YubiKey HSM auth label.
-
-    Args:
-        ctx (click.Context): The Click context object
     """
-    conf: hscfg.HSMConfig = ctx.obj['config']
-    device_serial = device_serial or ctx.obj['devserial']
+    device_serial = device_serial or ctx.hsm_serial
     passwd = os.environ.get('YUBIKEY_PASSWORD', None)
     if passwd:
         echo("Using YubiKey password from environment variable.")
-    session = connect_hsm_and_auth_with_yubikey(conf, ctx.obj['yk_label'], device_serial, passwd)
+    session = connect_hsm_and_auth_with_yubikey(ctx.conf, ctx.yubikey_label, device_serial, passwd)
     try:
-        yield conf, session
+        yield session
     finally:
         session.close()
 
 
 @contextmanager
-def open_hsm_session_with_default_admin(ctx: click.Context, device_serial: str|None = None):
+def open_hsm_session_with_default_admin(ctx: HsmSecretsCtx, device_serial: str|None = None) -> Generator[AuthSession, None, None]:
     """
     Open a session to the HSM using the first YubiKey found, and authenticate with the YubiKey HSM auth label.
-
-    Args:
-        ctx (click.Context): The Click context object
     """
-    conf: hscfg.HSMConfig = ctx.obj['config']
-    device_serial = device_serial or ctx.obj['devserial']
+    device_serial = device_serial or ctx.hsm_serial
     assert device_serial, "HSM device serial not provided nor inferred."
 
     click.echo(click.style(f"Using insecure default admin key to auth on YubiHSM2 {device_serial}.", fg='magenta'))
 
-    connector_url = conf.general.all_devices.get(device_serial)
+    connector_url = ctx.conf.general.all_devices.get(device_serial)
     if not connector_url:
         raise ValueError(f"Device serial '{device_serial}' not found in config file.")
 
@@ -189,16 +243,16 @@ def open_hsm_session_with_default_admin(ctx: click.Context, device_serial: str|N
     session = None
 
     try:
-        session = hsm.create_session_derived(conf.admin.default_admin_key.id, conf.admin.default_admin_password)
+        session = hsm.create_session_derived(ctx.conf.admin.default_admin_key.id, ctx.conf.admin.default_admin_password)
         click.echo(click.style(f"HSM session {session.sid} started.", fg='magenta'))
     except YubiHsmDeviceError as e:
         if e.code == ERROR.OBJECT_NOT_FOUND:
-            echo(click.style(f"Default admin key '0x{conf.admin.default_admin_key.id:04x}' not found. Aborting.", fg='red'))
+            echo(click.style(f"Default admin key '0x{ctx.conf.admin.default_admin_key.id:04x}' not found. Aborting.", fg='red'))
             exit(1)
         raise
 
     try:
-        yield conf, session
+        yield session
     finally:
         click.echo(click.style(f"Closing HSM session {session.sid}.", fg='magenta'))
         session.close()
@@ -206,29 +260,24 @@ def open_hsm_session_with_default_admin(ctx: click.Context, device_serial: str|N
 
 
 @contextmanager
-def open_hsm_session_with_shared_admin(ctx: click.Context, password: str, device_serial: str|None = None):
+def open_hsm_session_with_password(ctx: HsmSecretsCtx, auth_key_id: int, password: str, device_serial: str|None = None) -> Generator[AuthSession, None, None]:
     """
-    Open a session to the HSM using a share admin password (either reconstructed from shares or from backup).
-    Args:
-        ctx (click.Context): The Click context object
+    Open a session to the HSM using a password-derived auth key.
     """
-    conf: hscfg.HSMConfig = ctx.obj['config']
-
-    device_serial = device_serial or ctx.obj['devserial']
+    device_serial = device_serial or ctx.hsm_serial
     assert device_serial, "HSM device serial not provided nor inferred."
 
-    connector_url = conf.general.all_devices.get(device_serial)
+    connector_url = ctx.conf.general.all_devices.get(device_serial)
     if not connector_url:
         raise ValueError(f"Device serial '{device_serial}' not found in config file.")
 
     hsm = YubiHsm.connect(connector_url)
     verify_hsm_device_info(device_serial, hsm)
 
-    key = conf.admin.shared_admin_key.id
-    click.echo(f"Using shared admin key ID 0x{key:04x}")
-    session = hsm.create_session_derived(key, password)
+    click.echo(f"Using password login with key ID 0x{auth_key_id:04x}")
+    session = hsm.create_session_derived(auth_key_id, password)
     try:
-        yield conf, session
+        yield session
     finally:
         session.close()
         hsm.close()
@@ -241,13 +290,13 @@ def encode_algorithm(name_literal: str|hscfg.AsymmetricAlgorithm) -> ALGORITHM:
     return hscfg.HSMConfig.algorithm_from_name(name_literal)   # type: ignore
 
 
-def hsm_put_wrap_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMWrapKey, key: bytes) -> WrapKey:
+def hsm_put_wrap_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMWrapKey, key: bytes) -> WrapKey:
     """
     Put a (symmetric) wrap key into the HSM.
     """
     wrap_key = ses.get_object(key_def.id, OBJECT.WRAP_KEY)
     assert isinstance(wrap_key, WrapKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, wrap_key)
+    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, wrap_key)
     res = wrap_key.put(
         session = ses,
         object_id = key_def.id,
@@ -257,17 +306,17 @@ def hsm_put_wrap_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, k
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         delegated_capabilities = conf.capability_from_names(set(key_def.delegated_capabilities)),
         key = key)
-    click.echo(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {dev_serial}")
+    click.echo(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {hsm_serial}")
     return res
 
 
-def hsm_put_derived_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, password: str) -> AuthenticationKey:
+def hsm_put_derived_auth_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, password: str) -> AuthenticationKey:
     """
     Put a password-derived authentication key into the HSM.
     """
     auth_key = ses.get_object(key_def.id, OBJECT.AUTHENTICATION_KEY)
     assert isinstance(auth_key, AuthenticationKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, auth_key)
+    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, auth_key)
     res = auth_key.put_derived(
         session = ses,
         object_id = key_def.id,
@@ -276,17 +325,17 @@ def hsm_put_derived_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMC
         capabilities = conf.capability_from_names(key_def.capabilities),
         delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
         password = password)
-    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
-def hsm_put_symmetric_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, key_enc: bytes, key_mac: bytes) -> AuthenticationKey:
+def hsm_put_symmetric_auth_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, key_enc: bytes, key_mac: bytes) -> AuthenticationKey:
     """
     Put a symmetric authentication key into the HSM.
     """
     auth_key = ses.get_object(key_def.id, OBJECT.AUTHENTICATION_KEY)
     assert isinstance(auth_key, AuthenticationKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, auth_key)
+    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, auth_key)
     res = auth_key.put(
         session = ses,
         object_id = key_def.id,
@@ -296,17 +345,17 @@ def hsm_put_symmetric_auth_key(ses: AuthSession, dev_serial: str, conf: hscfg.HS
         delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
         key_enc = key_enc,
         key_mac = key_mac)
-    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
-def hsm_generate_symmetric_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMSymmetricKey) -> SymmetricKey:
+def hsm_generate_symmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMSymmetricKey) -> SymmetricKey:
     """
     Generate a symmetric key on the HSM.
     """
     sym_key = ses.get_object(key_def.id, OBJECT.SYMMETRIC_KEY)
     assert isinstance(sym_key, SymmetricKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, sym_key)
+    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, sym_key)
     click.echo(f"Generating symmetric key, type '{key_def.algorithm}'...")
     res = sym_key.generate(
         session = ses,
@@ -315,17 +364,17 @@ def hsm_generate_symmetric_key(ses: AuthSession, dev_serial: str, conf: hscfg.HS
         domains = conf.get_domain_bitfield(key_def.domains),
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         algorithm = conf.algorithm_from_name(key_def.algorithm))
-    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) generated in YubiHSM device {dev_serial}")
+    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) generated in YubiHSM device {hsm_serial}")
     return res
 
 
-def hsm_generate_asymmetric_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAsymmetricKey) -> AsymmetricKey:
+def hsm_generate_asymmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAsymmetricKey) -> AsymmetricKey:
     """
     Generate an asymmetric key on the HSM.
     """
     asym_key = ses.get_object(key_def.id, OBJECT.ASYMMETRIC_KEY)
     assert isinstance(asym_key, AsymmetricKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, asym_key)
+    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, asym_key)
     click.echo(f"Generating asymmetric key, type '{key_def.algorithm}'...")
     if 'rsa' in key_def.algorithm.lower():
         click.echo("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should be blinking while it works.")
@@ -337,17 +386,17 @@ def hsm_generate_asymmetric_key(ses: AuthSession, dev_serial: str, conf: hscfg.H
         domains = conf.get_domain_bitfield(key_def.domains),
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         algorithm = conf.algorithm_from_name(key_def.algorithm))
-    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
-def hsm_generate_hmac_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMHmacKey) -> HmacKey:
+def hsm_generate_hmac_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMHmacKey) -> HmacKey:
     """
     Generate an HMAC key on the HSM.
     """
     hmac_key = ses.get_object(key_def.id, OBJECT.HMAC_KEY)
     assert isinstance(hmac_key, HmacKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, hmac_key)
+    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, hmac_key)
     click.echo(f"Generating HMAC key, type '{key_def.algorithm}'...")
     res = hmac_key.generate(
         session = ses,
@@ -356,7 +405,7 @@ def hsm_generate_hmac_key(ses: AuthSession, dev_serial: str, conf: hscfg.HSMConf
         domains = conf.get_domain_bitfield(key_def.domains),
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         algorithm = conf.algorithm_from_name(key_def.algorithm))
-    click.echo(f"HMAC key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {dev_serial}")
+    click.echo(f"HMAC key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 

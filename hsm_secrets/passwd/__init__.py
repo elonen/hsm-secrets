@@ -7,22 +7,22 @@ import pyescrypt  # type: ignore [import]
 from mnemonic import Mnemonic
 
 from hsm_secrets.config import HSMConfig, PasswordDerivationRule, PwRotationToken, find_config_items_of_class
-from hsm_secrets.utils import click_echo_colored_commands, group_by_4, hsm_obj_exists, open_hsm_session_with_yubikey, secure_display_secret
+from hsm_secrets.utils import HsmSecretsCtx, click_echo_colored_commands, group_by_4, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args, secure_display_secret
 
 
 @click.group()
 @click.pass_context
-def cmd_pass(ctx):
+def cmd_pass(ctx: click.Context):
     """Password derivation"""
     ctx.ensure_object(dict)
 
 
 @cmd_pass.command('get')
-@click.pass_context
+@pass_common_args
 @click.argument('name', required=True, type=str, metavar='<name>')
 @click.option('--prev', '-p', required=False, type=int, help="Previous password index (default: 0)", default=0)
 @click.option('--rule', '-r', required=False, type=str, help="Derivation rule to use (default: read from config)", default=None)
-def get_password(ctx: click.Context, name: str, prev: int, rule: str|None):
+def get_password(ctx: HsmSecretsCtx, name: str, prev: int, rule: str|None):
     """Get password for given name
 
     Shows current password by default, or previous password if --prev is specified. For example,
@@ -36,15 +36,14 @@ def get_password(ctx: click.Context, name: str, prev: int, rule: str|None):
 
     Before the first rotation, nonce is an empty string.
     """
-    conf: HSMConfig = ctx.obj['config']
-    rule_id = rule or str(conf.password_derivation.default_rule)
+    rule_id = rule or str(ctx.conf.password_derivation.default_rule)
 
     if prev < 0:
         raise click.ClickException(f"Invalid previous password index: {prev}")
 
-    rule_def, key_id = _find_rule_and_key(conf, rule_id)
+    rule_def, key_id = _find_rule_and_key(ctx.conf, rule_id)
 
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+    with open_hsm_session(ctx) as ses:
         obj = ses.get_object(key_id, yubihsm.defs.OBJECT.HMAC_KEY)
         assert isinstance(obj, HmacKey)
         if not hsm_obj_exists(obj):
@@ -80,26 +79,25 @@ def get_password(ctx: click.Context, name: str, prev: int, rule: str|None):
 
 
 @cmd_pass.command('rotate')
-@click.pass_context
+@pass_common_args
 @click.argument('name', required=False, nargs=-1, type=str, metavar='[name] ...', default=None)
 @click.option('--rule', '-r', required=False, type=str, help="Derivation rule to use (default: read from config)", default=None)
 @click.option('--all', '-a', required=False, is_flag=True, help="Rotate all passwords")
-def rotate_password(ctx: click.Context, name: list[str]|None, rule: str|None, all: bool):
+def rotate_password(ctx: HsmSecretsCtx, name: list[str]|None, rule: str|None, all: bool):
     """Rotate password(s) for given name(s)
 
     Rotates the password for the given name(s) or all names if --all is specified.
     """
-    conf: HSMConfig = ctx.obj['config']
-    rule_id = rule or str(conf.password_derivation.default_rule)
+    rule_id = rule or str(ctx.conf.password_derivation.default_rule)
 
     if all and name:
         raise click.ClickException("Cannot specify both --all and specific names.")
     if not all and not name:
         raise click.ClickException("Must specify either --all or at least one name.")
 
-    _, key_id = _find_rule_and_key(conf, rule_id)
+    _, key_id = _find_rule_and_key(ctx.conf, rule_id)
 
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+    with open_hsm_session(ctx) as ses:
         obj = ses.get_object(key_id, yubihsm.defs.OBJECT.HMAC_KEY)
         assert isinstance(obj, HmacKey)
         if not hsm_obj_exists(obj):

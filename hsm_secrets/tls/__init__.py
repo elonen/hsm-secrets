@@ -7,24 +7,24 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hashes
 import cryptography.x509
 
-import yubihsm
-import yubihsm.defs
-import yubihsm.objects
+import yubihsm          # type: ignore [import]
+import yubihsm.defs     # type: ignore [import]
+import yubihsm.objects  # type: ignore [import]
 
-from hsm_secrets.config import HSMConfig, X509Cert, X509CertAttribs, X509Info
+from hsm_secrets.config import X509CertAttribs, X509Info
 from hsm_secrets.key_adapters import PrivateKey, make_private_key_adapter
-from hsm_secrets.utils import click_echo_colored_commands, hsm_obj_exists, open_hsm_session_with_yubikey
+from hsm_secrets.utils import HsmSecretsCtx, click_echo_colored_commands, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 
 @click.group()
 @click.pass_context
-def cmd_tls(ctx):
+def cmd_tls(ctx: click.Context):
     """TLS certificate commands"""
     ctx.ensure_object(dict)
 
 @cmd_tls.command('make-server-cert')
-@click.pass_context
+@pass_common_args
 @click.option('--out', '-o', required=True, type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output filename")
 @click.option('--common-name', '-c', required=True, help="CN, e.g. public DNS name")
 @click.option('--san-dns', '-d', multiple=True, help="DNS SAN (Subject Alternative Name)")
@@ -32,7 +32,7 @@ def cmd_tls(ctx):
 @click.option('--validity', '-v', default=365, help="Validity period in days")
 @click.option('--keyfmt', '-f', type=click.Choice(['rsa4096', 'ed25519', 'ecp256', 'ecp384']), default='ecp384', help="Key format")
 @click.option('--sign-crt', '-s', type=str, required=False, help="CA ID (hex) to sign with, or 'self'. Default: use config", default=None)
-def new_http_server_cert(ctx: click.Context, out: click.Path, common_name: str, san_dns: list[str], san_ip: list[str], validity: int, keyfmt: str, sign_crt: str):
+def new_http_server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: list[str], san_ip: list[str], validity: int, keyfmt: str, sign_crt: str):
     """Create a TLS server certificate + key
 
     Create a new TLS server certificate for the given CN and (optional) SANs.
@@ -44,14 +44,12 @@ def new_http_server_cert(ctx: click.Context, out: click.Path, common_name: str, 
     The --out option is used as a base filename, and the key, csr, and cert files
     written with the extensions '.key.pem', '.csr.pem', and '.cer.pem' respectively.
     """
-    conf: HSMConfig = ctx.obj['config']
-
     # Find the issuer CA definition
     issuer_x509_def = None
     issuer_cert_id = -1
     if (sign_crt or '').strip().lower() != 'self':
-        issuer_cert_id = int(sign_crt.replace('0x',''), 16) if sign_crt else conf.tls.default_ca_id
-        issuer_x509_def = find_cert_def(conf, issuer_cert_id)
+        issuer_cert_id = int(sign_crt.replace('0x',''), 16) if sign_crt else ctx.conf.tls.default_ca_id
+        issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_id)
         assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_id:04x}"
 
     info = X509Info()
@@ -67,7 +65,7 @@ def new_http_server_cert(ctx: click.Context, out: click.Path, common_name: str, 
         for n in san_ip or []:
             info.attribs.subject_alt_names['ip'].append(n)
 
-    merged_info = merge_x509_info_with_defaults(info, conf)
+    merged_info = merge_x509_info_with_defaults(info, ctx.conf)
     merged_info.path_len = None
     merged_info.ca = False
 
@@ -97,11 +95,11 @@ def new_http_server_cert(ctx: click.Context, out: click.Path, common_name: str, 
     if chain_file.exists():
         click.confirm(f"Chain file {chain_file} already exists. Overwrite?", abort=True)
 
-    builder = X509CertBuilder(conf, merged_info, priv_key)
+    builder = X509CertBuilder(ctx.conf, merged_info, priv_key)
     issuer_cert = None
     if issuer_x509_def:
          assert issuer_cert_id >= 0
-         with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+         with open_hsm_session(ctx) as ses:
 
             ca_cert_obj = ses.get_object(issuer_cert_id, yubihsm.defs.OBJECT.OPAQUE)
             assert isinstance(ca_cert_obj, yubihsm.objects.Opaque)
@@ -144,19 +142,17 @@ def new_http_server_cert(ctx: click.Context, out: click.Path, common_name: str, 
 # ----- Sign CSR -----
 
 @cmd_tls.command('sign-csr')
-@click.pass_context
+@pass_common_args
 @click.argument('csr', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-', required=True, metavar='<csr-file>')
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output filename (default: deduce from input)", default=None)
 @click.option('--ca', '-c', type=str, required=False, help="CA ID (hex) to sign with. Default: use config", default=None)
 @click.option('--validity', '-v', default=365, help="Validity period in days")
-def sign_csr(ctx: click.Context, csr: click.Path, out: click.Path|None, ca: str|None, validity: int):
+def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|None, validity: int):
     """Sign a CSR with a CA key
 
     Sign a Certificate Signing Request (CSR) with a CA key from the HSM.
     The output is a signed certificate in PEM format.
     """
-    conf: HSMConfig = ctx.obj['config']
-
     if csr == '-':
         click.echo("Reading CSR from stdin...")
         csr_path = Path('-')
@@ -168,8 +164,8 @@ def sign_csr(ctx: click.Context, csr: click.Path, out: click.Path|None, ca: str|
     csr_obj = cryptography.x509.load_pem_x509_csr(csr_data)
 
     # Find the issuer CA definition
-    issuer_cert_id = int(ca.replace('0x',''), 16) if ca else conf.tls.default_ca_id
-    issuer_x509_def = find_cert_def(conf, issuer_cert_id)
+    issuer_cert_id = int(ca.replace('0x',''), 16) if ca else ctx.conf.tls.default_ca_id
+    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_id)
     assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_id:04x}"
 
     if out:
@@ -179,7 +175,7 @@ def sign_csr(ctx: click.Context, csr: click.Path, out: click.Path|None, ca: str|
     if out_path.exists():
         click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True)
 
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+    with open_hsm_session(ctx) as ses:
         ca_cert_obj = ses.get_object(issuer_cert_id, yubihsm.defs.OBJECT.OPAQUE)
         assert isinstance(ca_cert_obj, yubihsm.objects.Opaque)
         assert hsm_obj_exists(ca_cert_obj), f"CA cert ID not found on HSM: 0x{issuer_cert_id:04x}"

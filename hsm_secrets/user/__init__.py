@@ -1,26 +1,24 @@
-import base64
 import re
 import secrets
 import click
-from hsm_secrets.config import HSMConfig
-from hsm_secrets.utils import confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, open_hsm_session_with_default_admin, open_hsm_session_with_yubikey, prompt_for_secret, pw_check_fromhex, secure_display_secret
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
 
 import yubikit.hsmauth
 import ykman.scripting
-import yubihsm.defs, yubihsm.objects
+import yubihsm.defs, yubihsm.objects    # type: ignore [import]
 
 
 @click.group()
 @click.pass_context
-def cmd_user(ctx):
+def cmd_user(ctx: click.Context):
     """HSM user management commands"""
     ctx.ensure_object(dict)
 
 # ---------------
 
 @cmd_user.command('change-yubikey-mgt')
-@click.pass_context
-def change_yubikey_mgt(ctx: click.Context):
+@pass_common_args
+def change_yubikey_mgt(ctx: HsmSecretsCtx):
     """Change hsmauth mgt key on a Yubikey
 
     Set a new Management Key (aka. Admin Access Code) for currently connected
@@ -37,17 +35,16 @@ def change_yubikey_mgt(ctx: click.Context):
 # ---------------
 
 @cmd_user.command('add-user-yubikey')
-@click.pass_context
+@pass_common_args
 @click.option('--label', required=True, help="Label of the Yubikey hsmauth slot / HSM key label")
 @click.option('--alldevs', is_flag=True, help="Add to all devices")
-def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
+def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
     """Register Yubikey auth for a user
 
     Generate a new password-protected public auth key, and store it in the
     YubiHSM(s) as a user key. The same label will be used on both the Yubikey and the YubiHSM.
     """
-    conf: HSMConfig = ctx.obj['config']
-    user_key_configs = [uk for uk in conf.user_keys if uk.label == label]
+    user_key_configs = [uk for uk in ctx.conf.user_keys if uk.label == label]
     if not user_key_configs:
         raise click.ClickException(f"User key with label '{label}' not found in the configuration file.")
     elif len(user_key_configs) > 1:
@@ -89,7 +86,7 @@ def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
 
     click.echo("Generating symmetric key for the slot...")
     key_enc, key_mac = None, None
-    with open_hsm_session_with_default_admin(ctx) as (conf, ses):
+    with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
         key_enc = ses.get_pseudo_random(128//8)
         key_mac = ses.get_pseudo_random(128//8)
 
@@ -105,12 +102,12 @@ def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
     click.echo(f"Auth key added to the Yubikey (serial {yubikey.info.serial}) hsmauth slot '{cred.label}' (type: {repr(cred.algorithm)})")
 
     # Store it in the YubiHSMs
-    dev_serials = conf.general.all_devices.keys() if alldevs else [ctx.obj['devserial']]
-    for serial in dev_serials:
-        with open_hsm_session_with_default_admin(ctx, device_serial=serial) as (conf, ses):
-            hsm_put_symmetric_auth_key(ses, serial, conf, user_key_conf, key_enc, key_mac)
+    hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
+    for serial in hsm_serials:
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
+            hsm_put_symmetric_auth_key(ses, serial, ctx.conf, user_key_conf, key_enc, key_mac)
 
-    click.echo("OK. User key added" + (f" to all devices (serials: {', '.join(dev_serials)})" if alldevs else "") + ".")
+    click.echo("OK. User key added" + (f" to all devices (serials: {', '.join(hsm_serials)})" if alldevs else "") + ".")
     click.echo("")
     click.echo("TIP! Test with the `list-objects` command to check that Yubikey hsmauth method works correctly.")
 
@@ -127,11 +124,11 @@ def add_user_yubikey(ctx: click.Context, label: str, alldevs: bool):
 # ---------------
 
 @cmd_user.command('add-service-account')
-@click.pass_context
+@pass_common_args
 @click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
 @click.option('--all', '-a', 'all_accts', is_flag=True, help="Add all configured service users")
 @click.option('--askpw', is_flag=True, help="Ask for password(s) instead of generating")
-def add_service_account(ctx: click.Context, cert_ids: tuple[str], all_accts: bool, askpw: bool):
+def add_service_account(ctx: HsmSecretsCtx, cert_ids: tuple[str], all_accts: bool, askpw: bool):
     """Add a service user(s) to master device
 
     Cert IDs are 16-bit hex values (e.g. '0x12af' or '12af').
@@ -141,32 +138,29 @@ def add_service_account(ctx: click.Context, cert_ids: tuple[str], all_accts: boo
     The command will generate (and show) passwords by default. Use the --askpw
     to be prompted for passwords instead.
     """
-    conf: HSMConfig = ctx.obj['config']
-    dev_serial = ctx.obj['devserial']
-
     if not all_accts and not cert_ids:
         raise click.ClickException("No service users specified for addition.")
 
-    id_strings = [str(x.id) for x in conf.service_keys] if all_accts else cert_ids
+    id_strings = [str(x.id) for x in ctx.conf.service_keys] if all_accts else cert_ids
     ids = [int(id.replace("0x", ""), 16) for id in id_strings]
     if not ids:
         raise click.ClickException("No service account ids specified.")
 
-    acct_defs = [x for x in conf.service_keys if x.id in ids]
+    acct_defs = [x for x in ctx.conf.service_keys if x.id in ids]
     if len(acct_defs) != len(ids):
         unknown_ids = [f'0x{i:04x}' for i in (set(ids) - set([x.id for x in acct_defs]))]
         raise click.ClickException(f"Service user ID(s) {', '.join(unknown_ids)} not found in the configuration file.")
 
     for ad in acct_defs:
-        with open_hsm_session_with_default_admin(ctx) as (conf, ses):
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
 
             obj = ses.get_object(ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             assert isinstance(obj, yubihsm.objects.AuthenticationKey)
-            if not confirm_and_delete_old_yubihsm_object_if_exists(dev_serial, obj, abort=False):
+            if not confirm_and_delete_old_yubihsm_object_if_exists(ctx.hsm_serial, obj, abort=False):
                 click.echo(f"Skipping service user '{ad.label}' (ID: 0x{ad.id:04x})...")
                 continue
 
-            click.echo(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {dev_serial}...")
+            click.echo(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {ctx.hsm_serial}...")
             if askpw:
                 pw = prompt_for_secret(f"Enter password for service user '{ad.label}'", confirm=True)
             else:
@@ -181,7 +175,7 @@ def add_service_account(ctx: click.Context, cert_ids: tuple[str], all_accts: boo
                         continue
                     else:
                         break
-            hsm_put_derived_auth_key(ses, dev_serial, conf, ad, pw)
+            hsm_put_derived_auth_key(ses, ctx.hsm_serial, ctx.conf, ad, pw)
 
 
 # ---------------

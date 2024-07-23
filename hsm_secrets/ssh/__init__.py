@@ -1,19 +1,15 @@
-from base64 import b64encode
-from math import floor
 from pathlib import Path
-import struct
 from textwrap import dedent
 import time
 from typing import Sequence
 import click
 
 from hsm_secrets.config import HSMConfig
-from hsm_secrets.ssh.openssh.ssh_certificate import ExtensionLabelType
-from hsm_secrets.ssh.ssh_utils import create_request, create_template
-from hsm_secrets.utils import click_echo_colored_commands, encode_algorithm, encode_capabilities, hsm_generate_asymmetric_key, open_hsm_session_with_yubikey
-from yubihsm.objects import YhsmObject, AsymmetricKey, Template
-from cryptography.hazmat.primitives import (_serialization, serialization)
-import yubihsm.defs
+from hsm_secrets.utils import HsmSecretsCtx, click_echo_colored_commands, open_hsm_session, pass_common_args
+from cryptography.hazmat.primitives import _serialization
+
+import yubihsm.defs    # type: ignore [import]
+from yubihsm.objects import AsymmetricKey   # type: ignore [import]
 
 
 @click.group()
@@ -24,14 +20,12 @@ def cmd_ssh(ctx: click.Context):
 
 
 @cmd_ssh.command('get-ca')
-@click.pass_context
+@pass_common_args
 @click.option('--all', '-a', 'get_all', is_flag=True, help="Get all certificates")
 @click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
-def get_ca(ctx: click.Context, get_all: bool, cert_ids: Sequence[str]):
+def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
     """Get the public keys of the SSH CA keys"""
-    conf: HSMConfig = ctx.obj['config']
-
-    all_ids = set([str(ca.id) for ca in conf.ssh.root_ca_keys])
+    all_ids = set([str(ca.id) for ca in ctx.conf.ssh.root_ca_keys])
     selected_ids = all_ids if get_all else set(cert_ids)
 
     if not selected_ids:
@@ -40,13 +34,13 @@ def get_ca(ctx: click.Context, get_all: bool, cert_ids: Sequence[str]):
 
     if len(selected_ids - all_ids) > 0:
         raise ValueError(f"Unknown CA key IDs: {selected_ids - all_ids}")
-    selected_keys = [ca for ca in conf.ssh.root_ca_keys if str(ca.id) in selected_ids]
+    selected_keys = [ca for ca in ctx.conf.ssh.root_ca_keys if str(ca.id) in selected_ids]
 
     if not selected_keys:
         click.echo("No CA keys selected")
         return
 
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+    with open_hsm_session(ctx) as ses:
         for key in selected_keys:
             obj = ses.get_object(key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
             assert isinstance(obj, AsymmetricKey)
@@ -63,8 +57,8 @@ def get_ca(ctx: click.Context, get_all: bool, cert_ids: Sequence[str]):
 @click.option('--principals', '-p', required=False, help="Comma-separated list of principals", default='')
 @click.option('--extentions', '-e', help="Comma-separated list of SSH extensions", default='permit-X11-forwarding,permit-agent-forwarding,permit-port-forwarding,permit-pty,permit-user-rc')
 @click.argument('keyfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-')
-@click.pass_context
-def sign_key(ctx: click.Context, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extentions: str, keyfile: str):
+@pass_common_args
+def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extentions: str, keyfile: str):
     """Make and sign an SSH user certificate
 
     [keyfile]: file containing the public key to sign (default: stdin)
@@ -82,10 +76,9 @@ def sign_key(ctx: click.Context, out: str, ca: str|None, username: str|None, cer
     from hsm_secrets.ssh.openssh.ssh_certificate import cert_for_ssh_pub_id, str_to_extension
     from hsm_secrets.key_adapters import make_private_key_adapter
 
-    conf: HSMConfig = ctx.obj['config']
-    ca_key_id = int(ca.replace('0x',''), 16) if ca else conf.ssh.default_ca
+    ca_key_id = int(ca.replace('0x',''), 16) if ca else ctx.conf.ssh.default_ca
 
-    ca_def = [c for c in conf.ssh.root_ca_keys if c.id == ca_key_id]
+    ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_id]
     if not ca_def:
         raise ValueError(f"CA key 0x{ca_key_id:04x} not found in config")
 
@@ -137,7 +130,7 @@ def sign_key(ctx: click.Context, out: str, ca: str|None, username: str|None, cer
         path = str(p)
 
     # Sign & write out
-    with open_hsm_session_with_yubikey(ctx) as (conf, ses):
+    with open_hsm_session(ctx) as ses:
         obj = ses.get_object(ca_key_id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
         assert isinstance(obj, AsymmetricKey)
 
