@@ -1,11 +1,25 @@
 # `hsm-secrets` – Config file driven CLI for YubiHSM2 ops
 
-Higher level CLI tool for YubiHSM2 operations, based on a YAML configuration file (see [hsm-conf.yml](hsm-conf.yml)). The config file approach simplifies planning, setup and daily use while maintaining high security standards.
+Higher level interactive CLI tool for YubiHSM2 operations, based on a YAML configuration file (see [hsm-conf.yml](hsm-conf.yml)).
 
-All the sub-commands are implemented in Python, and designed to integrate daily operations under a single tool, authenticating HSM operators by YubiKey 5 hardware tokens to avoid credential theft by malware.
+The config file approach simplifies planning, setup and daily use while maintaining high security standards.
 
-The tool is doesn't do anything you couldn't accomplish manually with lower level tools like `yubihsm-shell`, `openssl`, `ssh-keygen` + PKCS#11 etc,
-but it does provide a smoother user experience for many common use cases:
+## Highlights
+
+- Centralized configuration in a single YAML file
+  - Automatic key/cert generation based on the config file
+- Authenticate HSM operators by YubiKey 5 hardware tokens to avoid credential theft by malware
+  - Integrated Yubikey HSM auth (yubihsm-auth) slot setup for operators
+- Discourage leaking secrets in process listing, local disk or terminal history
+  - Fully within one process, does not invoke external CLI processes
+- Integrate daily operations under a single tool:
+  - OpenSSH certificate creation and signing, including hardware token **sk-ed25519** and **sk-ecdsa** keys
+  - X.509 certificate creationg and signing (TLS, SSH, X.509)
+  - Password derivation for VMs etc.
+- Improved Secret Sharing ceremony vs. YubiHSM setup util (vs. yubihsm-setup)
+  - password protected shares (optional)
+  - better display hygiene
+  - detailed interactive guiding
 
 ## Practical Examples
 
@@ -66,17 +80,6 @@ For added separation of concerns, it could also have been created on the web ser
 
 Work-in-progress, but usable and useful.
 
-## Main features
-
-- Centralized configuration in a single YAML file
-- Streamlined setup process with guided commands
-- Cloning for High availability (HA)
-- Enhanced daily operation security with YubiKey authentication
-- Password-protected Shamir's Shared Secret k-of-n super admin key
-- OpenSSH certificate management, including hardware token **sk-ed25519** and **sk-ecdsa** keys
-- X.509 certificate management (TLS, SSH, X.509)
-- Secure password derivation for service accounts
-
 ## Installation and upgrade
 
 Assuming you have a `~/bin/` directory in path, this will install(/upgrade) the
@@ -89,9 +92,24 @@ make
 rm -f ~/bin/hsm-secrets; ln -s $(pwd)/_venv/bin/hsm-secrets ~/bin/
 ```
 
-## HSM Setup and Usage
+## Authentication
 
-1. Adapt HSM configuration in `hsm-conf.yml` for your requirements.
+Default HSM authentication method depends on the subcommand:
+- most daily ops use personal YubiKeys by default
+- initial setup / super admin commands use "insecure default admin password" (`password`) by default
+
+The idea is to reactivate the default password when doing super admin key management on a secure (airgapped) computer,
+and then deactivate it again for daily use with YubiKeys (and/or password-based service keys, if necessary).
+
+You can always force a different authentication type, though:
+
+- `--auth-yubikey`: force Yubikey login
+- `--auth-default-admin`: force default auth key login (for testing etc)
+- `--auth-password-id TEXT`:  Auth key ID (hex) to login with password from env HSM_PASSWORD
+
+## HSM initial setup
+
+1. Adapt configuration in `hsm-conf.yml` for your requirements.
    - For details about the format, read the Pydantic 2 schema at [hsm_secrets/config.py](hsm_secrets/config.py)
    - You can check the validity by `hsm-secrets nop`. If it says "No errors", the config file adheres to schema.
 
@@ -132,5 +150,6 @@ You might want to use something like Tails Linux on USB stick, and wipe/destroy 
 
 ## Disclaimer
 
-Thoroughly audit before production use, and use it as part of a comprehensive security strategy.
 The software is provided "as is", the license disclaims any warranties and liabilities. Use at your own risk.
+
+Thoroughly audit before production use, and use it as part of a comprehensive security strategy.
