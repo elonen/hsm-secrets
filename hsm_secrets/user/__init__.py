@@ -1,6 +1,7 @@
 import re
 import secrets
 import click
+from hsm_secrets.config import HSMAuthKey
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
 
 import yubikit.hsmauth
@@ -122,10 +123,10 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
 @cmd_user.command('add-service-account')
 @pass_common_args
-@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
+@click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label>...')
 @click.option('--all', '-a', 'all_accts', is_flag=True, help="Add all configured service users")
 @click.option('--askpw', is_flag=True, help="Ask for password(s) instead of generating")
-def add_service_account(ctx: HsmSecretsCtx, cert_ids: tuple[str], all_accts: bool, askpw: bool):
+def add_service_account(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw: bool):
     """Add a service user(s) to master device
 
     Cert IDs are 16-bit hex values (e.g. '0x12af' or '12af').
@@ -135,11 +136,11 @@ def add_service_account(ctx: HsmSecretsCtx, cert_ids: tuple[str], all_accts: boo
     The command will generate (and show) passwords by default. Use the --askpw
     to be prompted for passwords instead.
     """
-    if not all_accts and not cert_ids:
+    if not all_accts and not obj_ids:
         raise click.ClickException("No service users specified for addition.")
 
-    id_strings = [str(x.id) for x in ctx.conf.service_keys] if all_accts else cert_ids
-    ids = [int(id.replace("0x", ""), 16) for id in id_strings]
+    id_strings = [str(x.id) for x in ctx.conf.service_keys] if all_accts else obj_ids
+    ids = [ctx.conf.find_def(id, HSMAuthKey).id for id in id_strings]
     if not ids:
         raise click.ClickException("No service account ids specified.")
 

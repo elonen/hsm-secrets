@@ -2,7 +2,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, List, Optional
 
-from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, X509Info, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, KeyID, HSMOpaqueObject, X509Cert, X509Info, find_config_items_of_class
 
 """
 Utility functions for working with certificate definitions from the HSMConfig object.
@@ -86,7 +86,7 @@ def pretty_x509_info(x509_info: X509Info) -> str:
     return res
 
 
-def topological_sort_x509_cert_defs(cert_defs: List[OpaqueObject]) -> list[OpaqueObject]:
+def topological_sort_x509_cert_defs(cert_defs: List[HSMOpaqueObject]) -> list[HSMOpaqueObject]:
     """
     Sort a list of certificate definitions topologically based on their signing dependencies,
     such that the root CA certs come first, followed by intermediate certs, and finally leaf certs.
@@ -100,11 +100,11 @@ def topological_sort_x509_cert_defs(cert_defs: List[OpaqueObject]) -> list[Opaqu
             signer_to_signees[cd.sign_by].append(cd.id)
 
     # Step 2: Perform a topological sort with loop detection
-    sorted_certs: List[OpaqueObject] = []
+    sorted_certs: List[HSMOpaqueObject] = []
     visited: set[KeyID] = set()
     in_path: set[KeyID] = set()
 
-    def dfs(c: OpaqueObject):
+    def dfs(c: HSMOpaqueObject):
         if c.id in in_path:
             raise Exception(f"Issuer/signing loop detected involving certificate id 0x{c.id:04x}")
         if c.id not in visited:

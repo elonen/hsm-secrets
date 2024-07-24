@@ -4,7 +4,7 @@ import time
 from typing import Sequence
 import click
 
-from hsm_secrets.config import HSMConfig
+from hsm_secrets.config import HSMAsymmetricKey, HSMConfig
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_result, cli_warn, open_hsm_session, pass_common_args
 from cryptography.hazmat.primitives import _serialization
 
@@ -48,7 +48,7 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
 
 @cmd_ssh.command('sign-key')
 @click.option('--out', '-o', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), help="Output file (default: deduce from input)", default=None)
-@click.option('--ca', '-c', required=False, help="CA key ID (hex) to sign with. Default: read from config", default=None)
+@click.option('--ca', '-c', required=False, help="CA key ID (hex) or label to sign with. Default: read from config", default=None)
 @click.option('--username', '-u', required=False, help="Key owner's name (for auditing)", default=None)
 @click.option('--certid', '-n', required=False, help="Explicit certificate ID (default: auto-generated)", default=None)
 @click.option('--validity', '-t', required=False, default=365*24*60*60, help="Validity period in seconds (default: 1 year)")
@@ -74,7 +74,7 @@ def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, cer
     from hsm_secrets.ssh.openssh.ssh_certificate import cert_for_ssh_pub_id, str_to_extension
     from hsm_secrets.key_adapters import make_private_key_adapter
 
-    ca_key_id = int(ca.replace('0x',''), 16) if ca else ctx.conf.ssh.default_ca
+    ca_key_id = ctx.conf.find_def(ca, HSMAsymmetricKey).id if ca else ctx.conf.ssh.default_ca
 
     ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_id]
     if not ca_def:

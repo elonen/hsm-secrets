@@ -1,5 +1,6 @@
 from pathlib import Path
 from textwrap import indent
+from typing import cast
 from cryptography import x509
 
 from yubihsm.core import AuthSession    # type: ignore [import]
@@ -7,7 +8,7 @@ import yubihsm.objects    # type: ignore [import]
 import yubihsm.defs    # type: ignore [import]
 
 from cryptography.hazmat.primitives import serialization
-from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, KeyID, HSMOpaqueObject, X509Cert, find_config_items_of_class
 
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
@@ -52,46 +53,38 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Get all certificates")
 @click.option('--outdir', '-o', type=click.Path(), required=False, help="Write PEMs into files here")
 @click.option('--bundle', '-b', type=click.Path(), required=False, help="Write a single PEM bundle file")
-@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
+@click.argument('cert_ids', nargs=-1, type=str, metavar='<id|label>...')
 def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: str|None, cert_ids: tuple):
     """Get certificate(s) from the HSM
 
-    You can specify multiple IDs to get multiple certificates,
+    You can specify multiple IDs/labels to get multiple certificates,
     or use the --all flag to get all certificates defined in the config.
     Specify --bundle to get a single PEM file with all selected certificates.
     """
     if outdir and bundle:
         raise click.ClickException("Error: --outdir and --bundle options are mutually exclusive.")
 
-    cert_def_for_id = {c.id: c for c in find_config_items_of_class(ctx.conf, OpaqueObject)}
-    all_cert_ids = [f"0x{c.id:04x}" for c in cert_def_for_id.values()]
+    all_cert_defs: list[HSMOpaqueObject] = find_config_items_of_class(ctx.conf, HSMOpaqueObject)
+    selected_certs = all_cert_defs if all_certs else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in cert_ids]
 
-    selected_ids = all_cert_ids if all_certs else list(cert_ids)
-    if len(set(selected_ids) - set(all_cert_ids)) > 0:
-        raise click.ClickException(f"Unknown certificate ID(s): {set(selected_ids) - set(all_cert_ids)}.\nValid IDs are: {all_cert_ids}")
-    if not selected_ids:
-        raise click.ClickException("No certificates specified for retrieval.")
-
-    for cd in [cert_def_for_id[int(id.replace("0x", ""), 16)] for id in selected_ids]:
+    for cd in selected_certs:
         cli_info(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'")
     cli_info("")
 
     with open_hsm_session(ctx) as ses:
-        for cert_id in selected_ids:
-            cert_id_int = int(cert_id.replace("0x", ""), 16)
-            obj = ses.get_object(cert_id_int, yubihsm.defs.OBJECT.OPAQUE)
+        for cd in selected_certs:
+            obj = ses.get_object(cd.id, yubihsm.defs.OBJECT.OPAQUE)
             assert isinstance(obj, yubihsm.objects.Opaque)
-            cert_def = cert_def_for_id[cert_id_int]
             pem = obj.get_certificate().public_bytes(encoding=serialization.Encoding.PEM).decode()
             if outdir:
-                pem_file = Path(outdir) / f"{cert_def.label}.pem"
+                pem_file = Path(outdir) / f"{cd.label}.pem"
                 pem_file.write_text(pem.strip() + "\n")
-                cli_info(f"Wrote 0x{cert_id_int:04x} to {pem_file}")
+                cli_info(f"Wrote 0x{cd.id:04x} to {pem_file}")
             elif bundle:
                 pem_file = Path(bundle)
                 with open(pem_file, "a") as f:
                     f.write(pem.strip() + "\n")
-                cli_info(f"Appended 0x{cert_id_int:04x} to {pem_file}")
+                cli_info(f"Appended 0x{cd.id:04x} to {pem_file}")
             else:
                 cli_result(pem)
 
@@ -102,9 +95,10 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
 def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids: tuple):
     """
     Create certificates on a YubiHSM2, based on the configuration file and CLI arguments.
+    Performs a topological sort of the certificates to ensure that any dependencies are created first.
     """
     # Enumerate all certificate definitions in the config
-    scid_to_opq_def: dict[KeyID, OpaqueObject] = {}
+    scid_to_opq_def: dict[KeyID, HSMOpaqueObject] = {}
     scid_to_x509_def: dict[KeyID, X509Cert] = {}
 
     for x in find_config_items_of_class(ctx.conf, X509Cert):
@@ -113,24 +107,11 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
             scid_to_opq_def[opq.id] = opq
             scid_to_x509_def[opq.id] = x
 
-    def _selected_defs() -> list[OpaqueObject]:
-        # Based on cli arguments, select the certificates to create
-        selected: list[OpaqueObject] = []
-        if all_certs:
-            selected = list(scid_to_opq_def.values())
-        else:
-            try:
-                cert_ids_int = [int(id.replace("0x", ""), 16) for id in cert_ids]
-                selected = [scid_to_opq_def[id] for id in cert_ids_int if id in scid_to_opq_def]
-                missing = [f"0x{id:04x}" for id in (set(cert_ids_int) - set(scid_to_opq_def.keys()))]
-                if missing:
-                    raise click.ClickException(f"Error: Certificate ID(s) not found: {missing}")
-            except ValueError:
-                raise click.ClickException("Invalid certificate ID(s) specified. Must be in hex format (e.g. 0x1234).")
-        return selected
-
     def _do_it(ses: AuthSession|None):
-        creation_order = topological_sort_x509_cert_defs( _selected_defs())
+        selected_defs = list(scid_to_opq_def.values()) if all_certs \
+            else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in cert_ids]
+
+        creation_order = topological_sort_x509_cert_defs(selected_defs)
         id_to_cert_obj: dict[KeyID, x509.Certificate] = {}
 
         # Create the certificates in topological order

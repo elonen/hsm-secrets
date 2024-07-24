@@ -5,7 +5,7 @@ import sys
 import tarfile
 import click
 
-from hsm_secrets.config import HSMConfig, find_all_config_items_per_type
+from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, find_all_config_items_per_type, parse_keyid
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, cli_ui_msg, cli_warn, hsm_generate_asymmetric_key, hsm_generate_hmac_key, hsm_generate_symmetric_key, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_wrap_key, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
 
@@ -249,15 +249,15 @@ def make_wrap_key(ctx: HsmSecretsCtx):
 # ---------------
 
 @cmd_hsm.command('delete-object')
-@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
+@click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label> ...')
 @click.option('--alldevs', is_flag=True, help="Delete on all devices")
 @click.option('--force', is_flag=True, help="Force deletion without confirmation (use with caution)")
 @pass_common_args
-def delete_object(ctx: HsmSecretsCtx, cert_ids: tuple, alldevs: bool, force: bool):
-    """Delete an object from the YubiHSM
+def delete_object(ctx: HsmSecretsCtx, obj_ids: tuple, alldevs: bool, force: bool):
+    """Delete object(s) from the YubiHSM
 
-    Deletes an object with the given ID from the YubiHSM.
-    YubiHSM2 identifies objects by type in addition to ID, so the command
+    Deletes an object(s) with the given ID or label from the YubiHSM.
+    YubiHSM2 can have the same id for different types of objects, so this command
     asks you to confirm the type of the object before deleting it.
 
     With `--force` ALL objects with the given ID will be deleted
@@ -266,13 +266,17 @@ def delete_object(ctx: HsmSecretsCtx, cert_ids: tuple, alldevs: bool, force: boo
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     for serial in hsm_serials:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
-            not_found = set(cert_ids)
-            for id in cert_ids:
-                id_int = int(id.replace('0x', ''), 16)
+            not_found = set(obj_ids)
+            for id_or_label in obj_ids:
+                try:
+                    id_int = ctx.conf.find_def(id_or_label).id
+                except KeyError:
+                    cli_warn(f"Object '{id_or_label}' not found in the configuration file. Assuming it's raw ID on the device.")
+                    id_int = parse_keyid(id_or_label)
                 objects = ses.list_objects()
                 for o in objects:
                     if o.id == id_int:
-                        not_found.remove(id)
+                        not_found.remove(id_or_label)
                         if not force:
                             cli_ui_msg("Object found:")
                             cli_ui_msg(pretty_fmt_yubihsm_object(o))
@@ -331,8 +335,8 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
                     if create:
                         need_create = obj is None
                         if need_create:
-                            from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
-                            unsupported_types = (HSMWrapKey, HSMAuthKey, OpaqueObject)
+                            from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, HSMOpaqueObject, HSMHmacKey, HSMAuthKey
+                            unsupported_types = (HSMWrapKey, HSMAuthKey, HSMOpaqueObject)
 
                             gear_emoji = click.style("⚙️", fg='cyan')
 
@@ -374,22 +378,22 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
 
 @cmd_hsm.command('attest-key')
 @pass_common_args
-@click.argument('cert_id', required=True, type=str, metavar='<id>')
+@click.argument('obj_id', required=True, type=str, metavar='<id|label>')
 @click.option('--out', '-o', type=click.File('w', encoding='utf8'), help='Output file (default: stdout)', default=click.get_text_stream('stdout'))
-def attest_key(ctx: HsmSecretsCtx, cert_id: str, out: click.File):
+def attest_key(ctx: HsmSecretsCtx, obj_id: str, out: click.File):
     """Attest an asymmetric key in the YubiHSM
 
     Create an a key attestation certificate, signed by the
     Yubico attestation key, for the given key ID (in hex).
     """
     from cryptography.hazmat.primitives.serialization import Encoding
+    id = ctx.conf.find_def(obj_id, HSMAsymmetricKey).id
 
-    id = int(cert_id.replace('0x', ''), 16)
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, ctx.hsm_serial) as ses:
         key = ses.get_object(id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
         assert isinstance(key, yubihsm.objects.AsymmetricKey)
         if not hsm_obj_exists(key):
-            raise click.ClickException(f"Key with ID 0x{id:04x} not found in the YubiHSM.")
+            raise click.ClickException(f"Asymmetric key 0x{id:04x} not found in the YubiHSM.")
         cert = key.attest()
         pem = cert.public_bytes(Encoding.PEM).decode('UTF-8')
         out.write(pem)  # type: ignore
@@ -493,7 +497,7 @@ def restore_hsm(ctx: HsmSecretsCtx, backup_file: str, force: bool):
                 name = tarinfo.name
                 assert name.endswith('.bin'), f"Unexpected file extension in tar archive: '{name}'"
                 assert name.count('--') == 2, f"Unexpected file name format in tar archive: '{name}'"
-                obj_id = int(name.split('--')[1].replace('0x', ''), 16)
+                obj_id = parse_keyid(name.split('--')[1])
                 obj_type = name.split('--')[0]
 
                 cli_info(f"- Importing object from '{tarinfo.name}'...")

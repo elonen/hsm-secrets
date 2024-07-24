@@ -5,7 +5,7 @@ from hsm_secrets.hsm import cmd_hsm
 from hsm_secrets.ssh import cmd_ssh
 from hsm_secrets.tls import cmd_tls
 from hsm_secrets.passwd import cmd_pass
-from hsm_secrets.config import HSMConfig, load_hsm_config
+from hsm_secrets.config import HSMAuthKey, load_hsm_config
 from hsm_secrets.user import cmd_user
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_warn, list_yubikey_hsm_creds, pass_common_args, cli_info
 from hsm_secrets.x509 import cmd_x509
@@ -40,8 +40,8 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
 
     --auth-default-admin: Use insecure default auth key (see config).
 
-    --auth-password-id <ID>: Use password from environment variable
-        HSM_PASSWORD with the specified auth key ID (hex).
+    --auth-password-id <id|label>: Use password from environment variable
+        HSM_PASSWORD with the specified auth key ID (hex) or label.
     """
     ctx.obj = {'quiet': quiet}  # early setup for cli_info and other utils to work
 
@@ -82,7 +82,7 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
         'quiet': quiet,
         'hsmserial': hsmserial or conf.general.master_device,
         'forced_auth_method': None,
-        'auth_password_id': int(auth_password_id.replace('0x', ''), 16) if auth_password_id else None,
+        'auth_password_id': conf.find_def(auth_password_id, HSMAuthKey).id if auth_password_id else None,
         'auth_password': os.getenv("HSM_PASSWORD", None),
     }
 

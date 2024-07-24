@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 import os
+import re
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
 from typing import List, Literal, NewType, Optional, Sequence, Union
@@ -48,6 +49,9 @@ class HSMConfig(NoExtraBaseModel):
         res = sum(1 << (num-1) for num in self.get_domain_nums(tuple(names)))
         assert 0 <= res <= 0xFFFF, f"Domain bitfield out of range: {res}"
         return res
+
+    def find_def(self, id_or_label: Union[int, str], enforce_type: Optional[type] = None) -> 'HSMDefBase':
+        return _find_def_by_id_or_label(self, id_or_label, enforce_type)
 
     @staticmethod
     def domain_bitfield_to_nums(bitfield: int) -> set['HSMDomainNum']:
@@ -123,7 +127,7 @@ class General(NoExtraBaseModel):
     x509_defaults: 'X509Info'
 
 
-class HSMKeyBase(NoExtraBaseModel):
+class HSMDefBase(NoExtraBaseModel):
     model_config = ConfigDict(extra="forbid")
     label: KeyLabel
     id: KeyID
@@ -136,14 +140,14 @@ AsymmetricCapabilityName = Literal[
     "none", "sign-pkcs", "sign-pss", "sign-ecdsa", "sign-eddsa", "decrypt-pkcs", "decrypt-oaep", "derive-ecdh",
     "exportable-under-wrap", "sign-ssh-certificate", "sign-attestation-certificate"
 ]
-class HSMAsymmetricKey(HSMKeyBase):
+class HSMAsymmetricKey(HSMDefBase):
     capabilities: set[AsymmetricCapabilityName]
     algorithm: AsymmetricAlgorithm
 
 # -- Symmetric key models --
 SymmetricAlgorithm = Literal["aes128", "aes192", "aes256"]
 SymmetricCapabilityName = Literal["none", "encrypt-ecb", "decrypt-ecb", "encrypt-cbc", "decrypt-cbc", "exportable-under-wrap"]
-class HSMSymmetricKey(HSMKeyBase):
+class HSMSymmetricKey(HSMDefBase):
     capabilities: set[SymmetricCapabilityName]
     algorithm: SymmetricAlgorithm
 
@@ -159,7 +163,7 @@ WrapDelegateCapabilityName = Literal[
     "put-opaque", "put-otp-aead-key", "put-template", "put-wrap-key", "randomize-otp-aead", "reset-device",
     "rewrap-from-otp-aead-key", "rewrap-to-otp-aead-key", "set-option", "sign-attestation-certificate", "sign-ecdsa",
     "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data"]
-class HSMWrapKey(HSMKeyBase):
+class HSMWrapKey(HSMDefBase):
     capabilities: set[WrapCapabilityName]
     delegated_capabilities: set[WrapDelegateCapabilityName]
     algorithm: WrapAlgorithm
@@ -167,7 +171,7 @@ class HSMWrapKey(HSMKeyBase):
 # -- HMAC key models --
 HmacAlgorithm = Literal["hmac-sha1", "hmac-sha256", "hmac-sha384", "hmac-sha512"]
 HmacCapabilityName = Literal["none", "sign-hmac", "verify-hmac", "exportable-under-wrap"]
-class HSMHmacKey(HSMKeyBase):
+class HSMHmacKey(HSMDefBase):
     capabilities: set[HmacCapabilityName]
     algorithm: HmacAlgorithm
 
@@ -194,13 +198,13 @@ AuthKeyDelegatedCapabilityName = Literal[
     "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data",
     "decrypt-ecb", "encrypt-ecb", "decrypt-cbc", "encrypt-cbc",
 ]
-class HSMAuthKey(HSMKeyBase):
+class HSMAuthKey(HSMDefBase):
     capabilities: set[AuthKeyCapabilityName]
     delegated_capabilities: set[AuthKeyDelegatedCapabilityName]
 
 # -- Opaque object models --
 OpaqueObjectAlgorithm = Literal["opaque-data", "opaque-x509-certificate"]
-class OpaqueObject(HSMKeyBase):
+class HSMOpaqueObject(HSMDefBase):
     algorithm: OpaqueObjectAlgorithm
     sign_by: Optional[KeyID]    # ID of the key to sign the object with (if applicable)
 
@@ -244,7 +248,7 @@ class X509Info(NoExtraBaseModel):
 class X509Cert(NoExtraBaseModel):
     key: HSMAsymmetricKey
     x509_info: Optional[X509Info] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
-    signed_certs: List[OpaqueObject] = Field(default_factory=list)  # Storage for signed certificates
+    signed_certs: List[HSMOpaqueObject] = Field(default_factory=list)  # Storage for signed certificates
 
 
 # -----  Subsystem models -----
@@ -348,6 +352,44 @@ def find_config_items_of_class(conf: HSMConfig, cls: type) -> list:
     return list(find_instances(conf, cls))
 
 
+def parse_keyid(key_id: str) -> int:
+    """
+    Parse a key ID from a string in the format '0x1234'.
+    :raises ValueError: If the key ID is not a hexadecimal number with the '0x' prefix.
+    """
+    if not key_id.startswith('0x'):
+        raise ValueError(f"Key ID '{key_id}' must be a hexadecimal number with the '0x' prefix.")
+    return int(key_id.replace('0x',''), 16)
+
+
+def _find_def_by_id_or_label(conf: HSMConfig, id_or_label: Union[int, str], enforce_type: Optional[type] = None) -> HSMDefBase:
+    """
+    Find the configuration object for a given key ID or label.
+    :raises KeyError: If the key is not found in the configuration file.
+    """
+    # Check and parse the id/label
+    id = None
+    if isinstance(id_or_label, str):
+        if re.match(r'^0x[0-9a-fA-F]+$', id_or_label.strip()):
+            id = parse_keyid(id_or_label)
+        elif id_or_label.isdigit():
+            raise ValueError(f"Key ID ('{id_or_label}') must be a hexadecimal number with the '0x' prefix.")
+    elif isinstance(id_or_label, int):
+        id = id_or_label
+        if id <= 0 or id >= 0xFFFF:
+            raise ValueError(f"Key ID '{id}' is out of range (16 bit unsigned integer).")
+
+    # Search by ID or label
+    for t in [HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, HSMHmacKey, HSMAuthKey, HSMOpaqueObject]:
+        for key in find_config_items_of_class(conf, t):
+            if (id and key.id == id) or key.label == id_or_label:
+                if enforce_type and not isinstance(key, enforce_type):
+                    raise ValueError(f"Key '{id_or_label}' is not of the expected type '{enforce_type.__name__}'.")
+                return key
+
+    raise KeyError(f"Key with ID or label '{id_or_label}' not found in the configuration file.")
+
+
 
 def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
     """
@@ -356,14 +398,14 @@ def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
     """
     import yubihsm.objects  # type: ignore [import]
 
-    from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
+    from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, HSMOpaqueObject, HSMHmacKey, HSMAuthKey
     config_to_hsm_type = {
         HSMAuthKey: yubihsm.objects.AuthenticationKey,
         HSMWrapKey: yubihsm.objects.WrapKey,
         HSMHmacKey: yubihsm.objects.HmacKey,
         HSMSymmetricKey: yubihsm.objects.SymmetricKey,
         HSMAsymmetricKey: yubihsm.objects.AsymmetricKey,
-        OpaqueObject: yubihsm.objects.Opaque,
+        HSMOpaqueObject: yubihsm.objects.Opaque,
     }
     config_items_per_type: dict = {t: find_config_items_of_class(conf, t) for t in config_to_hsm_type.keys()} # type: ignore
     return config_items_per_type, config_to_hsm_type
