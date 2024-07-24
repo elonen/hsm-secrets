@@ -1,4 +1,5 @@
 from pathlib import Path
+from textwrap import indent
 from cryptography import x509
 
 from yubihsm.core import AuthSession    # type: ignore [import]
@@ -8,10 +9,10 @@ import yubihsm.defs    # type: ignore [import]
 from cryptography.hazmat.primitives import serialization
 from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, find_config_items_of_class
 
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session, click_echo_colored_commands, pass_common_args
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
 from hsm_secrets.x509.cert_builder import X509CertBuilder
-from hsm_secrets.x509.def_utils import display_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
+from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
 
 import click
 
@@ -42,8 +43,7 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids
     any dependencies are created first.
     """
     if not all_certs and not cert_ids:
-        print("Error: No certificates specified for creation.")
-        return
+        raise click.ClickException("Error: No certificates specified for creation.")
     create_certs_impl(ctx, all_certs, dry_run, cert_ids)
 
 
@@ -73,8 +73,8 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
         raise click.ClickException("No certificates specified for retrieval.")
 
     for cd in [cert_def_for_id[int(id.replace("0x", ""), 16)] for id in selected_ids]:
-        click.echo(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'")
-    click.echo()
+        cli_info(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'")
+    cli_info("")
 
     with open_hsm_session(ctx) as ses:
         for cert_id in selected_ids:
@@ -86,18 +86,16 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
             if outdir:
                 pem_file = Path(outdir) / f"{cert_def.label}.pem"
                 pem_file.write_text(pem.strip() + "\n")
-                click.echo(f"Wrote 0x{cert_id_int:04x} to {pem_file}")
+                cli_info(f"Wrote 0x{cert_id_int:04x} to {pem_file}")
             elif bundle:
                 pem_file = Path(bundle)
                 with open(pem_file, "a") as f:
                     f.write(pem.strip() + "\n")
-                click.echo(f"Appended 0x{cert_id_int:04x} to {pem_file}")
+                cli_info(f"Appended 0x{cert_id_int:04x} to {pem_file}")
             else:
-                click.echo(pem)
+                cli_result(pem)
 
-        click_echo_colored_commands("To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile <CERT_FILE.pem> | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
-
-
+        cli_code_info("To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile <CERT_FILE.pem> | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
 # ---------------
 
@@ -139,8 +137,8 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
         for cd in creation_order:
             x509_info = merge_x509_info_with_defaults(scid_to_x509_def[cd.id].x509_info, ctx.conf)
             issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
-            click.echo(f"Creating 0x{cd.id:04x}: '{cd.label}' ({f"signed by: '{issuer.label}'" if issuer else 'self-signed'})")
-            click.echo("    " + display_x509_info(x509_info).replace("\n", "\n    "))
+            cli_info(f"Creating 0x{cd.id:04x}: '{cd.label}' ({f"signed by: '{issuer.label}'" if issuer else 'self-signed'})")
+            cli_info(indent(pretty_x509_info(x509_info), "    "))
 
             if not dry_run:
                 assert isinstance(ses, AuthSession)
@@ -194,12 +192,12 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                         domains = ctx.conf.get_domain_bitfield(cd.domains),
                         capabilities = ctx.conf.capability_from_names({'exportable-under-wrap'}),
                         certificate = id_to_cert_obj[cd.id])
-                    click.echo(f"Certificate 0x{cd.id:04x} created and stored in YubiHSM (serial {ctx.hsm_serial}).")
+                    cli_info(f"Certificate 0x{cd.id:04x} created and stored in YubiHSM (serial {ctx.hsm_serial}).")
 
     if dry_run:
-        click.echo(click.style("DRY RUN. Would create the following certificates:", fg='yellow'))
+        cli_warn("DRY RUN. Would create the following certificates:")
         _do_it(None)
-        click.echo(click.style("End of dry run. NOTHING WAS ACTUALLY DONE.", fg='yellow'))
+        cli_warn("End of dry run. NOTHING WAS REALLY DONE.")
     else:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             _do_it(ses)

@@ -1,7 +1,7 @@
 import re
 import secrets
 import click
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
 
 import yubikit.hsmauth
 import ykman.scripting
@@ -60,31 +60,31 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
     for slot in existing_slots:
         if slot.label == label:
             old_slot = slot
-            click.echo(f"Yubikey hsmauth slot with label '{label}' already exists.")
-            click.confirm("Overwrite the existing slot?", default=False, abort=True)    # Abort if user doesn't want to overwrite
+            cli_ui_msg(f"Yubikey hsmauth slot with label '{label}' already exists.")
+            click.confirm("Overwrite the existing slot?", default=False, abort=True, err=True)    # Abort if user doesn't want to overwrite
 
-    click.echo("Changing Yubikey hsmauth slots requires the Management Key (aka. Admin Access Code)")
-    click.echo("(Note: this tool removes spaces, so you can enter the mgt key with or without grouping.)")
+    cli_ui_msg("Changing Yubikey hsmauth slots requires the Management Key (aka. Admin Access Code)")
+    cli_ui_msg("(Note: this tool removes spaces, so you can enter the mgt key with or without grouping.)")
 
     mgt_key, mgt_key_bin = _ask_yubikey_hsm_mgt_key("Enter the Management Key", default=True)
     if old_slot:
         yk_auth_ses.delete_credential(mgt_key_bin, old_slot.label)
-        click.echo(f"Old key in slot '{old_slot.label}' deleted.")
+        cli_info(f"Old key in slot '{old_slot.label}' deleted.")
 
-    click.echo("")
-    click.echo("Yubikey hsmauth slots are protected by a password.")
-    click.echo("It doesn't have to be very strong, as it's only used as a second factor for the Yubikey.")
-    click.echo("It should be something you can remember, but also stored in a password manager.")
-    click.echo("")
+    cli_ui_msg("")
+    cli_ui_msg("Yubikey hsmauth slots are protected by a password.")
+    cli_ui_msg("It doesn't have to be very strong, as it's only used as a second factor for the Yubikey.")
+    cli_ui_msg("It should be something you can remember, but also stored in a password manager.")
+    cli_ui_msg("")
     cred_password = prompt_for_secret("Enter (ascii-only) password or PIN for the slot", confirm=True, enc_test='ascii')
 
     ykver = str(yubikey.info.version)
     if ykver >= "5.6.0":
-        click.echo(f"NOTE: This Yubikey's version {ykver} would support asymmetric keys. Maybe add support for this command?")
+        cli_info(f"NOTE: This Yubikey's version {ykver} would support asymmetric keys. Maybe add support for this command?")
     else:
-        click.echo(f"NOTE: This Yubikey's version is {ykver} (< 5.6.0). (Only symmetric keys supported.)")
+        cli_info(f"NOTE: This Yubikey's version is {ykver} (< 5.6.0). (Only symmetric keys supported.)")
 
-    click.echo("Generating symmetric key for the slot...")
+    cli_info("Generating symmetric key for the slot...")
     key_enc, key_mac = None, None
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
         key_enc = ses.get_pseudo_random(128//8)
@@ -99,7 +99,7 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
         credential_password=cred_password,
         touch_required=True)
 
-    click.echo(f"Auth key added to the Yubikey (serial {yubikey.info.serial}) hsmauth slot '{cred.label}' (type: {repr(cred.algorithm)})")
+    cli_info(f"Auth key added to the Yubikey (serial {yubikey.info.serial}) hsmauth slot '{cred.label}' (type: {repr(cred.algorithm)})")
 
     # Store it in the YubiHSMs
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
@@ -107,19 +107,16 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
             hsm_put_symmetric_auth_key(ses, serial, ctx.conf, user_key_conf, key_enc, key_mac)
 
-    click.echo("OK. User key added" + (f" to all devices (serials: {', '.join(hsm_serials)})" if alldevs else "") + ".")
-    click.echo("")
-    click.echo("TIP! Test with the `list-objects` command to check that Yubikey hsmauth method works correctly.")
+    cli_info("OK. User key added" + (f" to all devices (serials: {', '.join(hsm_serials)})" if alldevs else "") + ".")
+    cli_info("")
+    cli_info("TIP! Test with the `list-objects` command to check that Yubikey hsmauth method works correctly.")
 
     # Also offer to change Yubikey hsmauth Management Key if it's the default one
     if mgt_key == "00000000000000000000000000000000":
-        click.echo("")
-        click.echo("WARNING! You are using factory default for Yubikey hsmauth Management Key.")
-        click.echo("")
+        cli_ui_msg("")
+        cli_ui_msg("WARNING! You are using factory default for Yubikey hsmauth Management Key.")
+        cli_ui_msg("")
         _change_yubikey_hsm_mgt_key(yk_auth_ses, mgt_key_bin, ask_before_change=True)
-
-
-# ---------------
 
 # ---------------
 
@@ -157,21 +154,21 @@ def add_service_account(ctx: HsmSecretsCtx, cert_ids: tuple[str], all_accts: boo
             obj = ses.get_object(ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             assert isinstance(obj, yubihsm.objects.AuthenticationKey)
             if not confirm_and_delete_old_yubihsm_object_if_exists(ctx.hsm_serial, obj, abort=False):
-                click.echo(f"Skipping service user '{ad.label}' (ID: 0x{ad.id:04x})...")
+                cli_warn(f"Skipping service user '{ad.label}' (ID: 0x{ad.id:04x})...")
                 continue
 
-            click.echo(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {ctx.hsm_serial}...")
+            cli_info(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {ctx.hsm_serial}...")
             if askpw:
                 pw = prompt_for_secret(f"Enter password for service user '{ad.label}'", confirm=True)
             else:
                 rnd = ses.get_pseudo_random(16)
                 pw = group_by_4(rnd.hex()).replace(' ', '-')
                 while True:
-                    click.pause("Press ENTER to reveal the generated password.")
+                    click.pause("Press ENTER to reveal the generated password.", err=True)
                     secure_display_secret(pw)
-                    confirm = click.prompt("Enter the password again to confirm", hide_input=True)
+                    confirm = click.prompt("Enter the password again to confirm", hide_input=True, err=True)
                     if confirm != pw:
-                        click.echo("Passwords do not match. Try again.")
+                        cli_warn("Passwords do not match. Try again.")
                         continue
                     else:
                         break
@@ -200,28 +197,28 @@ def _ask_yubikey_hsm_mgt_key(prompt: str, confirm = False, default = False) -> t
 def _change_yubikey_hsm_mgt_key(auth_ses: yubikit.hsmauth.HsmAuthSession, old_key_bin=None, ask_before_change=True):
     """Change the Yubikey hsmauth Management Key (aka. Admin Access Code)"""
 
-    click.echo("A 'Management Key' is required to edit the Yubikey hsmauth slots.")
-    click.echo("It must be a 32 hex characters long, e.g. '0011 2233 4455 6677 8899 aabb ccdd eeff'")
-    click.echo("This unwieldy key is used rarely. You should probably store it in a password manager.")
-    click.echo("")
+    cli_ui_msg("A 'Management Key' is required to edit the Yubikey hsmauth slots.")
+    cli_ui_msg("It must be a 32 hex characters long, e.g. '0011 2233 4455 6677 8899 aabb ccdd eeff'")
+    cli_ui_msg("This unwieldy key is used rarely. You should probably store it in a password manager.")
+    cli_ui_msg("")
 
     if old_key_bin is None:
         _, old_key_bin = _ask_yubikey_hsm_mgt_key("Enter the OLD Management Key", default=True)
 
-    if not ask_before_change or click.confirm("Change Management Key now?", default=False, abort=False):
+    if not ask_before_change or click.confirm("Change Management Key now?", default=False, abort=False, err=True):
         new_mgt_key = None
-        if click.prompt("Generate the key ('n' = enter manually)?", type=bool, default="y"):
+        if click.prompt("Generate the key ('n' = enter manually)?", type=bool, default="y", err=True):
             new_mgt_key_bin = secrets.token_bytes(16)
             new_mgt_key = new_mgt_key_bin.hex().lower()
             assert len(new_mgt_key) == 32
 
-            click.echo("Key generated. It will be now shown on screen. Everyone else should look away.")
-            click.echo("When you have stored the key, press ENTER again to continue.")
-            click.echo("")
-            click.pause("Press ENTER to reveal the key.")
+            cli_ui_msg("Key generated. It will be now shown on screen. Everyone else should look away.")
+            cli_ui_msg("When you have stored the key, press ENTER again to continue.")
+            cli_ui_msg("")
+            cli_ui_msg("Press ENTER to reveal the key.")
             secure_display_secret(group_by_4(new_mgt_key))
         else:
             new_mgt_key, new_mgt_key_bin = _ask_yubikey_hsm_mgt_key("Enter the new Management Key", confirm=True)
 
         auth_ses.put_management_key(old_key_bin, new_mgt_key_bin)
-        click.echo("Management Key changed.")
+        cli_info("Management Key changed.")

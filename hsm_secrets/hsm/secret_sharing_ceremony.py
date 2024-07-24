@@ -4,7 +4,7 @@ from textwrap import dedent
 import re
 
 from hsm_secrets.hsm.shared_secret import SecretShare, create_16char_ascii_password, decrypt_share, encrypt_share, recombine_ssss_shares, split_ssss_secret, verify_shares
-from hsm_secrets.utils import group_by_4, secure_display_secret
+from hsm_secrets.utils import cli_ui_msg, group_by_4, secure_display_secret
 
 
 def cli_splitting_ceremony(
@@ -42,7 +42,7 @@ def cli_splitting_ceremony(
     """ if with_backup_key else ""
 
 
-    click.echo(dedent(f"""
+    cli_ui_msg(dedent(f"""
         # Welcome to Secret Sharing Ceremony!
 
         We will be creating and splitting a secret key into {num_shares} shares,
@@ -67,8 +67,8 @@ def cli_splitting_ceremony(
         their shares.
     """))
 
-    click.confirm("Start the ceremony?", abort=True)
-    click.echo("")
+    click.confirm("Start the ceremony?", abort=True, err=True)
+    cli_ui_msg("")
 
     # Get custodian names and passwords
     custodian_names = {}
@@ -76,19 +76,19 @@ def cli_splitting_ceremony(
 
     click.clear()
     for i in range(1, num_shares + 1):
-        name = click.prompt(f"Enter the name of custodian #{i}").strip() or f"#{i}"
+        name = click.prompt(f"Enter the name of custodian #{i}", err=True).strip() or f"#{i}"
         custodian_names[i] = name
-        if click.confirm(f"Password-protect share?", abort=False):
-            pw = click.prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True).strip()
+        if click.confirm(f"Password-protect share?", abort=False, err=True):
+            pw = click.prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True, err=True).strip()
             custodian_passwords[i] = pw
         else:
             custodian_passwords[i] = None
-        click.echo("")
+        cli_ui_msg("")
 
     secret = create_16char_ascii_password(pre_secret).encode('ASCII')
-    click.echo(f"Secret created ({len(secret) * 8} bits).")
+    cli_ui_msg(f"Secret created ({len(secret) * 8} bits).")
     apply_secret_fn(secret)
-    click.echo("Secret applied/loaded into the system.")
+    cli_ui_msg("Secret applied/loaded into the system.")
 
     # Divide the original key into num_shares parts for backup
     backup_parts = [secret[i * len(secret) // num_shares: (i + 1) * len(secret) // num_shares] for i in range(num_shares)]
@@ -107,12 +107,12 @@ def cli_splitting_ceremony(
 
     for s in shares:
         cust_name = click.style(custodian_names[s.num], fg='green')
-        click.echo(f"Custodian {cust_name} (#{s.num}), approach the screen. Others must not see the screen or the paper.")
-        click.echo("")
-        click.echo("- Write it down AS-IS on a piece of paper, fold it and put it in an envelope.")
-        click.echo("- KEEP THE ENVELOPE, AND DO NOT SEAL IT YET.")
-        click.echo(f"- Write "+ click.style(f"'Share #{s.num}/{num_shares}, {threshold} required'", fg='green') + " on the envelope.")
-        click.echo("")
+        cli_ui_msg(f"Custodian {cust_name} (#{s.num}), approach the screen. Others must not see the screen or the paper.")
+        cli_ui_msg("")
+        cli_ui_msg("- Write it down AS-IS on a piece of paper, fold it and put it in an envelope.")
+        cli_ui_msg("- KEEP THE ENVELOPE, AND DO NOT SEAL IT YET.")
+        cli_ui_msg(f"- Write "+ click.style(f"'Share #{s.num}/{num_shares}, {threshold} required'", fg='green') + " on the envelope.")
+        cli_ui_msg("")
         click.pause("Press ENTER to reveal your share. After writing it down, press ENTER again to continue...")
 
         secure_display_secret(str(s))
@@ -120,73 +120,73 @@ def cli_splitting_ceremony(
 
         if with_backup_key:
             backup_part = backup_parts[int(s.num) - 1]
-            click.echo("Now, the backup key part.")
-            click.echo("")
-            click.echo("- Write it down on a piece of paper, fold it and put it in another envelope.")
-            click.echo("- Write "+ click.style(f"'Hex encoded backup key part #{s.num}/{num_shares}'", fg='green') + " on the envelope.")
-            click.echo("- KEEP THE ENVELOPE, AND DO NOT SEAL IT YET.")
-            click.echo("")
+            cli_ui_msg("Now, the backup key part.")
+            cli_ui_msg("")
+            cli_ui_msg("- Write it down on a piece of paper, fold it and put it in another envelope.")
+            cli_ui_msg("- Write "+ click.style(f"'Hex encoded backup key part #{s.num}/{num_shares}'", fg='green') + " on the envelope.")
+            cli_ui_msg("- KEEP THE ENVELOPE, AND DO NOT SEAL IT YET.")
+            cli_ui_msg("")
             click.pause("Press ENTER to reveal the key part. After writing it down, press ENTER again to continue...")
             secure_display_secret(f"{s.num}/{num_shares}: " + group_by_4(backup_part.hex()))
             click.clear()
 
-    click.echo("All shares have been created.")
-    click.echo("Now, each custodian will be asked to type in their share to verify it.")
-    click.echo("")
+    cli_ui_msg("All shares have been created.")
+    cli_ui_msg("Now, each custodian will be asked to type in their share to verify it.")
+    cli_ui_msg("")
 
     typed_in_shares = []
     typed_in_backup_parts = []
 
     for s in shares:
         cust_name = click.style(custodian_names[s.num], fg='green')
-        click.echo(f"Custodian {cust_name} (#{s.num}), approach the keyboard and type in your share.")
-        click.echo("")
-        click.echo("Others SHOULD see the screen but NOT the keyboard:")
-        click.echo("- Input is hidden for privacy")
-        click.echo("- Custodians must not do anything else than type in their share on the terminal")
-        click.echo("")
+        cli_ui_msg(f"Custodian {cust_name} (#{s.num}), approach the keyboard and type in your share.")
+        cli_ui_msg("")
+        cli_ui_msg("Others SHOULD see the screen but NOT the keyboard:")
+        cli_ui_msg("- Input is hidden for privacy")
+        cli_ui_msg("- Custodians must not do anything else than type in their share on the terminal")
+        cli_ui_msg("")
 
         typed_share = None
         while True:
-            input = click.prompt("Your share:", hide_input=True)
+            input = click.prompt("Your share:", hide_input=True, err=True)
             try:
                 typed_share = SecretShare.from_str(input)
             except ValueError as e:
-                click.echo("Invalid share. Try again. Error: " + str(e))
+                cli_ui_msg("Invalid share. Try again. Error: " + str(e))
                 continue
 
             if typed_share.encrypted:
-                click.echo("Share is encrypted. Please type in the password to decrypt it.")
-                pw = click.prompt("Your password:", hide_input=True)
+                cli_ui_msg("Share is encrypted. Please type in the password to decrypt it.")
+                pw = click.prompt("Your password:", hide_input=True, err=True)
                 try:
                     typed_share = decrypt_share(typed_share, pw)
-                    click.echo("Decrypted successfully.")
+                    cli_ui_msg("Decrypted successfully.")
                 except ValueError as e:
-                    click.echo("Decryption failed. Try again. Error: " + str(e))
+                    cli_ui_msg("Decryption failed. Try again. Error: " + str(e))
                     continue
             break
 
         typed_in_shares.append(typed_share)
-        click.echo(f"Share #{s.num} verified ok.")
-        click.echo("")
+        cli_ui_msg(f"Share #{s.num} verified ok.")
+        cli_ui_msg("")
 
         def clean_up_backup_part(bp: str):
             # '1/3: 1234 5678 90ab'  =>  '1234567890ab'
             return re.sub(r'^[0-9]+ */ *[0-9]+[: ]*', '', bp).replace(' ', '').strip()
 
         if with_backup_key:
-            click.echo(f"Now, type in backup key part #{s.num}/{num_shares} in hex format.")
-            typed_backup_part = clean_up_backup_part(click.prompt("Your backup key part:", hide_input=True))
+            cli_ui_msg(f"Now, type in backup key part #{s.num}/{num_shares} in hex format.")
+            typed_backup_part = clean_up_backup_part(click.prompt("Your backup key part:", hide_input=True, err=True))
 
             while not str(typed_backup_part).lower() == backup_parts[int(s.num) - 1].hex().lower():
-                click.echo("Backup key part does not match. Try again.")
-                typed_backup_part = clean_up_backup_part(click.prompt("Your backup key part:", hide_input=True))
+                cli_ui_msg("Backup key part does not match. Try again.")
+                typed_backup_part = clean_up_backup_part(click.prompt("Your backup key part:", hide_input=True, err=True))
 
             bin_part = bytes.fromhex(typed_backup_part)
             assert bin_part == backup_parts[int(s.num) - 1]
             typed_in_backup_parts.append(bin_part)
 
-        click.echo("Share and backup verified. Please seal your envelope(s) now.")
+        cli_ui_msg("Share and backup verified. Please seal your envelope(s) now.")
         click.pause("Press ENTER to continue...")
         click.clear()
 
@@ -194,12 +194,12 @@ def cli_splitting_ceremony(
     assert secret == backup_secret, "Backup key parts do not match the original secret. Ceremony failed."
 
     n_combs_tested = verify_shares(secret, threshold, [str(s) for s in typed_in_shares])
-    click.echo(f"All shares have been verified, and {n_combs_tested} combinations have been tested for reconstruction.")
-    click.echo("")
+    cli_ui_msg(f"All shares have been verified, and {n_combs_tested} combinations have been tested for reconstruction.")
+    cli_ui_msg("")
     if with_backup_key:
-        click.echo("All custodians, put your backup key envelopes in a common master envelope, and seal it.")
-        click.echo("")
-        click.echo(dedent("""
+        cli_ui_msg("All custodians, put your backup key envelopes in a common master envelope, and seal it.")
+        cli_ui_msg("")
+        cli_ui_msg(dedent("""
             The master envelope should be printed with the following text:
 
                     CRITICAL: Hex-encoded YubiHSM2 Emergency Root Auth Key
@@ -219,9 +219,9 @@ def cli_splitting_ceremony(
                     Date Sealed: [Date]
         """))
 
-    click.echo("The ceremony is now complete.")
-    click.echo(click.style("IMPORTANT: After this, CLOSE THE TERMINAL SESSION to ensure that secrets", fg='yellow'))
-    click.echo(click.style("are not left in the terminal's scrollback history.", fg='yellow'))
+    cli_ui_msg("The ceremony is now complete.")
+    cli_ui_msg(click.style("IMPORTANT: After this, CLOSE THE TERMINAL SESSION to ensure that secrets", fg='yellow'))
+    cli_ui_msg(click.style("are not left in the terminal's scrollback history.", fg='yellow'))
 
 
 def cli_reconstruction_ceremony(secret_starts_with_s = True) -> bytes:
@@ -235,36 +235,36 @@ def cli_reconstruction_ceremony(secret_starts_with_s = True) -> bytes:
     :return: The reconstructed secret (bytes)
     """
     click.clear()
-    click.echo("# Secret Reconstruction Ceremony")
-    click.echo("")
-    click.echo("Reconstructing secret from custodian shares.")
-    click.echo("Each custodian will be asked to type in their share.")
-    click.echo("")
-    click.echo("Others SHOULD see the screen but NOT the keyboard:")
-    click.echo("- Input is hidden for privacy")
-    click.echo("- Custodians must not do anything else than type in their share on the terminal")
-    click.echo("")
+    cli_ui_msg("# Secret Reconstruction Ceremony")
+    cli_ui_msg("")
+    cli_ui_msg("Reconstructing secret from custodian shares.")
+    cli_ui_msg("Each custodian will be asked to type in their share.")
+    cli_ui_msg("")
+    cli_ui_msg("Others SHOULD see the screen but NOT the keyboard:")
+    cli_ui_msg("- Input is hidden for privacy")
+    cli_ui_msg("- Custodians must not do anything else than type in their share on the terminal")
+    cli_ui_msg("")
 
-    threshold = click.prompt("How many shares are required to reconstruct the secret", type=int)
+    threshold = click.prompt("How many shares are required to reconstruct the secret", type=int, err=True)
     assert threshold > 0
 
     shares: list[SecretShare] = []
     while len(shares) < threshold:
         cust_i = len(shares) + 1
-        click.echo("")
-        share_str = click.prompt(f"Custodian {cust_i}/{threshold}, enter your share", hide_input=True)
+        cli_ui_msg("")
+        share_str = click.prompt(f"Custodian {cust_i}/{threshold}, enter your share", hide_input=True, err=True)
         try:
             s = SecretShare.from_str(share_str)
         except ValueError as e:
-            click.echo("Invalid share. Try again. Error: " + str(e))
+            cli_ui_msg("Invalid share. Try again. Error: " + str(e))
             continue
 
         if s.encrypted:
-            pw = click.prompt("The share is encrypted. Type in the password to decrypt it", hide_input=True)
+            pw = click.prompt("The share is encrypted. Type in the password to decrypt it", hide_input=True, err=True)
             try:
                 s = decrypt_share(s, pw)
             except ValueError as e:
-                click.echo("Decryption failed. Try again. Error: " + str(e))
+                cli_ui_msg("Decryption failed. Try again. Error: " + str(e))
                 continue
 
         shares.append(s)
@@ -272,7 +272,7 @@ def cli_reconstruction_ceremony(secret_starts_with_s = True) -> bytes:
     try:
         return recombine_ssss_shares([str(s) for s in shares], validate_with_s=secret_starts_with_s)
     except ValueError as e:
-        click.echo(click.style("Reconstruction failed (secret did not start with 'S). The shares are invalid or insufficient.", fg='red'))
+        cli_ui_msg(click.style("Reconstruction failed (secret did not start with 'S). The shares are invalid or insufficient.", fg='red'))
         click.pause("Press ENTER to continue...")
         raise
 
@@ -287,18 +287,18 @@ if __name__ == '__main__':
     def apply_secret(secret: bytes):
         global correct_secret
         correct_secret = secret
-        click.echo(click.style(f"\n    [~~ SIMULATION: called apply_secret('{str(secret)}') ~~]\n", fg='cyan'))
+        cli_ui_msg(click.style(f"\n    [~~ SIMULATION: called apply_secret('{str(secret)}') ~~]\n", fg='cyan'))
 
     cli_splitting_ceremony(3, 5, apply_secret, with_backup_key=True)
 
-    click.echo("---------- SPLITTING DONE ----------")
-    click.echo("Now, let's try to reconstruct the secret.")
+    cli_ui_msg("---------- SPLITTING DONE ----------")
+    cli_ui_msg("Now, let's try to reconstruct the secret.")
     click.pause("Press ENTER to continue...")
 
     reconst = cli_reconstruction_ceremony()
-    click.echo(click.style(f"Reconstructed secret: {str(reconst)}", fg='green'))
+    cli_ui_msg(click.style(f"Reconstructed secret: {str(reconst)}", fg='green'))
 
     if correct_secret == reconst:
-        click.echo("Secrets match!")
+        cli_ui_msg("Secrets match!")
     else:
-        click.echo("ERROR: Generated and reconstructed secrets did not match!")
+        cli_ui_msg("ERROR: Generated and reconstructed secrets did not match!")

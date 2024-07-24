@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from enum import Enum
 import os
+from textwrap import dedent
 from typing import Callable, Generator, Optional, Sequence
-from contextlib import _GeneratorContextManager, contextmanager
+from contextlib import contextmanager
 
-from click import echo
 import click
 
 from yubihsm import YubiHsm     # type: ignore [import]
@@ -36,6 +36,7 @@ class HsmSecretsCtx:
     conf: hscfg.HSMConfig
     hsm_serial: str
     yubikey_label: str
+    quiet: bool = False
     forced_auth_method: Optional[HSMAuthMethod] = None
     auth_password: Optional[str] = None
     auth_password_id: Optional[int] = None
@@ -50,11 +51,76 @@ def pass_common_args(f):
             conf = click_ctx.obj['config'],
             hsm_serial = click_ctx.obj.get('hsmserial'),
             yubikey_label = click_ctx.obj.get('yubikey_label'),
+            quiet=click_ctx.obj.get('quiet', False),
             forced_auth_method = click_ctx.obj.get('forced_auth_method'),
             auth_password = click_ctx.obj.get('auth_password'),
             auth_password_id = click_ctx.obj.get('auth_password_id'))
-        return f(ctx, *args, **kwargs)
+
+        try:
+            return f(ctx, *args, **kwargs)
+        except YubiHsmDeviceError as e:
+            if e.code == ERROR.OBJECT_NOT_FOUND:
+                cli_error(f"Object not found in HSM: {e}")
+            elif e.code == ERROR.INSUFFICIENT_PERMISSIONS:
+                cli_error(f"Insufficient permissions for HSM operation: {e}")
+            elif e.code == ERROR.AUTHENTICATION_FAILED:
+                cli_error(f"HSM Authentication failed: {e}")
+            else:
+                cli_error(f"HSM operation failed: {e}")
+            raise click.Abort()
+
     return wrapper
+
+
+def cli_info(*args, **kwargs):
+    """
+    Only print if not in quiet mode.
+    """
+    if not (click.get_current_context().obj or {}).get('quiet', False):
+        click.echo(*args, **kwargs)
+
+
+def cli_code_info(msg: str):
+    """
+    Print a message with code formatting, if not in quiet mode.
+    Commands are assumed to be enclosed in `backticks` and not span multiple lines.
+    """
+    lines = msg.split('\n')
+    for l in lines:
+        parts = l.split('`')
+        for i, p in enumerate(parts):
+            if i % 2 == 0:
+                cli_info(p, nl=False)
+            else:
+                cli_info(click.style(p, fg='cyan'), nl=False)
+        cli_info("")
+
+def cli_result(*args, **kwargs):
+    """
+    Print a result message to stdout, always
+    """
+    click.echo(*args, **kwargs)
+
+def cli_ui_msg(*args, **kwargs):
+    """
+    Print a message to stderr (despite quiet mode)
+    """
+    click.echo(*args, **kwargs, err=True)
+
+def cli_error(msg: str):
+    """
+    Print an error message to stderr, colored red
+    """
+    click.echo(click.style(msg, fg='red'), err=True)
+
+def cli_warn(*args, **kwargs):
+    """
+    Print a warning message to stderr, colored yellow, if not in quiet mode.
+    """
+    if not (click.get_current_context().obj or {}).get('quiet', False):
+        click.echo(click.style(*args, fg='yellow', **kwargs), err=True)
+
+
 
 
 def pw_check_fromhex(pw: str) -> str|None:
@@ -83,22 +149,22 @@ def prompt_for_secret(
     """
     check_fn = check_fn or (lambda pw: None)
     while True:
-        pw = click.prompt(prompt, hide_input=True)
+        pw = click.prompt(prompt, hide_input=True, default=default, err=True)
         assert isinstance(pw, str)
         try:
             pw.encode(enc_test)
             if error := check_fn(pw):
-                echo(click.style(str(error), fg='red'))
+                cli_error(error)
                 continue
 
             if confirm:
-                if click.prompt("Type again to confirm", hide_input=True, default=default) == pw:
+                if click.prompt("Type again to confirm", hide_input=True, default=default, err=True) == pw:
                     return pw
-                echo(click.style("Mismatch. Try again.", fg='red'))
+                cli_warn("Mismatch. Try again.")
             else:
                 return pw
         except UnicodeEncodeError:
-            echo(click.style(f"Failed to encode into {enc_test.upper()}. Try again.", fg='red'))
+            cli_error(f"Failed to encode into {enc_test.upper()}. Try again.")
 
 
 def group_by_4(s: str) -> str:
@@ -146,19 +212,19 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         verify_hsm_device_info(device_serial, hsm)
 
         auth_key_id = config.find_auth_key(yubikey_slot_label).id
-        click.echo(f"Authenticating as YubiHSM key ID '{hex(auth_key_id)}' with local YubiKey ({yubikey.info.serial}) hsmauth slot '{yubikey_slot_label}'")
+        cli_info(f"Authenticating as YubiHSM key ID '{hex(auth_key_id)}' with local YubiKey ({yubikey.info.serial}) hsmauth slot '{yubikey_slot_label}'")
 
         try:
             symmetric_auth = hsm.init_session(auth_key_id)
         except YubiHsmDeviceError as e:
             if e.code == ERROR.OBJECT_NOT_FOUND:
-                echo(click.style(f"YubiHSM auth key '0x{auth_key_id:04x}' not found. Aborting.", fg='red'))
+                cli_error(f"YubiHSM auth key '0x{auth_key_id:04x}' not found. Aborting.")
                 exit(1)
             raise
 
         pwd = yubikey_password or prompt_for_secret(f"Enter PIN/password for YubiKey HSM slot '{yubikey_slot_label}'")
 
-        echo(f"Authenticating... " + click.style("(Touch your YubiKey if it blinks)", fg='yellow'))
+        cli_ui_msg(f"Authenticating... " + click.style("(Touch your YubiKey if it blinks)", fg='yellow', blink=True))
         session_keys = hsmauth.calculate_session_keys_symmetric(
             label=yubikey_slot_label,
             credential_password=pwd,
@@ -166,13 +232,13 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
 
         session = symmetric_auth.authenticate(*session_keys)
 
-        echo(f"Session authenticated Ok.")
-        echo("")
+        cli_info(f"Session authenticated Ok.")
+        cli_info("")
         return session
 
     except yubikit.core.InvalidPinError as e:
-        echo(click.style("InvalidPinError", fg='red') + f" for YubiKey HSM slot '{yubikey_slot_label}':")
-        echo(click.style(str(e), fg='red'))
+        cli_error(f"InvalidPinError for YubiKey HSM slot '{yubikey_slot_label}':")
+        cli_error(str(e))
         exit(1)
 
 
@@ -215,7 +281,7 @@ def open_hsm_session_with_yubikey(ctx: HsmSecretsCtx, device_serial: str|None = 
     device_serial = device_serial or ctx.hsm_serial
     passwd = os.environ.get('YUBIKEY_PASSWORD', None)
     if passwd:
-        echo("Using YubiKey password from environment variable.")
+        cli_info("Using YubiKey password from environment variable.")
     session = connect_hsm_and_auth_with_yubikey(ctx.conf, ctx.yubikey_label, device_serial, passwd)
     try:
         yield session
@@ -231,7 +297,7 @@ def open_hsm_session_with_default_admin(ctx: HsmSecretsCtx, device_serial: str|N
     device_serial = device_serial or ctx.hsm_serial
     assert device_serial, "HSM device serial not provided nor inferred."
 
-    click.echo(click.style(f"Using insecure default admin key to auth on YubiHSM2 {device_serial}.", fg='magenta'))
+    cli_info(click.style(f"Using insecure default admin key to auth on YubiHSM2 {device_serial}.", fg='magenta'))
 
     connector_url = ctx.conf.general.all_devices.get(device_serial)
     if not connector_url:
@@ -244,17 +310,17 @@ def open_hsm_session_with_default_admin(ctx: HsmSecretsCtx, device_serial: str|N
 
     try:
         session = hsm.create_session_derived(ctx.conf.admin.default_admin_key.id, ctx.conf.admin.default_admin_password)
-        click.echo(click.style(f"HSM session {session.sid} started.", fg='magenta'))
+        cli_info(click.style(f"HSM session {session.sid} started.", fg='magenta'))
     except YubiHsmDeviceError as e:
         if e.code == ERROR.OBJECT_NOT_FOUND:
-            echo(click.style(f"Default admin key '0x{ctx.conf.admin.default_admin_key.id:04x}' not found. Aborting.", fg='red'))
+            cli_error(f"Default admin key '0x{ctx.conf.admin.default_admin_key.id:04x}' not found. Aborting.")
             exit(1)
         raise
 
     try:
         yield session
     finally:
-        click.echo(click.style(f"Closing HSM session {session.sid}.", fg='magenta'))
+        cli_info(click.style(f"Closing HSM session {session.sid}.", fg='magenta'))
         session.close()
         hsm.close()
 
@@ -274,7 +340,7 @@ def open_hsm_session_with_password(ctx: HsmSecretsCtx, auth_key_id: int, passwor
     hsm = YubiHsm.connect(connector_url)
     verify_hsm_device_info(device_serial, hsm)
 
-    click.echo(f"Using password login with key ID 0x{auth_key_id:04x}")
+    cli_info(f"Using password login with key ID 0x{auth_key_id:04x}")
     session = hsm.create_session_derived(auth_key_id, password)
     try:
         yield session
@@ -306,7 +372,7 @@ def hsm_put_wrap_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, k
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         delegated_capabilities = conf.capability_from_names(set(key_def.delegated_capabilities)),
         key = key)
-    click.echo(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {hsm_serial}")
+    cli_info(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {hsm_serial}")
     return res
 
 
@@ -325,7 +391,7 @@ def hsm_put_derived_auth_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMC
         capabilities = conf.capability_from_names(key_def.capabilities),
         delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
         password = password)
-    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
+    cli_info(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
@@ -345,7 +411,7 @@ def hsm_put_symmetric_auth_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HS
         delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
         key_enc = key_enc,
         key_mac = key_mac)
-    click.echo(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
+    cli_info(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
@@ -356,7 +422,7 @@ def hsm_generate_symmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HS
     sym_key = ses.get_object(key_def.id, OBJECT.SYMMETRIC_KEY)
     assert isinstance(sym_key, SymmetricKey)
     confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, sym_key)
-    click.echo(f"Generating symmetric key, type '{key_def.algorithm}'...")
+    cli_info(f"Generating symmetric key, type '{key_def.algorithm}'...")
     res = sym_key.generate(
         session = ses,
         object_id = key_def.id,
@@ -364,7 +430,7 @@ def hsm_generate_symmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HS
         domains = conf.get_domain_bitfield(key_def.domains),
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         algorithm = conf.algorithm_from_name(key_def.algorithm))
-    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) generated in YubiHSM device {hsm_serial}")
+    cli_info(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) generated in YubiHSM device {hsm_serial}")
     return res
 
 
@@ -375,10 +441,10 @@ def hsm_generate_asymmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.H
     asym_key = ses.get_object(key_def.id, OBJECT.ASYMMETRIC_KEY)
     assert isinstance(asym_key, AsymmetricKey)
     confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, asym_key)
-    click.echo(f"Generating asymmetric key, type '{key_def.algorithm}'...")
+    cli_info(f"Generating asymmetric key, type '{key_def.algorithm}'...")
     if 'rsa' in key_def.algorithm.lower():
-        click.echo("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should be blinking while it works.")
-        click.echo("  If the process aborts / times out, you can rerun this command to resume.")
+        cli_warn("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should blinking rapidly while it works.")
+        cli_warn("  If the process aborts / times out, you can rerun this command to resume.")
     res = asym_key.generate(
         session = ses,
         object_id  = key_def.id,
@@ -386,7 +452,7 @@ def hsm_generate_asymmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.H
         domains = conf.get_domain_bitfield(key_def.domains),
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         algorithm = conf.algorithm_from_name(key_def.algorithm))
-    click.echo(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
+    cli_info(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
@@ -397,7 +463,7 @@ def hsm_generate_hmac_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConf
     hmac_key = ses.get_object(key_def.id, OBJECT.HMAC_KEY)
     assert isinstance(hmac_key, HmacKey)
     confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, hmac_key)
-    click.echo(f"Generating HMAC key, type '{key_def.algorithm}'...")
+    cli_info(f"Generating HMAC key, type '{key_def.algorithm}'...")
     res = hmac_key.generate(
         session = ses,
         object_id = key_def.id,
@@ -405,23 +471,25 @@ def hsm_generate_hmac_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConf
         domains = conf.get_domain_bitfield(key_def.domains),
         capabilities = conf.capability_from_names(set(key_def.capabilities)),
         algorithm = conf.algorithm_from_name(key_def.algorithm))
-    click.echo(f"HMAC key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
+    cli_info(f"HMAC key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
     return res
 
 
-def print_yubihsm_object(o):
+def pretty_fmt_yubihsm_object(o: YhsmObject):
     info = o.get_info()
-    domains = hscfg.HSMConfig.domain_bitfield_to_nums(info.domains)
-    domains = {"all"} if len(domains) == 16 else domains
-    click.echo(f"0x{o.id:04x}")
-    click.echo(f"  type:           {o.object_type.name} ({o.object_type})")
-    click.echo(f"  label:          {repr(info.label)}")
-    click.echo(f"  algorithm:      {info.algorithm.name} ({info.algorithm})")
-    click.echo(f"  size:           {info.size}")
-    click.echo(f"  origin:         {info.origin.name} ({info.origin})")
-    click.echo(f"  domains:        {domains}")
-    click.echo(f"  capabilities:   {hscfg.HSMConfig.capability_to_names(info.capabilities)}")
-    click.echo(f"  delegated_caps: {hscfg.HSMConfig.capability_to_names(info.delegated_capabilities)}")
+    domains: set|str = hscfg.HSMConfig.domain_bitfield_to_nums(info.domains)
+    domains = "all" if len(domains) == 16 else domains
+    return dedent(f"""
+    0x{o.id:04x}
+        type:           {o.object_type.name} ({o.object_type})
+        label:          {repr(info.label)}
+        algorithm:      {info.algorithm.name} ({info.algorithm})
+        size:           {info.size}
+        origin:         {info.origin.name} ({info.origin})
+        domains:        {domains}
+        capabilities:   {hscfg.HSMConfig.capability_to_names(info.capabilities)}
+        delegated_caps: {hscfg.HSMConfig.capability_to_names(info.delegated_capabilities)}
+    """).strip()
 
 
 def hsm_obj_exists(hsm_key_obj: YhsmObject) -> bool:
@@ -448,35 +516,20 @@ def confirm_and_delete_old_yubihsm_object_if_exists(serial: str, obj: YhsmObject
     :return: True if the object doesn't exist or was deleted, False if the user chose not to delete it
     """
     if hsm_obj_exists(obj):
-        click.echo(f"Object 0x{obj.id:04x} already exists on YubiHSM device {serial}:")
-        print_yubihsm_object(obj)
-        click.echo("")
-        if click.confirm("Replace the existing key?", default=False, abort=abort):
+        cli_ui_msg(f"Object 0x{obj.id:04x} already exists on YubiHSM device {serial}:", err=True)
+        cli_ui_msg(pretty_fmt_yubihsm_object(obj))
+        cli_info("")
+        if click.confirm("Replace the existing key?", default=False, abort=abort, err=True):
             obj.delete()
         else:
             return False
     return True
 
 
-def click_echo_colored_commands(msg: str, color: str = 'cyan'):
-    """
-    Print a message with colored commands.
-    Commands are assumed to be enclosed in `backticks` and not span multiple lines.
-    """
-    lines = msg.split('\n')
-    for l in lines:
-        parts = l.split('`')
-        for i, p in enumerate(parts):
-            if i % 2 == 0:
-                echo(p, nl=False)
-            else:
-                echo(click.style(p, fg=color), nl=False)
-        echo("")
-
 
 def secure_display_secret(secret_to_show: str, wipe_char='x'):
     """
-    Display a secret on the screen, and then wipe from the screen (and scroll buffer).
+    Display a secret on full screen, and then wipe from the screen (and scroll buffer).
     """
     secret = secret_to_show + " "
     def do_it(stdscr):

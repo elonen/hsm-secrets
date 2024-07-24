@@ -2,7 +2,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, List, Optional
 
-from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, KeyID, OpaqueObject, X509Cert, X509Info, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, KeyID, OpaqueObject, X509Cert, X509Info, find_config_items_of_class
 
 """
 Utility functions for working with certificate definitions from the HSMConfig object.
@@ -52,7 +52,7 @@ def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSM
     return merged
 
 
-def display_x509_info(x509_info: X509Info) -> str:
+def pretty_x509_info(x509_info: X509Info) -> str:
     """
     Pretty-print an X509Info object.
     """

@@ -7,7 +7,7 @@ import pyescrypt  # type: ignore [import]
 from mnemonic import Mnemonic
 
 from hsm_secrets.config import HSMConfig, PasswordDerivationRule, PwRotationToken, find_config_items_of_class
-from hsm_secrets.utils import HsmSecretsCtx, click_echo_colored_commands, group_by_4, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args, secure_display_secret
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_result, group_by_4, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args, secure_display_secret
 
 
 @click.group()
@@ -28,6 +28,8 @@ def get_password(ctx: HsmSecretsCtx, name: str, prev: int, rule: str|None):
     Shows current password by default, or previous password if --prev is specified. For example,
     if the password has been rotated twice, `--prev 1` will show the previous password,
     and `--prev 2` the one before that.
+
+    For automation, you can use the --quiet option to print the password to stdout and nothing else.
 
     Password format depends on the configured "derivation rule". See config file for details.
 
@@ -59,15 +61,17 @@ def get_password(ctx: HsmSecretsCtx, name: str, prev: int, rule: str|None):
         derived_secret = _derive_secret(obj, name, nonce)[:rule_def.bits//8]
         password = _(derived_secret, rule_def)
 
-        secure_display_secret(password)
-
-        click_echo_colored_commands(dedent(f"""
-            Password for '`{name}`':
-            - Previous password index: `{prev}`{' (current)' if prev == 0 else ''}
-            - Derivation rule: '`{rule_id}`'
-            - Rotated `{len(rotations)}` times
-            - Name HMAC for rotation: `0x{name_hmac:x}`
-        """).strip())
+        if ctx.quiet:
+            print(password)
+        else:
+            secure_display_secret(password)
+            cli_code_info(dedent(f"""
+                Password for '`{name}`':
+                - Previous password index: `{prev}`{' (current)' if prev == 0 else ''}
+                - Derivation rule: '`{rule_id}`'
+                - Rotated `{len(rotations)}` times
+                - Name HMAC for rotation: `0x{name_hmac:x}`
+            """).strip())
 
         # Show a hashed version
         yescryp_hasher = pyescrypt.Yescrypt(mode=pyescrypt.Mode.MCF)
@@ -75,7 +79,7 @@ def get_password(ctx: HsmSecretsCtx, name: str, prev: int, rule: str|None):
         yescryp_hasher.compare(password.encode('utf-8'), hashed)
         days_since_epoch = (datetime.now() - datetime(1970, 1, 1)).days
         shadow_line = f"root:{hashed.decode()}:{days_since_epoch}:0:99999:7:::"
-        click.echo("- '/etc/shadow' line (yescrypt hash): " + click.style(shadow_line, fg='green'))
+        cli_info("- '/etc/shadow' line (yescrypt hash): " + click.style(shadow_line, fg='green'))
 
 
 @cmd_pass.command('rotate')
@@ -110,13 +114,15 @@ def rotate_password(ctx: HsmSecretsCtx, name: list[str]|None, rule: str|None, al
             rotation = PwRotationToken(name_hmac=name_hmac, nonce=nonce, ts=int(datetime.now().timestamp()))
             name_hmac_str = f"name_hmac: 0x{name_hmac:x}, " if name_hmac else ""
             rotation_str = f"          - {{{name_hmac_str}nonce: 0x{rotation.nonce:x}, ts: {rotation.ts}}}"
-            click.echo(click.style(rotation_str, fg='green'))
+            if ctx.quiet:
+                rotation_str = rotation_str.strip()
+            cli_result(click.style(rotation_str, fg='green'))
 
         names_str = ', '.join(name) if name else '<ALL>'
-        click_echo_colored_commands(f"To rotate password(s) for `{names_str}`, add the following line(s) to the `{rule_id}`'s rotation config:")
-        click.echo("")
+        cli_info(f"To rotate password(s) for `{names_str}`, append the following line(s) to `{rule_id}`'s rotation config:")
+        cli_info("")
         rotate(None) if all else [rotate(n) for n in name or []]
-        click.echo("")
+        cli_info("")
 
 
 # --- Helpers ---

@@ -13,7 +13,7 @@ import yubihsm.objects  # type: ignore [import]
 
 from hsm_secrets.config import X509CertAttribs, X509Info
 from hsm_secrets.key_adapters import PrivateKey, make_private_key_adapter
-from hsm_secrets.utils import HsmSecretsCtx, click_echo_colored_commands, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_ui_msg, cli_warn, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 
@@ -79,21 +79,17 @@ def new_http_server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, 
     elif keyfmt == 'ecp384':
         priv_key = ec.generate_private_key(ec.SECP384R1())
     else:
-        raise ValueError(f"Unsupported key format: {keyfmt}")
+        raise click.ClickException(f"Unsupported key format: {keyfmt}")
 
     key_file = Path(str(out)).with_suffix('.key.pem')
     csr_file = Path(str(out)).with_suffix('.csr.pem')
     cer_file = Path(str(out)).with_suffix('.cer.pem')
     chain_file = Path(str(out)).with_suffix('.chain.pem')
 
-    if key_file.exists():
-        click.confirm(f"Key file {key_file} already exists. Overwrite?", abort=True)
-    if csr_file.exists():
-        click.confirm(f"CSR file {csr_file} already exists. Overwrite?", abort=True)
-    if cer_file.exists():
-        click.confirm(f"Cert file {cer_file} already exists. Overwrite?", abort=True)
-    if chain_file.exists():
-        click.confirm(f"Chain file {chain_file} already exists. Overwrite?", abort=True)
+    existing_files = [file for file in [key_file, csr_file, cer_file, chain_file] if file.exists()]
+    if existing_files:
+        file_names = ", ".join( click.style(str(file), fg='cyan') for file in existing_files)
+        click.confirm(f"Files {file_names} already exist. Overwrite?", abort=True, err=True)
 
     builder = X509CertBuilder(ctx.conf, merged_info, priv_key)
     issuer_cert = None
@@ -113,11 +109,11 @@ def new_http_server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, 
             issuer_key = make_private_key_adapter(issuer_key_obj)
 
             signed_cer = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]
-            click.echo(f"Signed with CA cert 0x{issuer_cert_id:04x}: {issuer_cert.subject}")
+            cli_info(f"Signed with CA cert 0x{issuer_cert_id:04x}: {issuer_cert.subject}")
     else:
         signed_cer = builder.generate_self_signed_cert()
-        click.echo("WARNING: Self-signed certificate, please sign the CSR manually")
-        click.echo("")
+        cli_warn("WARNING: Self-signed certificate, please sign the CSR manually")
+        cli_info("")
 
     key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption())
     csr_pem = builder.generate_csr().public_bytes(encoding=serialization.Encoding.PEM)
@@ -128,16 +124,16 @@ def new_http_server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, 
     csr_file.write_bytes(csr_pem)
     cer_file.write_bytes(crt_pem)
 
-    click.echo(f"Key written to: {key_file}")
-    click.echo(f"CSR written to: {csr_file}")
-    click.echo(f"Cert written to: {cer_file}")
+    cli_info(f"Key written to: {key_file}")
+    cli_info(f"CSR written to: {csr_file}")
+    cli_info(f"Cert written to: {cer_file}")
 
     if issuer_cert and chain_pem:
         chain_file.write_bytes(chain_pem)
-        click.echo(f"Chain (bundle) written to: {chain_file}")
+        cli_info(f"Chain (bundle) written to: {chain_file}")
 
-    click.echo("")
-    click_echo_colored_commands(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {cer_file} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
+    cli_info("")
+    cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {cer_file} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
 # ----- Sign CSR -----
 
@@ -154,7 +150,7 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     The output is a signed certificate in PEM format.
     """
     if csr == '-':
-        click.echo("Reading CSR from stdin...")
+        cli_info("Reading CSR from stdin...")
         csr_path = Path('-')
         csr_data = click.get_text_stream('stdin').read().encode()
     else:
@@ -173,7 +169,7 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     else:
         out_path = Path(str(csr_path).replace('.csr.', '.')).with_suffix('.cer.pem')
     if out_path.exists():
-        click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True)
+        click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True, err=True)
 
     with open_hsm_session(ctx) as ses:
         ca_cert_obj = ses.get_object(issuer_cert_id, yubihsm.defs.OBJECT.OPAQUE)
@@ -200,15 +196,14 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
 
         hash_algo = issuer_cert.signature_hash_algorithm
         if not isinstance(hash_algo, (hashes.SHA224, hashes.SHA256, hashes.SHA384, hashes.SHA512, hashes.SHA3_224, hashes.SHA3_256, hashes.SHA3_384, hashes.SHA3_512)):
-            click.echo(f"WARNING: Unsupported hash algorithm: {hash_algo}")
-            click.echo("Falling back to SHA-256")
+            cli_warn(f"WARNING: Unsupported hash algorithm: {hash_algo}. Falling back to SHA-256")
             hash_algo = hashes.SHA256()
 
         signed_cer = builder.sign(private_key=issuer_key, algorithm=hash_algo)
-        click.echo(f"Signed with CA cert 0x{issuer_cert_id:04x}: {issuer_cert.subject}")
+        cli_info(f"Signed with CA cert 0x{issuer_cert_id:04x}: {issuer_cert.subject}")
 
         crt_pem = signed_cer.public_bytes(encoding=serialization.Encoding.PEM)
         out_path.write_bytes(crt_pem)
 
-        click.echo(f"Cert written to: {out_path}")
-        click_echo_colored_commands(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {out_path} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
+        cli_info(f"Cert written to: {out_path}")
+        cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {out_path} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")

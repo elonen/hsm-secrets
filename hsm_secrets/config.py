@@ -6,11 +6,9 @@ import os
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
 from typing import List, Literal, NewType, Optional, Sequence, Union
-from yubihsm.defs import CAPABILITY, ALGORITHM
+from yubihsm.defs import CAPABILITY, ALGORITHM  # type: ignore [import]
 import click
-from click import echo
 import yaml
-
 
 # -----  Pydantic models -----
 
@@ -311,7 +309,6 @@ def load_hsm_config(file_name: str) -> 'HSMConfig':
     """
     Load a YAML configuration file, validate with Pydantic, and return a HSMConfig object.
     """
-    echo("Using config file: " + click.style(file_name, fg='cyan'))
     with click.open_file(file_name) as f:
         hsm_conf = yaml.load(f, Loader=yaml.FullLoader)
     if not isinstance(hsm_conf, dict):
@@ -357,7 +354,7 @@ def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
     Find all instances of each key type in the configuration file.
     Returns a dictionary with lists of each key type, and a mapping from config type to YubiHSM object type.
     """
-    import yubihsm.objects
+    import yubihsm.objects  # type: ignore [import]
 
     from hsm_secrets.config import HSMAsymmetricKey, HSMSymmetricKey, HSMWrapKey, OpaqueObject, HSMHmacKey, HSMAuthKey
     config_to_hsm_type = {

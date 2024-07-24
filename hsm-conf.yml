@@ -593,11 +593,6 @@ password_derivation:
           # - Timestamp is used to order the rotations, so that displayng previous passwords (e.g. in case of a rollback) is possible.
           - {name_hmac: 0x4b2d9547f720ec540a9edda5d33f3aa68719cc5891a9b08df3382229cfc90670, nonce: 0x379cb049d15b37ab, ts: 1721727172}
 
-#class PwRotationToken(NoExtraBaseModel):
-#    name_sha256: Optional[Annotated[int, Field(strict=True, gt=0)]] = Field(default=None)
-#    nonce: Annotated[int, Field(strict=True, gt=0)] = Field(default_factory=lambda: int.from_bytes(os.urandom(16), 'big'))
-#    ts: Annotated[int, Field(strict=True, ge=0)] = Field(default_factory=lambda: int(datetime.now().timestamp()))
-
 
 # For generic encryption of secrets, passwords, etc.
 # (For limited and infrequent use, YubiHSM is not very fast)

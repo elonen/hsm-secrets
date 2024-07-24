@@ -1,15 +1,13 @@
 import os
 import click
 
-from click import echo
-
 from hsm_secrets.hsm import cmd_hsm
 from hsm_secrets.ssh import cmd_ssh
 from hsm_secrets.tls import cmd_tls
 from hsm_secrets.passwd import cmd_pass
 from hsm_secrets.config import HSMConfig, load_hsm_config
 from hsm_secrets.user import cmd_user
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, list_yubikey_hsm_creds, pass_common_args
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_warn, list_yubikey_hsm_creds, pass_common_args, cli_info
 from hsm_secrets.x509 import cmd_x509
 
 
@@ -18,6 +16,7 @@ from hsm_secrets.x509 import cmd_x509
 @click.group(context_settings={'show_default': True, 'help_option_names': ['-h', '--help']})
 #@click.option('-d', '--debug', is_flag=True, help="Enable debug mode")
 @click.option('-c', '--config', required=False, type=click.Path(), default=None, help="Path to configuration file")
+@click.option('-q', '--quiet', is_flag=True, help="Suppress all non-essential output", default=False)
 @click.option("-y", "--yklabel", required=False, help="Yubikey HSM auth key label (default: first slot)")
 @click.option("-s", "--hsmserial", required=False, help="YubiHSM serial number to connect to (default: get master from config)")
 @click.option("--auth-yubikey", required=False, is_flag=True, help="Use Yubikey HSM auth key for HSM login")
@@ -25,7 +24,7 @@ from hsm_secrets.x509 import cmd_x509
 @click.option("--auth-password-id", required=False, type=str, help="Auth key ID (hex) to login with password from env HSM_PASSWORD")
 @click.version_option()
 @click.pass_context
-def cli(ctx: click.Context, config: str|None, yklabel: str|None, hsmserial: str|None,
+def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hsmserial: str|None,
         auth_default_admin: str|None, auth_yubikey: str|None, auth_password_id: str|None):
     """Config file driven secret management tool for YubiHSM2 devices.
 
@@ -44,6 +43,7 @@ def cli(ctx: click.Context, config: str|None, yklabel: str|None, hsmserial: str|
     --auth-password-id <ID>: Use password from environment variable
         HSM_PASSWORD with the specified auth key ID (hex).
     """
+    ctx.obj = {'quiet': quiet}  # early setup for cli_info and other utils to work
 
     # Use config file from env var or default locations if not specified
     if not config:
@@ -57,7 +57,9 @@ def cli(ctx: click.Context, config: str|None, yklabel: str|None, hsmserial: str|
         if not config:
             raise click.UsageError(f"No configuration file found in env or {str(default_paths)}. Please specify a config file with -c/--config or set the {env_var} environment variable.")
 
+    cli_info("Using config file: " + click.style(config, fg='cyan'), err=True)
     conf = load_hsm_config(config)
+
     assert conf.general.master_device, "No master YubiHSM serial specified in config file."
 
     # Get first Yubikey HSM auth key label from device if not specified
@@ -65,16 +67,19 @@ def cli(ctx: click.Context, config: str|None, yklabel: str|None, hsmserial: str|
     if not yubikey_label:
         creds = list_yubikey_hsm_creds()
         if not creds:
-            click.echo("Note: No Yubikey HSM credentials found, Yubikey auth will be disabled.", err=True)
+            if not (quiet or auth_default_admin or auth_password_id):
+                cli_warn("Note: No Yubikey HSM credentials found, Yubikey auth will be disabled.")
             yubikey_label = ""
         else:
             yubikey_label = creds[0].label
-            echo("Yubikey hsmauth label (using first slot): " + click.style(yubikey_label, fg='cyan'))
+            if not (quiet or auth_default_admin or auth_password_id):
+                cli_info("Yubikey hsmauth label (using first slot): " + click.style(yubikey_label, fg='cyan'))
 
     ctx.obj = {
         # 'debug': debug,
         'yubikey_label': yubikey_label,
         'config': conf,
+        'quiet': quiet,
         'hsmserial': hsmserial or conf.general.master_device,
         'forced_auth_method': None,
         'auth_password_id': int(auth_password_id.replace('0x', ''), 16) if auth_password_id else None,
@@ -95,13 +100,13 @@ def cli(ctx: click.Context, config: str|None, yklabel: str|None, hsmserial: str|
         if not ctx.obj['auth_password_id']:
             raise click.UsageError("Auth key ID not specified for password auth method.")
 
-    echo("")
+    cli_info("")
 
 
 @click.command('nop', short_help='Validate config and exit.')
 @pass_common_args
 def cmd_nop(ctx: HsmSecretsCtx):
-    echo("No errors. Exiting.")
+    cli_info("No errors. Exiting.")
 
 
 cli.add_command(cmd_ssh,  "ssh")

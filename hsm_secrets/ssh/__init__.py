@@ -5,7 +5,7 @@ from typing import Sequence
 import click
 
 from hsm_secrets.config import HSMConfig
-from hsm_secrets.utils import HsmSecretsCtx, click_echo_colored_commands, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_result, cli_warn, open_hsm_session, pass_common_args
 from cryptography.hazmat.primitives import _serialization
 
 import yubihsm.defs    # type: ignore [import]
@@ -29,23 +29,21 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
     selected_ids = all_ids if get_all else set(cert_ids)
 
     if not selected_ids:
-        click.echo("ERROR: specify at least one CA key ID")
-        return
+        raise click.BadArgumentUsage("ERROR: specify at least one CA key ID, or use --all")
 
     if len(selected_ids - all_ids) > 0:
-        raise ValueError(f"Unknown CA key IDs: {selected_ids - all_ids}")
+        raise click.ClickException(f"Unknown CA key IDs: {selected_ids - all_ids}")
     selected_keys = [ca for ca in ctx.conf.ssh.root_ca_keys if str(ca.id) in selected_ids]
 
     if not selected_keys:
-        click.echo("No CA keys selected")
-        return
+        raise click.ClickException("No CA keys selected")
 
     with open_hsm_session(ctx) as ses:
         for key in selected_keys:
             obj = ses.get_object(key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
             assert isinstance(obj, AsymmetricKey)
             pubkey = obj.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH).decode('ascii')
-            click.echo(f"{pubkey} {key.label}")
+            cli_result(f"{pubkey} {key.label}")
 
 
 @cmd_ssh.command('sign-key')
@@ -80,7 +78,7 @@ def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, cer
 
     ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_id]
     if not ca_def:
-        raise ValueError(f"CA key 0x{ca_key_id:04x} not found in config")
+        raise click.ClickException(f"CA key 0x{ca_key_id:04x} not found in config")
 
     if not username and not certid:
         raise click.ClickException("Either --username or --certid must be specified")
@@ -90,7 +88,7 @@ def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, cer
     # Read public key
     key_str = ""
     if keyfile == '-':
-        click.echo(click.style("Reading key from stdin...", fg='yellow'))
+        cli_warn("Reading key from stdin...")
         key_str = click.get_text_stream('stdin').readline().strip()
     else:
         with open(keyfile, 'r') as f:
@@ -106,7 +104,7 @@ def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, cer
     timestamp = int(time.time())
     princ_list = [s.strip() for s in principals.split(',')] if principals else []
     certid = certid or (f"{username}-{timestamp}-{'+'.join(principals.split(','))}").strip().lower().replace(' ', '_')
-    click_echo_colored_commands(f"Signing key with CA `{ca_def[0].label}` as cert ID `{certid}` with principals: `{princ_list}`")
+    cli_code_info(f"Signing key with CA `{ca_def[0].label}` as cert ID `{certid}` with principals: `{princ_list}`")
 
     # Create certificate from public key
     cert = cert_for_ssh_pub_id(
@@ -126,7 +124,7 @@ def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, cer
     else:
         p = Path(out) if out else (Path(keyfile).parent / (Path(keyfile).stem + "-cert.pub"))
         if p.exists():
-            click.confirm(f"Overwrite existing file '{p}'?", abort=True)
+            click.confirm(f"Overwrite existing file '{p}'?", abort=True, err=True)
         path = str(p)
 
     # Sign & write out
@@ -145,7 +143,7 @@ def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, cer
         out_fp.write(cert_str.strip() + "\n")   # type: ignore
         out_fp.close()
         if str(path) != '-':
-            click_echo_colored_commands(dedent(f"""
+            cli_code_info(dedent(f"""
                 Certificate written to: {path}
                   - Send it to the user and ask them to put it in `~/.ssh/` along with the private key
                   - To view it, run: `ssh-keygen -L -f {path}`

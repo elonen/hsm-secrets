@@ -8,13 +8,13 @@ from datetime import timedelta
 import ipaddress
 from typing import Dict, Union, List, Optional
 
-from hsm_secrets.config import HSMConfig, X509Cert, X509Info
+from hsm_secrets.config import HSMConfig, X509Info
 
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 from cryptography.hazmat.primitives import hashes
 
-import yubihsm.objects
-import yubihsm.defs
+import yubihsm.objects      # type: ignore [import]
+import yubihsm.defs         # type: ignore [import]
 
 from hsm_secrets.x509.def_utils import merge_x509_info_with_defaults
 from hsm_secrets.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter, PrivateKey
