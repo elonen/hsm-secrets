@@ -55,11 +55,11 @@ def cmd_hsm(ctx: click.Context):
     2. Set a common wrap key to all devices.
     3. Host a Secret Sharing Ceremony to add a super admin key.
     4. Add user keys (Yubikey auth) to master device.
-    5. Generate keys on master device with `compare-config --create`.
+    5. Generate keys on master device with `compare --create`.
     6. Create certificates etc from the keys.
-    7. Check that all configure objects are present on master (`compare-config`).
+    7. Check that all configure objects are present on master (`compare`).
     8. Clone master device to other ones (backup + restore).
-    9. Double check that all keys are present on all devices (`compare-config --alldevs`).
+    9. Double check that all keys are present on all devices (`compare --alldevs`).
     10. Remove default admin key from all devices.
 
     Management workflow:
@@ -89,11 +89,11 @@ def list_objects(ctx: HsmSecretsCtx, alldevs: bool):
 
 # ---------------
 
-@cmd_hsm.command('insecure-admin-key-enable')
+@cmd_hsm.command('default-admin-enable')
 @pass_common_args
 @click.option('--use-backup-secret', is_flag=True, help="Use backup secret instead of shared secret")
 @click.option('--alldevs', is_flag=True, help="Add on all devices")
-def insecure_admin_key_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: bool):
+def default_admin_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: bool):
     """Re-add insecure default admin key to HSM
 
     Using either a shared secret or a backup secret, (re-)create the default admin key on the YubiHSM(s).
@@ -143,11 +143,11 @@ def insecure_admin_key_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, allde
 
 # ---------------
 
-@cmd_hsm.command('insecure-admin-key-disable')
+@cmd_hsm.command('default-admin-disable')
 @pass_common_args
 @click.option('--alldevs', is_flag=True, help="Remove on all devices")
 @click.option('--force', is_flag=True, help="Force removal even if no other admin key exists")
-def insecure_admin_key_disable(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
+def default_admin_disable(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
     """Remove insecure default admin key from the YubiHSM(s)
 
     Last step in the management workflow. Remove the default admin key from the YubiHSM(s).
@@ -186,7 +186,7 @@ def insecure_admin_key_disable(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
 
 # ---------------
 
-@cmd_hsm.command('make-shared-admin-key')
+@cmd_hsm.command('admin-sharing-ceremony')
 @click.option('--num-shares', type=int, required=True, help="Number of shares to generate")
 @click.option('--threshold', type=int, required=True, help="Number of shares required to reconstruct the key")
 @click.option('--skip-ceremony', is_flag=True, default=False, help="Skip the secret sharing ceremony, ask for password directly")
@@ -218,14 +218,16 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, s
 
 # ---------------
 
-@cmd_hsm.command('make-common-wrap-key')
+@cmd_hsm.command('make-wrap-key')
 @pass_common_args
 def make_wrap_key(ctx: HsmSecretsCtx):
-    """Set a new wrap key to all YubiHSMs
+    """Generate a new wrap key for all YubiHSMs
 
     Generate a new wrap key and set it to all configured YubiHSMs.
     It is used to export/import keys securely between the devices.
     This requires all the devices in config file to be connected and reachable.
+
+    Note that the key is NOT printed out, only stored in the devices.
     """
     hsm_serials = ctx.conf.general.all_devices.keys()
     assert len(hsm_serials) > 0, "No devices found in the configuration file."
@@ -248,7 +250,7 @@ def make_wrap_key(ctx: HsmSecretsCtx):
 
 # ---------------
 
-@cmd_hsm.command('delete-object')
+@cmd_hsm.command('delete')
 @click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label> ...')
 @click.option('--alldevs', is_flag=True, help="Delete on all devices")
 @click.option('--force', is_flag=True, help="Force deletion without confirmation (use with caution)")
@@ -288,12 +290,12 @@ def delete_object(ctx: HsmSecretsCtx, obj_ids: tuple, alldevs: bool, force: bool
 
 # ---------------
 
-@cmd_hsm.command('compare-config')
+@cmd_hsm.command('compare')
 @click.option('--alldevs', is_flag=True, help="Compare all devices")
 @click.option('--create', is_flag=True, help="Create missing keys in the YubiHSM")
 @pass_common_args
 def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
-    """Compare config file with device contents
+    """Compare config with device contents
 
     Lists all objects by type (auth, wrap, etc.) in the configuration file, and then checks
     that they exist in the YubiHSM(s). Shows which objects are missing and which are found.
@@ -376,7 +378,7 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
 
 # ---------------
 
-@cmd_hsm.command('attest-key')
+@cmd_hsm.command('attest')
 @pass_common_args
 @click.argument('obj_id', required=True, type=str, metavar='<id|label>')
 @click.option('--out', '-o', type=click.File('w', encoding='utf8'), help='Output file (default: stdout)', default=click.get_text_stream('stdout'))
@@ -401,7 +403,7 @@ def attest_key(ctx: HsmSecretsCtx, obj_id: str, out: click.File):
 
 # ---------------
 
-@cmd_hsm.command('backup-hsm')
+@cmd_hsm.command('backup')
 @pass_common_args
 @click.option('--out', '-o', type=click.Path(exists=False, allow_dash=False), required=False, help='Output file', default=None)
 def backup_hsm(ctx: HsmSecretsCtx, out: click.File|None):
@@ -465,7 +467,7 @@ def backup_hsm(ctx: HsmSecretsCtx, out: click.File|None):
         cli_warn(f"Skipped {skipped} objects due to errors or insufficient permissions.")
 
 
-@cmd_hsm.command('restore-hsm')
+@cmd_hsm.command('restore')
 @pass_common_args
 @click.argument('backup_file', type=click.Path(exists=True, allow_dash=False), required=True, metavar='<backup_file>')
 @click.option('--force', is_flag=True, help="Don't ask for confirmation before restoring")
@@ -473,7 +475,7 @@ def restore_hsm(ctx: HsmSecretsCtx, backup_file: str, force: bool):
     """Restore a .tar.gz backup to HSM
 
     Imports all objects from a .tar.gz backup file to the YubiHSM.
-    The backup file must have been created with the `backup-hsm` command, file names
+    The backup file must have been created with the `hsm backup` command, file names
     must be in the format `object_type--id--label.bin`.
 
     The same wrap key must be present in the YubiHSM to restore the objects as they were exported with.

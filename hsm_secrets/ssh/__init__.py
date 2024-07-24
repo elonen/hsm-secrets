@@ -46,7 +46,7 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
             cli_result(f"{pubkey} {key.label}")
 
 
-@cmd_ssh.command('sign-key')
+@cmd_ssh.command('sign')
 @click.option('--out', '-o', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), help="Output file (default: deduce from input)", default=None)
 @click.option('--ca', '-c', required=False, help="CA key ID (hex) or label to sign with. Default: read from config", default=None)
 @click.option('--username', '-u', required=False, help="Key owner's name (for auditing)", default=None)
@@ -56,7 +56,7 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
 @click.option('--extentions', '-e', help="Comma-separated list of SSH extensions", default='permit-X11-forwarding,permit-agent-forwarding,permit-port-forwarding,permit-pty,permit-user-rc')
 @click.argument('keyfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-')
 @pass_common_args
-def sign_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extentions: str, keyfile: str):
+def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extentions: str, keyfile: str):
     """Make and sign an SSH user certificate
 
     [keyfile]: file containing the public key to sign (default: stdin)

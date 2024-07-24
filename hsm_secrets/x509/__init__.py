@@ -28,7 +28,7 @@ def cmd_x509(ctx: click.Context):
 
 # ---------------
 
-@cmd_x509.command('create-cert')
+@cmd_x509.command('create')
 @pass_common_args
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Create all certificates")
 @click.option("--dry-run", "-n", is_flag=True, help="Dry run (do not create certificates)")
@@ -48,7 +48,7 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids
     create_certs_impl(ctx, all_certs, dry_run, cert_ids)
 
 
-@cmd_x509.command('get-cert')
+@cmd_x509.command('get')
 @pass_common_args
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Get all certificates")
 @click.option('--outdir', '-o', type=click.Path(), required=False, help="Write PEMs into files here")
@@ -66,6 +66,8 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
 
     all_cert_defs: list[HSMOpaqueObject] = find_config_items_of_class(ctx.conf, HSMOpaqueObject)
     selected_certs = all_cert_defs if all_certs else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in cert_ids]
+    if not selected_certs:
+        raise click.ClickException("Error: No certificates selected.")
 
     for cd in selected_certs:
         cli_info(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'")
@@ -86,7 +88,7 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
                     f.write(pem.strip() + "\n")
                 cli_info(f"Appended 0x{cd.id:04x} to {pem_file}")
             else:
-                cli_result(pem)
+                cli_result(pem.strip())
 
         cli_code_info("To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile <CERT_FILE.pem> | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 

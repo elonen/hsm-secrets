@@ -17,10 +17,10 @@ def cmd_user(ctx: click.Context):
 
 # ---------------
 
-@cmd_user.command('change-yubikey-mgt')
+@cmd_user.command('set-yubikey-mgt')
 @pass_common_args
 def change_yubikey_mgt(ctx: HsmSecretsCtx):
-    """Change hsmauth mgt key on a Yubikey
+    """Set/change hsmauth mgt key on a Yubikey
 
     Set a new Management Key (aka. Admin Access Code) for currently connected
     Yubikey's hsmauth slot.
@@ -35,12 +35,15 @@ def change_yubikey_mgt(ctx: HsmSecretsCtx):
 
 # ---------------
 
-@cmd_user.command('add-user-yubikey')
+@cmd_user.command('add-yubikey')
 @pass_common_args
-@click.option('--label', required=True, help="Label of the Yubikey hsmauth slot / HSM key label")
+@click.argument('label', type=str, metavar='<label>')
 @click.option('--alldevs', is_flag=True, help="Add to all devices")
 def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
     """Register Yubikey auth for a user
+
+    <label> is the label of the Yubikey hsmauth slot / HSM key label,
+    which will be used on both devices. It must be declared in the config file.
 
     Generate a new password-protected public auth key, and store it in the
     YubiHSM(s) as a user key. The same label will be used on both the Yubikey and the YubiHSM.
@@ -121,13 +124,13 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
 # ---------------
 
-@cmd_user.command('add-service-account')
+@cmd_user.command('add-service')
 @pass_common_args
 @click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label>...')
 @click.option('--all', '-a', 'all_accts', is_flag=True, help="Add all configured service users")
 @click.option('--askpw', is_flag=True, help="Ask for password(s) instead of generating")
-def add_service_account(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw: bool):
-    """Add a service user(s) to master device
+def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw: bool):
+    """Add service user(s) to master device
 
     Cert IDs are 16-bit hex values (e.g. '0x12af' or '12af').
     You can specify multiple IDs to add multiple service users,

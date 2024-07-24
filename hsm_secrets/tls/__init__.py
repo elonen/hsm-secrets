@@ -23,7 +23,7 @@ def cmd_tls(ctx: click.Context):
     """TLS certificate commands"""
     ctx.ensure_object(dict)
 
-@cmd_tls.command('make-server-cert')
+@cmd_tls.command('server-cert')
 @pass_common_args
 @click.option('--out', '-o', required=True, type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output filename")
 @click.option('--common-name', '-c', required=True, help="CN, e.g. public DNS name")
@@ -32,7 +32,7 @@ def cmd_tls(ctx: click.Context):
 @click.option('--validity', '-v', default=365, help="Validity period in days")
 @click.option('--keyfmt', '-f', type=click.Choice(['rsa4096', 'ed25519', 'ecp256', 'ecp384']), default='ecp384', help="Key format")
 @click.option('--sign-crt', '-s', type=str, required=False, help="CA ID (hex) or label to sign with, or 'self'. Default: use config", default=None)
-def new_http_server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: list[str], san_ip: list[str], validity: int, keyfmt: str, sign_crt: str):
+def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: list[str], san_ip: list[str], validity: int, keyfmt: str, sign_crt: str):
     """Create a TLS server certificate + key
 
     Create a new TLS server certificate for the given CN and (optional) SANs.
@@ -137,7 +137,7 @@ def new_http_server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, 
 
 # ----- Sign CSR -----
 
-@cmd_tls.command('sign-csr')
+@cmd_tls.command('sign')
 @pass_common_args
 @click.argument('csr', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-', required=True, metavar='<csr-file>')
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output filename (default: deduce from input)", default=None)

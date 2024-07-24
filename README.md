@@ -26,7 +26,7 @@ The config file approach simplifies planning, setup and daily use while maintain
 **Example 1: Create a signed OpenSSH user certificate**
 
 ```
-$ hsm-secrets ssh sign-key --username "john.doe" --principals "Admins,Users" ~/.ssh/id_ed25519_sk_yubinano_25563692_non-resident.pub
+$ hsm-secrets ssh sign --username "john.doe" --principals "Admins,Users" ~/.ssh/id_ed25519_sk_yubinano_25563692_non-resident.pub
 
 Using config file: hsm-conf.yml
 Yubikey hsmauth label: user_john.doe
@@ -52,7 +52,7 @@ Note how all the secrets are safe from malware exfiltration:
 **Example 2: Create and sign an HTTPS certificate**
 
 ```
-$ hsm-secrets tls make-server-cert --out certs/wiki-server --common-name "wiki.example.com" --san-dns "docs.example.com"
+$ hsm-secrets tls server-cert --out certs/wiki-server --common-name "wiki.example.com" --san-dns "docs.example.com"
 
 Using config file: hsm-conf.yml
 Yubikey hsmauth label: user_john.doe
@@ -74,7 +74,7 @@ openssl crl2pkcs7 -nocrl -certfile ./certs/wiki-server.cer.pem | openssl  pkcs7 
 
 In this example, the HTTPS server key was generated and written on local disk, for convenience.
 
-For added separation of concerns, it could also have been created on the web server by a webmaster (perhaps with openssl), and the HSM operator would only have signed the CSR (Certificate Signing Request) with `hsm-secrets tls sign-csr wiki-server.csr.pem`.
+For added separation of concerns, it could also have been created on the web server by a webmaster (perhaps with openssl), and the HSM operator would only have signed the CSR (Certificate Signing Request) with `hsm-secrets tls sign wiki-server.csr.pem`.
 
 ## Development status
 
@@ -115,25 +115,26 @@ You can always force a different authentication type, though:
 
 2. Perform initial setup on an airgapped system. In summary:
    - Connect all HSMs and reset to factory defaults
-   - Distribute a common wrap key with `hsm-secrets hsm make-common-wrap-key`
-   - Create a Shamir's Shared Secret admin key with `hsm-secrets hsm make-shared-admin-key`
+   - Distribute a common wrap key with `hsm-secrets hsm make-wrap-key`
+   - Create a Shamir's Shared Secret admin key with `hsm-secrets hsm admin-sharing-ceremony`
      - shares can be optionally password-protected
-   - Add user YubiKeys with `hsm-secrets user add-user-yubikey`
-   - Generate keys and certificates with `hsm-secrets hsm compare-config --create` and `hsm-secrets x509 create-cert --all`
-   - Clone master HSM to other devices using `backup-hsm` and `restore-hsm`
+   - Add user YubiKeys with `hsm-secrets user add-yubikey`
+   - Generate keys and certificates with `hsm-secrets hsm compare --create` and `hsm-secrets x509 create --all`
+   - Clone master HSM to other devices using `hsm backup` and `hsm restore`
 
    See [Setup Workflow](doc/setup-workflow.md) for the full process.
 
 3. For day-to-day use, operators authenticate with YubiKeys to run commands, such as:
-   - `hsm-secrets ssh sign-key` to sign SSH certs
-   - `hsm-secrets tls sign-csr` to sign TLS certs
-   - `hsm-secrets pass get` to derive service passwords
+   - `hsm-secrets ssh sign` to sign SSH certs
+   - `hsm-secrets tls sign` to sign TLS certs
+   - `hsm-secrets pass get` to derive a password
+   - `hsm-secrets pass rotate` to rotate derived password(s)
 
 4. Rarely, for admin changes, on an airgapped computer:
-   - Temporarily enable default admin key with `hsm-secrets hsm insecure-admin-key-enable` (asks key custodians for SSSS shared secret)
+   - Temporarily enable default admin key with `hsm-secrets hsm default-admin-enable` (asks key custodians for SSSS shared secret)
    - Make changes on one of the devices (master)
-   - Re-clone HSMs with `backup-hsm` and `restore-hsm`
-   - Disable the default admin again with `hsm-secrets hsm insecure-admin-key-disable`
+   - Re-clone HSMs with `hsm backup` and `hsm restore`
+   - Disable the default admin again with `hsm-secrets hsm default-admin-disable`
 
 YubiHSM2 devices are easy to reset, so you might want to do a test-run or two before an actual production deployment.
 
