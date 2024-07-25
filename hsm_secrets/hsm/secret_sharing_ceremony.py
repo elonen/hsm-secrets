@@ -24,6 +24,7 @@ def cli_splitting_ceremony(
     :param with_backup_key: Whether to include a backup key in the ceremony.
     :param pre_secret: A pre-generated secret to use, or None to generate a new one.
     """
+    assert threshold <= num_shares, "Threshold must be less than or equal to the number of shares."
     click.clear()
 
     backup_desc = """
@@ -87,7 +88,7 @@ def cli_splitting_ceremony(
 
     secret = create_16char_ascii_password(pre_secret).encode('ASCII')
     cli_ui_msg(f"Secret created ({len(secret) * 8} bits).")
-    apply_secret_fn(secret)
+    apply_secret_fn(secret.decode('ASCII'))
     cli_ui_msg("Secret applied/loaded into the system.")
 
     # Divide the original key into num_shares parts for backup

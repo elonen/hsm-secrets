@@ -2,7 +2,7 @@ import re
 import secrets
 import click
 from hsm_secrets.config import HSMAuthKey
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, hsm_put_derived_auth_key, hsm_put_symmetric_auth_key, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
 
 import yubikit.hsmauth
 import ykman.scripting
@@ -109,7 +109,10 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     for serial in hsm_serials:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
-            hsm_put_symmetric_auth_key(ses, serial, ctx.conf, user_key_conf, key_enc, key_mac)
+            confirm_and_delete_old_yubihsm_object_if_exists(ses, user_key_conf.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
+            info = ses.auth_key_put(user_key_conf, key_enc=key_enc, key_mac=key_mac)
+            cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
+
 
     cli_info("OK. User key added" + (f" to all devices (serials: {', '.join(hsm_serials)})" if alldevs else "") + ".")
     cli_info("")
@@ -142,7 +145,7 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
     if not all_accts and not obj_ids:
         raise click.ClickException("No service users specified for addition.")
 
-    id_strings = [str(x.id) for x in ctx.conf.service_keys] if all_accts else obj_ids
+    id_strings = [f'0x{x.id:04x}' for x in ctx.conf.service_keys] if all_accts else obj_ids
     ids = [ctx.conf.find_def(id, HSMAuthKey).id for id in id_strings]
     if not ids:
         raise click.ClickException("No service account ids specified.")
@@ -155,9 +158,7 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
     for ad in acct_defs:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
 
-            obj = ses.get_object(ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
-            assert isinstance(obj, yubihsm.objects.AuthenticationKey)
-            if not confirm_and_delete_old_yubihsm_object_if_exists(ctx.hsm_serial, obj, abort=False):
+            if not confirm_and_delete_old_yubihsm_object_if_exists(ses, ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY, abort=False):
                 cli_warn(f"Skipping service user '{ad.label}' (ID: 0x{ad.id:04x})...")
                 continue
 
@@ -167,16 +168,24 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
             else:
                 rnd = ses.get_pseudo_random(16)
                 pw = group_by_4(rnd.hex()).replace(' ', '-')
+                retries = 0
                 while True:
+                    retries += 1
+                    if retries > 5:
+                        raise click.Abort("Too many retries. Aborting.")
                     click.pause("Press ENTER to reveal the generated password.", err=True)
                     secure_display_secret(pw)
                     confirm = click.prompt("Enter the password again to confirm", hide_input=True, err=True)
                     if confirm != pw:
-                        cli_warn("Passwords do not match. Try again.")
+                        cli_ui_msg("Passwords do not match. Try again.")
                         continue
                     else:
                         break
-            hsm_put_derived_auth_key(ses, ctx.hsm_serial, ctx.conf, ad, pw)
+
+            #hsm_put_derived_auth_key(ses, ctx.hsm_serial, ctx.conf, ad, pw)
+            confirm_and_delete_old_yubihsm_object_if_exists(ses, ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
+            info = ses.auth_key_put_derived(ad, pw)
+            cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
 
 
 # ---------------

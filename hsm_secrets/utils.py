@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import os
+from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, Optional, Sequence
 from contextlib import contextmanager
@@ -10,7 +11,7 @@ import click
 from yubihsm import YubiHsm     # type: ignore [import]
 from yubihsm.core import AuthSession     # type: ignore [import]
 from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT     # type: ignore [import]
-from yubihsm.objects import AsymmetricKey, HmacKey, SymmetricKey, WrapKey, YhsmObject, AuthenticationKey     # type: ignore [import]
+from yubihsm.objects import ObjectInfo, AsymmetricKey, HmacKey, SymmetricKey, WrapKey, YhsmObject, AuthenticationKey     # type: ignore [import]
 from yubikit.hsmauth import HsmAuthSession     # type: ignore [import]
 from yubihsm.exceptions import YubiHsmDeviceError     # type: ignore [import]
 
@@ -24,6 +25,8 @@ import click
 
 from functools import wraps
 
+from hsm_secrets.yubihsm import HSMSession, MockHSMSession, RealHSMSession, open_mock_hsms, save_mock_hsms
+
 class HSMAuthMethod(Enum):
     YUBIKEY = 1
     DEFAULT_ADMIN = 2
@@ -32,17 +35,28 @@ class HSMAuthMethod(Enum):
 
 @dataclass
 class HsmSecretsCtx:
+    """
+    Context object to pass around common arguments and configuration.
+    """
     click_ctx: click.Context
+
     conf: hscfg.HSMConfig
     hsm_serial: str
     yubikey_label: str
     quiet: bool = False
+
+    # Authentication method overrides
     forced_auth_method: Optional[HSMAuthMethod] = None
     auth_password: Optional[str] = None
     auth_password_id: Optional[int] = None
 
+    mock_file: Optional[str] = None      # If set, load/save mock HSM objects in this file
+
 
 def pass_common_args(f):
+    """
+    Decorator to pass common arguments to a command function, and
+    """
     @wraps(f)
     def wrapper(*args, **kwargs):
         click_ctx = click.get_current_context()
@@ -54,7 +68,8 @@ def pass_common_args(f):
             quiet=click_ctx.obj.get('quiet', False),
             forced_auth_method = click_ctx.obj.get('forced_auth_method'),
             auth_password = click_ctx.obj.get('auth_password'),
-            auth_password_id = click_ctx.obj.get('auth_password_id'))
+            auth_password_id = click_ctx.obj.get('auth_password_id'),
+            mock_file = click_ctx.obj.get('mock_file'))
 
         try:
             return f(ctx, *args, **kwargs)
@@ -148,7 +163,9 @@ def prompt_for_secret(
     :return: The user-entered secret string
     """
     check_fn = check_fn or (lambda pw: None)
-    while True:
+    retries = 0
+    while retries < 5:
+        retries += 1
         pw = click.prompt(prompt, hide_input=True, default=default, err=True)
         assert isinstance(pw, str)
         try:
@@ -160,11 +177,13 @@ def prompt_for_secret(
             if confirm:
                 if click.prompt("Type again to confirm", hide_input=True, default=default, err=True) == pw:
                     return pw
-                cli_warn("Mismatch. Try again.")
+                cli_ui_msg("Mismatch. Try again.")
             else:
+                assert isinstance(pw, str)
                 return pw
         except UnicodeEncodeError:
             cli_error(f"Failed to encode into {enc_test.upper()}. Try again.")
+    raise click.Abort("Too many retries. Aborting.")
 
 
 def group_by_4(s: str) -> str:
@@ -251,7 +270,7 @@ def verify_hsm_device_info(device_serial, hsm):
 def open_hsm_session(
         ctx: HsmSecretsCtx,
         default_auth_method: HSMAuthMethod = HSMAuthMethod.YUBIKEY,
-        device_serial: str | None = None) -> Generator[AuthSession, None, None]:
+        device_serial: str | None = None) -> Generator[HSMSession, None, None]:
     """
     Open a session to the HSM using forced or given default auth method.
     This is an auto-selecting wrapper for the specific session context managers.
@@ -259,6 +278,17 @@ def open_hsm_session(
     auth_method = ctx.forced_auth_method or default_auth_method
     device_serial = device_serial or ctx.hsm_serial
 
+    # Mock HSM session for testing
+    if ctx.mock_file:
+        cli_warn("~🤡~ !! SIMULATED (mock) HSM session !! Authentication skipped. ~🤡~")
+        open_mock_hsms(ctx.mock_file, int(device_serial), ctx.conf)
+        try:
+            yield MockHSMSession(int(device_serial))
+        finally:
+            save_mock_hsms(ctx.mock_file)
+        return
+
+    # Real HSM session with the selected auth method
     if auth_method == HSMAuthMethod.YUBIKEY:
         ctxman = open_hsm_session_with_yubikey(ctx, device_serial)
     elif auth_method == HSMAuthMethod.DEFAULT_ADMIN:
@@ -269,8 +299,11 @@ def open_hsm_session(
         ctxman = open_hsm_session_with_password(ctx, ctx.auth_password_id, ctx.auth_password, device_serial)
     else:
         raise ValueError(f"Unknown auth method: {auth_method}")
-    with ctxman as session:
-        yield session
+    with ctxman as ses:
+        if isinstance(ses, HSMSession):
+            yield ses
+        else:
+            yield RealHSMSession(ctx.conf, session=ses, dev_serial=int(device_serial))
 
 
 @contextmanager
@@ -326,7 +359,7 @@ def open_hsm_session_with_default_admin(ctx: HsmSecretsCtx, device_serial: str|N
 
 
 @contextmanager
-def open_hsm_session_with_password(ctx: HsmSecretsCtx, auth_key_id: int, password: str, device_serial: str|None = None) -> Generator[AuthSession, None, None]:
+def open_hsm_session_with_password(ctx: HsmSecretsCtx, auth_key_id: int, password: str, device_serial: str|None = None) -> Generator[HSMSession, None, None]:
     """
     Open a session to the HSM using a password-derived auth key.
     """
@@ -343,145 +376,18 @@ def open_hsm_session_with_password(ctx: HsmSecretsCtx, auth_key_id: int, passwor
     cli_info(f"Using password login with key ID 0x{auth_key_id:04x}")
     session = hsm.create_session_derived(auth_key_id, password)
     try:
-        yield session
+        yield RealHSMSession(ctx.conf, session=session, dev_serial=int(device_serial))
     finally:
         session.close()
         hsm.close()
 
 
-def encode_capabilities(names: Sequence[hscfg.AsymmetricCapabilityName] | set[hscfg.AsymmetricCapabilityName]) -> CAPABILITY:
-    return hscfg.HSMConfig.capability_from_names(set(names))
-
-def encode_algorithm(name_literal: str|hscfg.AsymmetricAlgorithm) -> ALGORITHM:
-    return hscfg.HSMConfig.algorithm_from_name(name_literal)   # type: ignore
-
-
-def hsm_put_wrap_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMWrapKey, key: bytes) -> WrapKey:
-    """
-    Put a (symmetric) wrap key into the HSM.
-    """
-    wrap_key = ses.get_object(key_def.id, OBJECT.WRAP_KEY)
-    assert isinstance(wrap_key, WrapKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, wrap_key)
-    res = wrap_key.put(
-        session = ses,
-        object_id = key_def.id,
-        label = key_def.label,
-        algorithm = conf.algorithm_from_name(key_def.algorithm),
-        domains = conf.get_domain_bitfield(key_def.domains),
-        capabilities = conf.capability_from_names(set(key_def.capabilities)),
-        delegated_capabilities = conf.capability_from_names(set(key_def.delegated_capabilities)),
-        key = key)
-    cli_info(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {hsm_serial}")
-    return res
-
-
-def hsm_put_derived_auth_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, password: str) -> AuthenticationKey:
-    """
-    Put a password-derived authentication key into the HSM.
-    """
-    auth_key = ses.get_object(key_def.id, OBJECT.AUTHENTICATION_KEY)
-    assert isinstance(auth_key, AuthenticationKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, auth_key)
-    res = auth_key.put_derived(
-        session = ses,
-        object_id = key_def.id,
-        label = key_def.label,
-        domains = conf.get_domain_bitfield(key_def.domains),
-        capabilities = conf.capability_from_names(key_def.capabilities),
-        delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
-        password = password)
-    cli_info(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
-    return res
-
-
-def hsm_put_symmetric_auth_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAuthKey, key_enc: bytes, key_mac: bytes) -> AuthenticationKey:
-    """
-    Put a symmetric authentication key into the HSM.
-    """
-    auth_key = ses.get_object(key_def.id, OBJECT.AUTHENTICATION_KEY)
-    assert isinstance(auth_key, AuthenticationKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, auth_key)
-    res = auth_key.put(
-        session = ses,
-        object_id = key_def.id,
-        label = key_def.label,
-        domains = conf.get_domain_bitfield(key_def.domains),
-        capabilities = conf.capability_from_names(key_def.capabilities),
-        delegated_capabilities = conf.capability_from_names(key_def.delegated_capabilities),
-        key_enc = key_enc,
-        key_mac = key_mac)
-    cli_info(f"Auth key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
-    return res
-
-
-def hsm_generate_symmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMSymmetricKey) -> SymmetricKey:
-    """
-    Generate a symmetric key on the HSM.
-    """
-    sym_key = ses.get_object(key_def.id, OBJECT.SYMMETRIC_KEY)
-    assert isinstance(sym_key, SymmetricKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, sym_key)
-    cli_info(f"Generating symmetric key, type '{key_def.algorithm}'...")
-    res = sym_key.generate(
-        session = ses,
-        object_id = key_def.id,
-        label = key_def.label,
-        domains = conf.get_domain_bitfield(key_def.domains),
-        capabilities = conf.capability_from_names(set(key_def.capabilities)),
-        algorithm = conf.algorithm_from_name(key_def.algorithm))
-    cli_info(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) generated in YubiHSM device {hsm_serial}")
-    return res
-
-
-def hsm_generate_asymmetric_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMAsymmetricKey) -> AsymmetricKey:
-    """
-    Generate an asymmetric key on the HSM.
-    """
-    asym_key = ses.get_object(key_def.id, OBJECT.ASYMMETRIC_KEY)
-    assert isinstance(asym_key, AsymmetricKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, asym_key)
-    cli_info(f"Generating asymmetric key, type '{key_def.algorithm}'...")
-    if 'rsa' in key_def.algorithm.lower():
-        cli_warn("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should blinking rapidly while it works.")
-        cli_warn("  If the process aborts / times out, you can rerun this command to resume.")
-    res = asym_key.generate(
-        session = ses,
-        object_id  = key_def.id,
-        label = key_def.label,
-        domains = conf.get_domain_bitfield(key_def.domains),
-        capabilities = conf.capability_from_names(set(key_def.capabilities)),
-        algorithm = conf.algorithm_from_name(key_def.algorithm))
-    cli_info(f"Symmetric key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
-    return res
-
-
-def hsm_generate_hmac_key(ses: AuthSession, hsm_serial: str, conf: hscfg.HSMConfig, key_def: hscfg.HSMHmacKey) -> HmacKey:
-    """
-    Generate an HMAC key on the HSM.
-    """
-    hmac_key = ses.get_object(key_def.id, OBJECT.HMAC_KEY)
-    assert isinstance(hmac_key, HmacKey)
-    confirm_and_delete_old_yubihsm_object_if_exists(hsm_serial, hmac_key)
-    cli_info(f"Generating HMAC key, type '{key_def.algorithm}'...")
-    res = hmac_key.generate(
-        session = ses,
-        object_id = key_def.id,
-        label = key_def.label,
-        domains = conf.get_domain_bitfield(key_def.domains),
-        capabilities = conf.capability_from_names(set(key_def.capabilities)),
-        algorithm = conf.algorithm_from_name(key_def.algorithm))
-    cli_info(f"HMAC key ID '{hex(res.id)}' ({key_def.label}) stored in YubiHSM device {hsm_serial}")
-    return res
-
-
-def pretty_fmt_yubihsm_object(o: YhsmObject):
-    info = o.get_info()
+def pretty_fmt_yubihsm_object(info: ObjectInfo) -> str:
     domains: set|str = hscfg.HSMConfig.domain_bitfield_to_nums(info.domains)
     domains = "all" if len(domains) == 16 else domains
     return dedent(f"""
-    0x{o.id:04x}
-        type:           {o.object_type.name} ({o.object_type})
+    0x{info.id:04x}
+        type:           {info.object_type.name} ({info.object_type})
         label:          {repr(info.label)}
         algorithm:      {info.algorithm.name} ({info.algorithm})
         size:           {info.size}
@@ -492,22 +398,8 @@ def pretty_fmt_yubihsm_object(o: YhsmObject):
     """).strip()
 
 
-def hsm_obj_exists(hsm_key_obj: YhsmObject) -> bool:
-    """
-    Check if a YubiHSM object exists.
-    :param hsm_key_obj: The object to check for
-    :return: True if the object exists
-    """
-    try:
-        _ = hsm_key_obj.get_info()  # Raises an exception if the key does not exist
-        return True
-    except YubiHsmDeviceError as e:
-        if e.code == ERROR.OBJECT_NOT_FOUND:
-            return False
-        raise e
 
-
-def confirm_and_delete_old_yubihsm_object_if_exists(serial: str, obj: YhsmObject, abort=True) -> bool:
+def confirm_and_delete_old_yubihsm_object_if_exists(ses: HSMSession, obj_id: hscfg.HSMKeyID, object_type: OBJECT, abort=True) -> bool:
     """
     Check if a YubiHSM object exists, and if so, ask the user if they want to replace it.
     :param serial: The serial number of the YubiHSM device
@@ -515,12 +407,12 @@ def confirm_and_delete_old_yubihsm_object_if_exists(serial: str, obj: YhsmObject
     :param abort: Whether to abort (raise) if the user does not want to delete the object
     :return: True if the object doesn't exist or was deleted, False if the user chose not to delete it
     """
-    if hsm_obj_exists(obj):
-        cli_ui_msg(f"Object 0x{obj.id:04x} already exists on YubiHSM device {serial}:", err=True)
-        cli_ui_msg(pretty_fmt_yubihsm_object(obj))
+    if info := ses.object_exists_raw(obj_id, object_type):
+        cli_ui_msg(f"Object 0x{obj_id:04x} already exists on YubiHSM device:")
+        cli_ui_msg(pretty_fmt_yubihsm_object(info))
         cli_info("")
         if click.confirm("Replace the existing key?", default=False, abort=abort, err=True):
-            obj.delete()
+            ses.delete_object_raw(obj_id, object_type)
         else:
             return False
     return True

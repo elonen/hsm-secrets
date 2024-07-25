@@ -2,7 +2,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, List, Optional
 
-from hsm_secrets.config import HSMConfig, KeyID, HSMOpaqueObject, X509Cert, X509Info, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, X509Info, find_config_items_of_class
 
 """
 Utility functions for working with certificate definitions from the HSMConfig object.
@@ -94,15 +94,15 @@ def topological_sort_x509_cert_defs(cert_defs: List[HSMOpaqueObject]) -> list[HS
     """
     # Step 1: Build a dependency graph
     id_to_def = {cd.id: cd for cd in cert_defs}
-    signer_to_signees: Dict[KeyID, List[KeyID]] = defaultdict(list)
+    signer_to_signees: Dict[HSMKeyID, List[HSMKeyID]] = defaultdict(list)
     for cd in cert_defs:
         if cd.sign_by and cd.sign_by != cd.id:  # Skip self-signed certs
             signer_to_signees[cd.sign_by].append(cd.id)
 
     # Step 2: Perform a topological sort with loop detection
     sorted_certs: List[HSMOpaqueObject] = []
-    visited: set[KeyID] = set()
-    in_path: set[KeyID] = set()
+    visited: set[HSMKeyID] = set()
+    in_path: set[HSMKeyID] = set()
 
     def dfs(c: HSMOpaqueObject):
         if c.id in in_path:
@@ -124,7 +124,7 @@ def topological_sort_x509_cert_defs(cert_defs: List[HSMOpaqueObject]) -> list[HS
     return sorted_certs
 
 
-def find_cert_def(conf: HSMConfig, opaque_id: KeyID|int) -> Optional[X509Cert]:
+def find_cert_def(conf: HSMConfig, opaque_id: HSMKeyID|int) -> Optional[X509Cert]:
     """
     Find a certificate definition by its opaque ID.
     """

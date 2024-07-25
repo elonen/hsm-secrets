@@ -50,7 +50,7 @@ class HSMConfig(NoExtraBaseModel):
         assert 0 <= res <= 0xFFFF, f"Domain bitfield out of range: {res}"
         return res
 
-    def find_def(self, id_or_label: Union[int, str], enforce_type: Optional[type] = None) -> 'HSMDefBase':
+    def find_def(self, id_or_label: Union[int, str], enforce_type: Optional[type] = None) -> 'HSMObjBase':
         return _find_def_by_id_or_label(self, id_or_label, enforce_type)
 
     @staticmethod
@@ -102,8 +102,8 @@ class HSMConfig(NoExtraBaseModel):
 
 
 # Some type definitions for the models
-KeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
-KeyLabel = Annotated[str, Field(max_length=40)]
+HSMKeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
+HSMKeyLabel = Annotated[str, Field(max_length=40)]
 HSMDomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
 HSMDomainName = Literal["all", "x509", "tls", "nac", "gpg", "codesign", "ssh", "password_derivation", "encryption"]
 
@@ -127,10 +127,10 @@ class General(NoExtraBaseModel):
     x509_defaults: 'X509Info'
 
 
-class HSMDefBase(NoExtraBaseModel):
+class HSMObjBase(NoExtraBaseModel):
     model_config = ConfigDict(extra="forbid")
-    label: KeyLabel
-    id: KeyID
+    label: HSMKeyLabel
+    id: HSMKeyID
     domains: set[HSMDomainName]
 
 
@@ -140,14 +140,14 @@ AsymmetricCapabilityName = Literal[
     "none", "sign-pkcs", "sign-pss", "sign-ecdsa", "sign-eddsa", "decrypt-pkcs", "decrypt-oaep", "derive-ecdh",
     "exportable-under-wrap", "sign-ssh-certificate", "sign-attestation-certificate"
 ]
-class HSMAsymmetricKey(HSMDefBase):
+class HSMAsymmetricKey(HSMObjBase):
     capabilities: set[AsymmetricCapabilityName]
     algorithm: AsymmetricAlgorithm
 
 # -- Symmetric key models --
 SymmetricAlgorithm = Literal["aes128", "aes192", "aes256"]
 SymmetricCapabilityName = Literal["none", "encrypt-ecb", "decrypt-ecb", "encrypt-cbc", "decrypt-cbc", "exportable-under-wrap"]
-class HSMSymmetricKey(HSMDefBase):
+class HSMSymmetricKey(HSMObjBase):
     capabilities: set[SymmetricCapabilityName]
     algorithm: SymmetricAlgorithm
 
@@ -163,7 +163,7 @@ WrapDelegateCapabilityName = Literal[
     "put-opaque", "put-otp-aead-key", "put-template", "put-wrap-key", "randomize-otp-aead", "reset-device",
     "rewrap-from-otp-aead-key", "rewrap-to-otp-aead-key", "set-option", "sign-attestation-certificate", "sign-ecdsa",
     "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data"]
-class HSMWrapKey(HSMDefBase):
+class HSMWrapKey(HSMObjBase):
     capabilities: set[WrapCapabilityName]
     delegated_capabilities: set[WrapDelegateCapabilityName]
     algorithm: WrapAlgorithm
@@ -171,7 +171,7 @@ class HSMWrapKey(HSMDefBase):
 # -- HMAC key models --
 HmacAlgorithm = Literal["hmac-sha1", "hmac-sha256", "hmac-sha384", "hmac-sha512"]
 HmacCapabilityName = Literal["none", "sign-hmac", "verify-hmac", "exportable-under-wrap"]
-class HSMHmacKey(HSMDefBase):
+class HSMHmacKey(HSMObjBase):
     capabilities: set[HmacCapabilityName]
     algorithm: HmacAlgorithm
 
@@ -198,15 +198,15 @@ AuthKeyDelegatedCapabilityName = Literal[
     "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data",
     "decrypt-ecb", "encrypt-ecb", "decrypt-cbc", "encrypt-cbc",
 ]
-class HSMAuthKey(HSMDefBase):
+class HSMAuthKey(HSMObjBase):
     capabilities: set[AuthKeyCapabilityName]
     delegated_capabilities: set[AuthKeyDelegatedCapabilityName]
 
 # -- Opaque object models --
 OpaqueObjectAlgorithm = Literal["opaque-data", "opaque-x509-certificate"]
-class HSMOpaqueObject(HSMDefBase):
+class HSMOpaqueObject(HSMObjBase):
     algorithm: OpaqueObjectAlgorithm
-    sign_by: Optional[KeyID]    # ID of the key to sign the object with (if applicable)
+    sign_by: Optional[HSMKeyID]    # ID of the key to sign the object with (if applicable)
 
 # -- Helper models --
 X509KeyUsage = Literal[
@@ -263,7 +263,7 @@ class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]
 
 class TLS(NoExtraBaseModel):
-    default_ca_id: KeyID
+    default_ca_id: HSMKeyID
     intermediate_certs: List[X509Cert]
 
 class NAC(NoExtraBaseModel):
@@ -280,7 +280,7 @@ class SSHTemplateSlots(NoExtraBaseModel):
     max: int
 
 class SSH(NoExtraBaseModel):
-    default_ca: KeyID
+    default_ca: HSMKeyID
     root_ca_keys: List[HSMAsymmetricKey]
 
 
@@ -290,8 +290,8 @@ class PwRotationToken(NoExtraBaseModel):
     ts: Annotated[int, Field(strict=True, ge=0)]
 
 class PasswordDerivationRule(NoExtraBaseModel):
-    id: KeyLabel
-    key: KeyID
+    id: HSMKeyLabel
+    key: HSMKeyID
     format: Literal["bip39", "hex"] = Field(default="bip39")
     separator: str = Field(default=".")
     bits: Literal[64, 128, 256] = Field(default=64)
@@ -299,7 +299,7 @@ class PasswordDerivationRule(NoExtraBaseModel):
 
 class PasswordDerivation(NoExtraBaseModel):
     keys: List[HSMHmacKey]
-    default_rule: KeyLabel
+    default_rule: HSMKeyLabel
     rules: List[PasswordDerivationRule]
 
 
@@ -362,7 +362,7 @@ def parse_keyid(key_id: str) -> int:
     return int(key_id.replace('0x',''), 16)
 
 
-def _find_def_by_id_or_label(conf: HSMConfig, id_or_label: Union[int, str], enforce_type: Optional[type] = None) -> HSMDefBase:
+def _find_def_by_id_or_label(conf: HSMConfig, id_or_label: int|str, enforce_type: type|None = None) -> HSMObjBase:
     """
     Find the configuration object for a given key ID or label.
     :raises KeyError: If the key is not found in the configuration file.

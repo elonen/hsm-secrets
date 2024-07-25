@@ -22,10 +22,11 @@ from hsm_secrets.x509 import cmd_x509
 @click.option("--auth-yubikey", required=False, is_flag=True, help="Use Yubikey HSM auth key for HSM login")
 @click.option("--auth-default-admin", required=False, is_flag=True, help="Use default auth key for HSM login")
 @click.option("--auth-password-id", required=False, type=str, help="Auth key ID (hex) to login with password from env HSM_PASSWORD")
+@click.option("--mock", required=False, type=click.Path(dir_okay=False, file_okay=True, exists=False), help="Use mock HSM for testing, data in give file")
 @click.version_option()
 @click.pass_context
 def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hsmserial: str|None,
-        auth_default_admin: str|None, auth_yubikey: str|None, auth_password_id: str|None):
+        auth_default_admin: str|None, auth_yubikey: str|None, auth_password_id: str|None, mock: str|None):
     """Config file driven secret management tool for YubiHSM2 devices.
 
     Unless --config is specified, configuration file will be searched first
@@ -84,6 +85,7 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
         'forced_auth_method': None,
         'auth_password_id': conf.find_def(auth_password_id, HSMAuthKey).id if auth_password_id else None,
         'auth_password': os.getenv("HSM_PASSWORD", None),
+        'mock_file': mock,
     }
 
     # Check for forced auth method

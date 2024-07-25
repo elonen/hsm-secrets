@@ -7,14 +7,19 @@ import click
 
 from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, find_all_config_items_per_type, parse_keyid
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, cli_ui_msg, cli_warn, hsm_generate_asymmetric_key, hsm_generate_hmac_key, hsm_generate_symmetric_key, hsm_obj_exists, hsm_put_derived_auth_key, hsm_put_wrap_key, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
 
 import yubihsm.defs, yubihsm.exceptions, yubihsm.objects    # type: ignore [import]
 from yubihsm.core import AuthSession    # type: ignore [import]
+from yubihsm.defs import OBJECT    # type: ignore [import]
 
 from click import style
 
-def swear_you_are_on_airgapped_computer():
+from hsm_secrets.yubihsm import HSMSession, MockYhsmObject
+
+def swear_you_are_on_airgapped_computer(quiet: bool):
+    if quiet:
+        return
     cli_ui_msg(style(r"""
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                                                               |
@@ -84,7 +89,7 @@ def list_objects(ctx: HsmSecretsCtx, alldevs: bool):
             cli_info(f"YubiHSM Objects on device {serial}:")
             cli_info("")
             for o in ses.list_objects():
-                cli_result(pretty_fmt_yubihsm_object(o))
+                cli_result(pretty_fmt_yubihsm_object(o.get_info()))
                 cli_result("")
 
 # ---------------
@@ -99,10 +104,10 @@ def default_admin_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: b
     Using either a shared secret or a backup secret, (re-)create the default admin key on the YubiHSM(s).
     This is a temporary key that should be removed after the management operations are complete.
     """
-    swear_you_are_on_airgapped_computer()
+    swear_you_are_on_airgapped_computer(ctx.quiet)
 
-    def do_it(conf: HSMConfig, ses: AuthSession, serial: str):
-        obj = hsm_put_derived_auth_key(ses, serial, conf, conf.admin.default_admin_key, conf.admin.default_admin_password)
+    def do_it(conf: HSMConfig, ses: HSMSession):
+        obj = ses.auth_key_put_derived(conf.admin.default_admin_key, conf.admin.default_admin_password)
         cli_ui_msg(f"OK. Default insecure admin key (0x{obj.id:04x}: '{conf.admin.default_admin_password}') added successfully.")
         cli_ui_msg("!!! DON'T FORGET TO REMOVE IT after you're done with the management operations.")
 
@@ -129,14 +134,14 @@ def default_admin_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: b
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     for serial in hsm_serials:
         try:
-            if not ctx.forced_auth_method:
+            if not ctx.forced_auth_method and not ctx.mock_file:
                 assert password is not None
                 shared_key_id = ctx.conf.admin.shared_admin_key.id
                 with open_hsm_session_with_password(ctx, shared_key_id, password, device_serial=serial ) as ses:
-                    do_it(ctx.conf, ses, serial)
+                    do_it(ctx.conf, ses)
             else:
                 with open_hsm_session(ctx, device_serial=serial) as ses:
-                    do_it(ctx.conf, ses, serial)
+                    do_it(ctx.conf, ses)
         except yubihsm.exceptions.YubiHsmAuthenticationError as e:
             raise click.ClickException("Failed to authenticate with the provided password.")
 
@@ -156,26 +161,22 @@ def default_admin_disable(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     for serial in hsm_serials:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
-            default_key = ses.get_object(ctx.conf.admin.default_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
-            assert isinstance(default_key, yubihsm.objects.AuthenticationKey)
+            keydef = ctx.conf.admin.default_admin_key
 
-            if hsm_obj_exists(default_key):
+            if ses.object_exists(keydef):
                 # Check that shared admin key exists before removing the default one
                 if not force:
-                    shared_key = ses.get_object(ctx.conf.admin.shared_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
-                    assert isinstance(shared_key, yubihsm.objects.AuthenticationKey)
-                    if not hsm_obj_exists(shared_key):
+                    if not ses.object_exists(ctx.conf.admin.shared_admin_key):
                         raise click.ClickException(f"Shared admin key not found on device {serial}. You could lose access to the device, so refusing the operation (use --force to override).")
-
                 # Ok, it does, we can proceed
-                default_key.delete()
+                ses.delete_object(keydef)
                 cli_info(f"Ok. Default admin key removed on device {serial}.")
             else:
                 cli_warn(f"Default admin key not found on device {serial}. Skipping.")
 
             # Make sure it's really gone
             try:
-                if hsm_obj_exists(default_key):
+                if ses.object_exists(keydef):
                     cli_error(f"ERROR!!! Default admin key still exists on device {serial}. Don't leave the airgapped session before removing it.")
                     click.pause("Press ENTER to continue.", err=True)
                     raise click.Abort()
@@ -202,16 +203,19 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, s
     This is a very heavy process, and should be only done once, on the master YubiHSM.
     The resulting key can then be cloned to other devices via key wrapping operations.
     """
-    swear_you_are_on_airgapped_computer()
+    swear_you_are_on_airgapped_computer(ctx.quiet)
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
         def apply_password_fn(new_password: str):
-            hsm_put_derived_auth_key(ses, ctx.hsm_serial, ctx.conf, ctx.conf.admin.shared_admin_key, new_password)
+            confirm_and_delete_old_yubihsm_object_if_exists(ses, ctx.conf.admin.shared_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
+            info = ses.auth_key_put_derived(ctx.conf.admin.shared_admin_key, new_password)
+            cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
+
 
         if skip_ceremony:
             apply_password_fn(prompt_for_secret("Enter the (new) shared admin password to store", confirm=True))
         else:
             secret = ses.get_pseudo_random(256//8)
-            cli_splitting_ceremony(num_shares, threshold, apply_password_fn, pre_secret=secret)
+            cli_splitting_ceremony(threshold, num_shares, apply_password_fn, pre_secret=secret)
 
         cli_info("OK. Shared admin key added successfully.")
 
@@ -232,7 +236,7 @@ def make_wrap_key(ctx: HsmSecretsCtx):
     hsm_serials = ctx.conf.general.all_devices.keys()
     assert len(hsm_serials) > 0, "No devices found in the configuration file."
 
-    swear_you_are_on_airgapped_computer()
+    swear_you_are_on_airgapped_computer(ctx.quiet)
 
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
         cli_info("Generating secret on master device...")
@@ -242,8 +246,11 @@ def make_wrap_key(ctx: HsmSecretsCtx):
     cli_info("")
 
     for serial in hsm_serials:
-        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
-            hsm_put_wrap_key(ses, serial, ctx.conf, ctx.conf.admin.wrap_key, secret)
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, device_serial=serial) as ses:
+            confirm_and_delete_old_yubihsm_object_if_exists(ses, ctx.conf.admin.wrap_key.id, yubihsm.defs.OBJECT.WRAP_KEY)
+            res = ses.put_wrap_key(ctx.conf.admin.wrap_key, secret)
+            cli_info(f"Wrap key ID '{hex(res.id)}' stored in YubiHSM device {ses.get_serial()}")
+
 
     del secret
     cli_info(f"OK. Common wrap key added to all devices (serials: {', '.join(hsm_serials)}).")
@@ -281,7 +288,7 @@ def delete_object(ctx: HsmSecretsCtx, obj_ids: tuple, alldevs: bool, force: bool
                         not_found.remove(id_or_label)
                         if not force:
                             cli_ui_msg("Object found:")
-                            cli_ui_msg(pretty_fmt_yubihsm_object(o))
+                            cli_ui_msg(pretty_fmt_yubihsm_object(o.get_info()))
                             click.confirm("Delete this object?", default=False, abort=True, err=True)
                         o.delete()
                         cli_info("Object deleted.")
@@ -324,11 +331,12 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
             n_created, n_skipped = 0, 0
 
             for t, items in config_items_per_type.items():
+                items = sorted(items, key=lambda x: x.id)
                 cli_result(f"{t.__name__}")
                 for it in items:
-                    obj: yubihsm.objects.YhsmObject|None = None
+                    obj: yubihsm.objects.YhsmObject|MockYhsmObject|None = None
                     for o in device_objs:
-                        if o.id == it.id and isinstance(o, config_to_hsm_type[t]):
+                        if o.id == it.id and (o.object_type == config_to_hsm_type[t].object_type):
                             obj = o
                             objects_accounted_for[o.id] = True
                             break
@@ -346,17 +354,36 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
                                 warn_emoji = click.style("⚠️", fg='yellow')
                                 cli_result(f"  └-> {warn_emoji} Cannot create '{it.__class__.__name__}' objects. Use other commands.")
                                 n_skipped += 1
+
                             elif isinstance(it, HSMAsymmetricKey):
                                 cli_result(f"  └-> {gear_emoji} Creating...")
-                                hsm_generate_asymmetric_key(ses, serial, ctx.conf, it)
+                                confirm_and_delete_old_yubihsm_object_if_exists(ses, it.id, OBJECT.ASYMMETRIC_KEY)
+                                cli_info(f"Generating asymmetric key, type '{it.algorithm}'...")
+                                if 'rsa' in it.algorithm.lower():
+                                    cli_warn("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should blinking rapidly while it works.")
+                                    cli_warn("  If the process aborts / times out, you can rerun this command to resume.")
+                                ses.asym_key_generate(it)
+                                cli_info(f"Symmetric key ID '{hex(it.id)}' ({it.label}) stored in YubiHSM device {ses.get_serial()}")
                                 n_created += 1
+
                             elif isinstance(it, HSMSymmetricKey):
                                 cli_result(f"  └-> {gear_emoji} Creating...")
-                                hsm_generate_symmetric_key(ses, serial, ctx.conf, it)
+                                confirm_and_delete_old_yubihsm_object_if_exists(ses, it.id, OBJECT.SYMMETRIC_KEY)
+                                cli_info(f"Generating symmetric key, type '{it.algorithm}'...")
+                                ses.sym_key_generate(it)
+                                cli_info(f"Symmetric key ID '{hex(it.id)}' ({it.label}) generated in YubiHSM device {ses.get_serial()}")
+
                                 n_created += 1
                             elif isinstance(it, HSMHmacKey):
                                 cli_result(f"  └-> {gear_emoji} Creating...")
-                                hsm_generate_hmac_key(ses, serial, ctx.conf, it)
+                                print("...")
+                                confirm_and_delete_old_yubihsm_object_if_exists(ses, it.id, OBJECT.HMAC_KEY)
+                                cli_info(f"Generating HMAC key, type '{it.algorithm}'...")
+                                print("a")
+                                ses.hmac_key_generate(it)
+                                print("b")
+                                cli_info(f"HMAC key ID '{hex(it.id)}' ({it.label}) stored in YubiHSM device {ses.get_serial()}")
+                                print("c")
                                 n_created += 1
                             else:
                                 cli_result(click.style(f"  └-> Unsupported object type: {it.__class__.__name__}. This is a bug. SKIPPING.", fg='red'))
@@ -367,7 +394,7 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
                 for o in device_objs:
                     if o.id not in objects_accounted_for:
                         info = o.get_info()
-                        cli_result(f" ??? '{str(info.label)}' (0x{o.id:04x}) <{o.__class__.__name__}>")
+                        cli_result(f" ??? '{str(info.label)}' (0x{o.id:04x}) <{o.object_type.name}>")
 
             if create:
                 cli_info("")
@@ -380,23 +407,18 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
 
 @cmd_hsm.command('attest')
 @pass_common_args
-@click.argument('obj_id', required=True, type=str, metavar='<id|label>')
+@click.argument('key_id', required=True, type=str, metavar='<id|label>')
 @click.option('--out', '-o', type=click.File('w', encoding='utf8'), help='Output file (default: stdout)', default=click.get_text_stream('stdout'))
-def attest_key(ctx: HsmSecretsCtx, obj_id: str, out: click.File):
+def attest_key(ctx: HsmSecretsCtx, key_id: str, out: click.File):
     """Attest an asymmetric key in the YubiHSM
 
     Create an a key attestation certificate, signed by the
     Yubico attestation key, for the given key ID (in hex).
     """
     from cryptography.hazmat.primitives.serialization import Encoding
-    id = ctx.conf.find_def(obj_id, HSMAsymmetricKey).id
-
+    id = ctx.conf.find_def(key_id, HSMAsymmetricKey).id
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, ctx.hsm_serial) as ses:
-        key = ses.get_object(id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-        assert isinstance(key, yubihsm.objects.AsymmetricKey)
-        if not hsm_obj_exists(key):
-            raise click.ClickException(f"Asymmetric key 0x{id:04x} not found in the YubiHSM.")
-        cert = key.attest()
+        cert = ses.attest_asym_key(id)
         pem = cert.public_bytes(Encoding.PEM).decode('UTF-8')
         out.write(pem)  # type: ignore
         cli_info(f"Key 0x{id:04x} attestation certificate written to '{out.name}'")
@@ -430,25 +452,18 @@ def backup_hsm(ctx: HsmSecretsCtx, out: click.File|None):
 
     skipped = 0
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, ctx.hsm_serial) as ses:
-
-        wrap_key = ses.get_object(ctx.conf.admin.wrap_key.id, yubihsm.defs.OBJECT.WRAP_KEY)
-        assert isinstance(wrap_key, yubihsm.objects.WrapKey)
-        if not hsm_obj_exists(wrap_key):
-            raise click.ClickException("Configured wrap key not found in the YubiHSM.")
-
         device_objs = list(ses.list_objects())
         for obj in device_objs:
-
             # Try to export the object
             try:
-                key_bytes = wrap_key.export_wrapped(obj)
+                key_bytes = ses.export_wrapped(ctx.conf.admin.wrap_key, obj.id, obj.object_type)
             except yubihsm.exceptions.YubiHsmDeviceError as e:
                 skipped += 1
                 if e.code == yubihsm.defs.ERROR.INSUFFICIENT_PERMISSIONS:
-                    cli_warn(f"- Warning: Skipping 0x{obj.id:04x}: Insufficient permissions to export object.")
+                    cli_error(f"- Warning: Skipping 0x{obj.id:04x}: Insufficient permissions to export object.")
                     continue
                 else:
-                    cli_warn(f"- Error: Failed to export object 0x{obj.id:04x}: {e}")
+                    cli_error(f"- Error: Failed to export object 0x{obj.id:04x}: {e}")
                     continue
 
             # Write to tar
@@ -464,7 +479,7 @@ def backup_hsm(ctx: HsmSecretsCtx, out: click.File|None):
     cli_info("")
     cli_info("Backup complete.")
     if skipped:
-        cli_warn(f"Skipped {skipped} objects due to errors or insufficient permissions.")
+        cli_error(f"Skipped {skipped} objects due to errors or insufficient permissions.")
 
 
 @cmd_hsm.command('restore')
@@ -487,12 +502,7 @@ def restore_hsm(ctx: HsmSecretsCtx, backup_file: str, force: bool):
             click.confirm("This is the configured master device. Are you ABSOLUTELY sure you want to continue?", abort=True, err=True)
 
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
-
-        wrap_key = ses.get_object(ctx.conf.admin.wrap_key.id, yubihsm.defs.OBJECT.WRAP_KEY)
-        assert isinstance(wrap_key, yubihsm.objects.WrapKey)
-        if not hsm_obj_exists(wrap_key):
-            raise click.ClickException("Configured wrap key not found in the YubiHSM.")
-
+        wrap_key_def = ctx.conf.admin.wrap_key
         with open(backup_file, 'rb') as fh:
             tar = tarfile.open(fileobj=fh, mode='r:gz')
             for tarinfo in tar:
@@ -509,15 +519,14 @@ def restore_hsm(ctx: HsmSecretsCtx, backup_file: str, force: bool):
                     cli_info(click.style(f"   └-> Skipping unknown object type '{obj_type}' in backup. File: '{name}'", fg='yellow'))
                     continue
 
-                if obj_enum == yubihsm.defs.OBJECT.WRAP_KEY and obj_id == wrap_key.id:
+                if obj_enum == yubihsm.defs.OBJECT.WRAP_KEY and obj_id == wrap_key_def.id:
                     cli_info(click.style(f"   └-> Skipping wrap key 0x{obj_id:04x} that we are currently using for restoring.", fg='yellow'))
                     continue
 
-                obj = ses.get_object(obj_id, obj_enum)
-                if hsm_obj_exists(obj):
+                if ses.object_exists_raw(obj_id, obj_enum):
                     if force or click.confirm(f"   └-> Object 0x{obj_id:04x} ({obj_type}) already exists. Overwrite?", default=False, err=True):
                         cli_info(f"      └-> Deleting existing {obj_type} 0x{obj_id:04x}'")
-                        obj.delete()
+                        ses.delete_object_raw(obj_id, obj_enum)
                     else:
                         cli_info(click.style(f"      └-> Skipping existing {obj_type} 0x{obj_id:04x}'", fg='yellow'))
                         continue
@@ -525,8 +534,8 @@ def restore_hsm(ctx: HsmSecretsCtx, backup_file: str, force: bool):
                 tarfh = tar.extractfile(tarinfo)
                 assert tarfh is not None, f"Failed to extract file '{tarinfo.name}' from tar archive."
                 key_bytes = tarfh.read()
-                obj = wrap_key.import_wrapped(key_bytes)
-                cli_info(f"   └-> Restored: 0x{obj.id:04x}: ({obj.object_type.name}): {str(obj.get_info().label)}")
+                info = ses.import_wrapped(wrap_key_def, key_bytes)
+                cli_info(f"   └-> Restored: 0x{info.id:04x}: ({info.object_type.name}): {str(info.label)}")
                 cli_info("")
 
     cli_info("")

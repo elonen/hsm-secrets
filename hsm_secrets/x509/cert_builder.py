@@ -1,3 +1,4 @@
+import click
 from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes
@@ -17,16 +18,16 @@ import yubihsm.objects      # type: ignore [import]
 import yubihsm.defs         # type: ignore [import]
 
 from hsm_secrets.x509.def_utils import merge_x509_info_with_defaults
-from hsm_secrets.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter, PrivateKey
+from hsm_secrets.key_adapters import PrivateKeyHSMAdapter, RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter, PrivateKeyOrAdapter
 
 
 class X509CertBuilder:
     """
     Ephemeral class for building and signing X.509 certificates using the YubiHSM as a key store.
     """
-    private_key: PrivateKey
+    private_key: PrivateKeyOrAdapter
 
-    def __init__(self, hsm_config: HSMConfig, cert_def_info: X509Info, priv_key: PrivateKey|yubihsm.objects.AsymmetricKey):
+    def __init__(self, hsm_config: HSMConfig, cert_def_info: X509Info, priv_key: PrivateKeyOrAdapter|yubihsm.objects.AsymmetricKey):
         """
         Initialize a new X.509 certificate builder.
 
@@ -56,11 +57,11 @@ class X509CertBuilder:
         Build and sign a self-signed X.509 certificate.
         """
         builder = self._build_cert_base()
-        ed = isinstance(self.private_key, Ed25519PrivateKeyHSMAdapter)
+        ed = isinstance(self.private_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
         return builder.sign(self.private_key, None if ed else hashes.SHA256())
 
 
-    def generate_cross_signed_intermediate_cert(self, issuer_certs: List[x509.Certificate], issuer_keys: List[PrivateKeyHSMAdapter]) -> List[x509.Certificate]:
+    def generate_cross_signed_intermediate_cert(self, issuer_certs: List[x509.Certificate], issuer_keys: List[PrivateKeyOrAdapter]) -> List[x509.Certificate]:
         """
         Build and sign an intermediate X.509 certificate with one or more issuer certificates.
         This is used to cross-sign an intermediate CA certificate with root CAs.
@@ -81,7 +82,7 @@ class X509CertBuilder:
             subject_key_identifier = x509.SubjectKeyIdentifier.from_public_key(self.private_key.public_key())
             builder = builder.add_extension(subject_key_identifier, critical=False)
 
-            ed = isinstance(issuer_key, Ed25519PrivateKeyHSMAdapter)
+            ed = isinstance(issuer_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
             cert = builder.sign(issuer_key, None if ed else hashes.SHA256())
 
             cross_signed_certs.append(cert)
@@ -105,7 +106,7 @@ class X509CertBuilder:
         if self.cert_def_info.extended_key_usage:
             builder = builder.add_extension(self._mkext_extended_key_usage(), critical=False)
 
-        ed = isinstance(self.private_key, Ed25519PrivateKeyHSMAdapter)
+        ed = isinstance(self.private_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
         return builder.sign(self.private_key, None if ed else hashes.SHA256())
 
 
@@ -172,18 +173,18 @@ class X509CertBuilder:
     def _mkext_alt_name(self) -> x509.SubjectAlternativeName:
         assert self.cert_def_info.attribs, "X509Info.attribs.subject_alt_names is missing"
         type_to_cls = {
-            "dns": x509.DNSName,
-            "ip": x509.IPAddress,
-            "rfc822": x509.RFC822Name,
-            "uri": x509.UniformResourceIdentifier,
-            "directory": x509.DirectoryName,
-            "registered_id": x509.RegisteredID,
-            "other": x509.OtherName
+            "dns": (x509.DNSName, lambda n: n),
+            "ip": (x509.IPAddress, lambda n: ipaddress.ip_address(n)),
+            "rfc822": (x509.RFC822Name, lambda n: n),
+            "uri": (x509.UniformResourceIdentifier, lambda n: n),
+            "directory": (x509.DirectoryName, lambda n: n),
+            "registered_id": (x509.RegisteredID, lambda n: n),
+            "other": (x509.OtherName, lambda n: n)
         }
         san: List[x509.GeneralName] = []
         for san_type, names in (self.cert_def_info.attribs.subject_alt_names or {}).items():
-            dst_cls = type_to_cls[san_type]
-            san.extend([dst_cls(name) for name in names])
+            dst_cls, dst_conv = type_to_cls[san_type]
+            san.extend([dst_cls(dst_conv(name)) for name in names])
         return x509.SubjectAlternativeName(san)
 
     def _mkext_key_usage(self) -> x509.KeyUsage:

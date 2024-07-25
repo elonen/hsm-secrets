@@ -40,9 +40,7 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
 
     with open_hsm_session(ctx) as ses:
         for key in selected_keys:
-            obj = ses.get_object(key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-            assert isinstance(obj, AsymmetricKey)
-            pubkey = obj.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH).decode('ascii')
+            pubkey = ses.get_public_key(key).public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH).decode('ascii')
             cli_result(f"{pubkey} {key.label}")
 
 
@@ -74,11 +72,12 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
     from hsm_secrets.ssh.openssh.ssh_certificate import cert_for_ssh_pub_id, str_to_extension
     from hsm_secrets.key_adapters import make_private_key_adapter
 
-    ca_key_id = ctx.conf.find_def(ca, HSMAsymmetricKey).id if ca else ctx.conf.ssh.default_ca
+    ca_key_def = ctx.conf.find_def(ca or ctx.conf.ssh.default_ca, HSMAsymmetricKey)
+    assert isinstance(ca_key_def, HSMAsymmetricKey)
 
-    ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_id]
+    ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_def.id]
     if not ca_def:
-        raise click.ClickException(f"CA key 0x{ca_key_id:04x} not found in config")
+        raise click.ClickException(f"CA key 0x{ca_key_def.id:04x} not found in config")
 
     if not username and not certid:
         raise click.ClickException("Either --username or --certid must be specified")
@@ -129,13 +128,8 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
 
     # Sign & write out
     with open_hsm_session(ctx) as ses:
-        obj = ses.get_object(ca_key_id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-        assert isinstance(obj, AsymmetricKey)
-
-        ca_pubkey = obj.get_public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
-        ca_key = make_private_key_adapter(obj)
-
-        sign_ssh_cert(cert, ca_key)
+        ca_priv_key = ses.get_private_key(ca_key_def)
+        sign_ssh_cert(cert, ca_priv_key)
         cert_str = cert.to_string_fmt().replace(certid, f"{certid}{key_comment}").strip()
 
         if not out_fp:
@@ -143,10 +137,11 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
         out_fp.write(cert_str.strip() + "\n")   # type: ignore
         out_fp.close()
         if str(path) != '-':
+            ca_pub_key = ca_priv_key.public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
             cli_code_info(dedent(f"""
                 Certificate written to: {path}
                   - Send it to the user and ask them to put it in `~/.ssh/` along with the private key
                   - To view it, run: `ssh-keygen -L -f {path}`
                   - To allow access (adapt principals as neede), add this to your server authorized_keys file(s):
-                    `cert-authority,principals="{','.join(cert.valid_principals)}" {ca_pubkey.decode()} HSM_{ca_def[0].label}`
+                    `cert-authority,principals="{','.join(cert.valid_principals)}" {ca_pub_key.decode()} HSM_{ca_def[0].label}`
                 """).strip())

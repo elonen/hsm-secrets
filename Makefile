@@ -1,4 +1,4 @@
-.PHONY: setup install clean distclean package
+.PHONY: setup install clean distclean package test
 
 # Configurable paths and settings
 VENV := _venv
@@ -36,6 +36,9 @@ $(VENV): requirements.txt
 	$(PIP) install -r requirements.txt
 	$(PIP) install build
 	@touch $(VENV)
+
+test: $(TARGET_BINS)
+	./run-tests.sh
 
 clean:
 	@echo "Cleaning up build and Python file artifacts..."

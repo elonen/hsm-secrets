@@ -8,8 +8,8 @@ from cryptography.hazmat.primitives.asymmetric.padding import AsymmetricPadding
 import cryptography.hazmat.primitives.serialization as serialization
 from cryptography.hazmat.primitives import hashes
 
-import yubihsm.objects
-import yubihsm.defs
+import yubihsm.objects      # type: ignore [import]
+import yubihsm.defs         # type: ignore [import]
 
 """
 Classes that wrap YubiHSM-stored keys in the cryptography.hazmat.primitives.asymmetric interfaces.
@@ -19,7 +19,7 @@ but all crypto operations are delegated to the HSM.
 """
 
 PrivateKeyHSMAdapter = Union['RSAPrivateKeyHSMAdapter', 'Ed25519PrivateKeyHSMAdapter', 'ECPrivateKeyHSMAdapter']
-PrivateKey = Union[rsa.RSAPrivateKey, ed25519.Ed25519PrivateKey, ec.EllipticCurvePrivateKey, 'RSAPrivateKeyHSMAdapter', 'Ed25519PrivateKeyHSMAdapter', 'ECPrivateKeyHSMAdapter']
+PrivateKeyOrAdapter = Union[rsa.RSAPrivateKey, ed25519.Ed25519PrivateKey, ec.EllipticCurvePrivateKey, PrivateKeyHSMAdapter]
 
 
 def make_private_key_adapter(hsm_key: yubihsm.objects.AsymmetricKey) -> PrivateKeyHSMAdapter:

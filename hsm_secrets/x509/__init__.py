@@ -8,9 +8,9 @@ import yubihsm.objects    # type: ignore [import]
 import yubihsm.defs    # type: ignore [import]
 
 from cryptography.hazmat.primitives import serialization
-from hsm_secrets.config import HSMConfig, KeyID, HSMOpaqueObject, X509Cert, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, find_config_items_of_class
 
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, hsm_obj_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
@@ -18,12 +18,13 @@ from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_de
 import click
 
 from hsm_secrets.key_adapters import make_private_key_adapter
+from hsm_secrets.yubihsm import HSMSession
 
 
 @click.group()
 @click.pass_context
 def cmd_x509(ctx: click.Context):
-    """Genral X.509 Certificate Management"""
+    """General X.509 Certificate Management"""
     ctx.ensure_object(dict)
 
 # ---------------
@@ -75,9 +76,7 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
 
     with open_hsm_session(ctx) as ses:
         for cd in selected_certs:
-            obj = ses.get_object(cd.id, yubihsm.defs.OBJECT.OPAQUE)
-            assert isinstance(obj, yubihsm.objects.Opaque)
-            pem = obj.get_certificate().public_bytes(encoding=serialization.Encoding.PEM).decode()
+            pem = ses.get_certificate(cd).public_bytes(encoding=serialization.Encoding.PEM).decode()
             if outdir:
                 pem_file = Path(outdir) / f"{cd.label}.pem"
                 pem_file.write_text(pem.strip() + "\n")
@@ -100,8 +99,8 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
     Performs a topological sort of the certificates to ensure that any dependencies are created first.
     """
     # Enumerate all certificate definitions in the config
-    scid_to_opq_def: dict[KeyID, HSMOpaqueObject] = {}
-    scid_to_x509_def: dict[KeyID, X509Cert] = {}
+    scid_to_opq_def: dict[HSMKeyID, HSMOpaqueObject] = {}
+    scid_to_x509_def: dict[HSMKeyID, X509Cert] = {}
 
     for x in find_config_items_of_class(ctx.conf, X509Cert):
         assert isinstance(x, X509Cert)
@@ -109,12 +108,12 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
             scid_to_opq_def[opq.id] = opq
             scid_to_x509_def[opq.id] = x
 
-    def _do_it(ses: AuthSession|None):
+    def _do_it(ses: HSMSession|None):
         selected_defs = list(scid_to_opq_def.values()) if all_certs \
             else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in cert_ids]
 
         creation_order = topological_sort_x509_cert_defs(selected_defs)
-        id_to_cert_obj: dict[KeyID, x509.Certificate] = {}
+        id_to_cert_obj: dict[HSMKeyID, x509.Certificate] = {}
 
         # Create the certificates in topological order
         for cd in creation_order:
@@ -124,37 +123,28 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
             cli_info(indent(pretty_x509_info(x509_info), "    "))
 
             if not dry_run:
-                assert isinstance(ses, AuthSession)
-
+                assert ses
                 x509_def = scid_to_x509_def[cd.id]
-                key = ses.get_object(x509_def.key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-                assert isinstance(key, yubihsm.objects.AsymmetricKey)
 
                 # If the certificate is signed by another certificate, get the issuer cert and key
-                issuer_cert = None
-                issuer_key = None
-
+                issuer_cert, issuer_key = None, None
                 if cd.sign_by and cd.sign_by != cd.id:
                     issuer_cert = id_to_cert_obj.get(cd.sign_by)
                     if not issuer_cert:
                         # Issuer cert was not created on this run, try to load it from the HSM
-                        issuer_hsm_obj = ses.get_object(cd.sign_by, yubihsm.defs.OBJECT.OPAQUE)
-                        assert isinstance(issuer_hsm_obj, yubihsm.objects.Opaque)
-                        if not hsm_obj_exists(issuer_hsm_obj):
+                        if not ses.object_exists(cd):
                             raise click.ClickException(f"ERROR: Certificate 0x{cd.sign_by:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
-                        issuer_cert = issuer_hsm_obj.get_certificate()
+                        issuer_cert = ses.get_certificate(cd)
 
-                    # Get a HSM-backed key (adapter) for the issuer cert
-                    key_id = scid_to_x509_def[cd.sign_by].key.id
-                    key_obj = ses.get_object(key_id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-                    assert isinstance(key_obj, yubihsm.objects.AsymmetricKey)
-                    if not hsm_obj_exists(key_obj):
-                        raise click.ClickException(f"ERROR: Key 0x{key_id:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
-                    issuer_key = make_private_key_adapter(key_obj)
+                    sign_key_def = scid_to_x509_def[cd.sign_by].key
+                    if not ses.object_exists(sign_key_def):
+                        raise click.ClickException(f"ERROR: Key 0x{sign_key_def.id:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
+                    issuer_key = ses.get_private_key(sign_key_def)
 
                 # Create and sign the certificate
                 assert x509_def.x509_info, "X.509 certificate definition is missing x509_info"
-                builder = X509CertBuilder(ctx.conf, x509_def.x509_info, key)
+                priv_key = ses.get_private_key(x509_def.key)
+                builder = X509CertBuilder(ctx.conf, x509_def.x509_info, priv_key)
                 if issuer_cert:
                     assert issuer_key
                     id_to_cert_obj[cd.id] = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]
@@ -164,17 +154,9 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
         # Put the certificates into the HSM
         for cd in creation_order:
             if not dry_run:
-                assert isinstance(ses, AuthSession)
-                hsm_obj = ses.get_object(cd.id, yubihsm.defs.OBJECT.OPAQUE)
-                assert isinstance(hsm_obj, yubihsm.objects.Opaque)
-                if confirm_and_delete_old_yubihsm_object_if_exists(ctx.hsm_serial, hsm_obj, abort=False):
-                    hsm_obj.put_certificate(
-                        session = ses,
-                        object_id = cd.id,
-                        label = cd.label,
-                        domains = ctx.conf.get_domain_bitfield(cd.domains),
-                        capabilities = ctx.conf.capability_from_names({'exportable-under-wrap'}),
-                        certificate = id_to_cert_obj[cd.id])
+                assert isinstance(ses, HSMSession)
+                if confirm_and_delete_old_yubihsm_object_if_exists(ses, cd.id, yubihsm.defs.OBJECT.OPAQUE, abort=False):
+                    ses.put_certificate(cd, id_to_cert_obj[cd.id])
                     cli_info(f"Certificate 0x{cd.id:04x} created and stored in YubiHSM (serial {ctx.hsm_serial}).")
 
     if dry_run:

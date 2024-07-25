@@ -6,8 +6,9 @@ from yubihsm.objects import HmacKey  # type: ignore [import]
 import pyescrypt  # type: ignore [import]
 from mnemonic import Mnemonic
 
-from hsm_secrets.config import HSMConfig, PasswordDerivationRule, PwRotationToken, find_config_items_of_class
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_result, group_by_4, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args, secure_display_secret
+from hsm_secrets.config import HSMConfig, HSMHmacKey, PasswordDerivationRule, PwRotationToken, find_config_items_of_class
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_result, group_by_4, open_hsm_session, pass_common_args, secure_display_secret
+from hsm_secrets.yubihsm import HSMSession
 
 
 @click.group()
@@ -43,23 +44,22 @@ def get_password(ctx: HsmSecretsCtx, name: str, prev: int, rule: str|None):
     if prev < 0:
         raise click.ClickException(f"Invalid previous password index: {prev}")
 
-    rule_def, key_id = _find_rule_and_key(ctx.conf, rule_id)
+    rule_def, hmac_key = _find_deriv_rule_and_key(ctx.conf, rule_id)
 
     with open_hsm_session(ctx) as ses:
-        obj = ses.get_object(key_id, yubihsm.defs.OBJECT.HMAC_KEY)
-        assert isinstance(obj, HmacKey)
-        if not hsm_obj_exists(obj):
-            raise click.ClickException(f"HMAC key 0x'{key_id:04x}' not found in HSM.")
-
-        name_hmac = int.from_bytes(obj.sign_hmac(name.encode('utf8')), 'big')
+        # Find all rotations for the given name, and sort by timestamp
+        name_hmac = int.from_bytes(ses.sign_hmac(hmac_key, name.encode('utf8')), 'big')
         rotations = [r for r in rule_def.rotation_tokens if r.name_hmac in (None, name_hmac)]
         rotations.sort(key=lambda r: r.ts, reverse=True)
         if prev > len(rotations):
             raise click.ClickException(f"Password has not been rotated {prev} times yet.")
 
+        # Derive the secret from name and latest rotation
         nonce = rotations[prev-1].nonce if rotations else 0
-        derived_secret = _derive_secret(obj, name, nonce)[:rule_def.bits//8]
-        password = _(derived_secret, rule_def)
+        nonce_bytes = nonce.to_bytes((nonce.bit_length() + 7) // 8, 'big') if nonce else b''
+        derived_secret = ses.sign_hmac(hmac_key, name.encode('utf8') + nonce_bytes)
+
+        password = _secret_to_password(derived_secret, rule_def)
 
         if ctx.quiet:
             print(password)
@@ -99,18 +99,13 @@ def rotate_password(ctx: HsmSecretsCtx, name: list[str]|None, rule: str|None, al
     if not all and not name:
         raise click.ClickException("Must specify either --all or at least one name.")
 
-    _, key_id = _find_rule_and_key(ctx.conf, rule_id)
+    _, key_def = _find_deriv_rule_and_key(ctx.conf, rule_id)
 
     with open_hsm_session(ctx) as ses:
-        obj = ses.get_object(key_id, yubihsm.defs.OBJECT.HMAC_KEY)
-        assert isinstance(obj, HmacKey)
-        if not hsm_obj_exists(obj):
-            raise click.ClickException(f"HMAC key 0x'{key_id:04x}' not found in HSM.")
-
         nonce = int.from_bytes(ses.get_pseudo_random(8), 'big')
 
         def rotate(name: str|None):
-            name_hmac = int.from_bytes(obj.sign_hmac(name.encode('utf8')), 'big') if name else None
+            name_hmac = int.from_bytes(ses.sign_hmac(key_def, name.encode('utf8')), 'big') if name else None
             rotation = PwRotationToken(name_hmac=name_hmac, nonce=nonce, ts=int(datetime.now().timestamp()))
             name_hmac_str = f"name_hmac: 0x{name_hmac:x}, " if name_hmac else ""
             rotation_str = f"          - {{{name_hmac_str}nonce: 0x{rotation.nonce:x}, ts: {rotation.ts}}}"
@@ -128,25 +123,20 @@ def rotate_password(ctx: HsmSecretsCtx, name: list[str]|None, rule: str|None, al
 # --- Helpers ---
 
 
-def _find_rule_and_key(conf: HSMConfig, rule_id: str) -> tuple[PasswordDerivationRule, int]:
+def _find_deriv_rule_and_key(conf: HSMConfig, rule_id: str) -> tuple[PasswordDerivationRule, HSMHmacKey]:
     rules: list[PasswordDerivationRule] = find_config_items_of_class(conf, PasswordDerivationRule)
     matches = [r for r in rules if r.id == rule_id]
     if not matches:
         raise click.ClickException(f"Derivation rule '{rule_id}' not found in config file.")
     rule_def = matches[0]
-    key_id = next((k.id for k in conf.password_derivation.keys if k.id == rule_def.key), None)
-    if not key_id:
+    key_def = next((k for k in conf.password_derivation.keys if k.id == rule_def.key), None)
+    if not key_def:
         raise click.ClickException(f"Key '{rule_def.key}' not found in config file.")
-    return rule_def, key_id
+    return rule_def, key_def
 
 
-def _derive_secret(obj: HmacKey, name: str, nonce: int) -> bytes:
-    name_bytes = name.encode('utf8')
-    nonce_bytes = nonce.to_bytes((nonce.bit_length() + 7) // 8, 'big') if nonce else b''
-    return obj.sign_hmac(name_bytes + nonce_bytes)
 
-
-def _(derived_secret: bytes, rule_def: PasswordDerivationRule) -> str:
+def _secret_to_password(derived_secret: bytes, rule_def: PasswordDerivationRule) -> str:
     if rule_def.format == "bip39":
         mnemo = Mnemonic("english")
         secret_padded = derived_secret + b'\x00' * max(128//8 - len(derived_secret), 0)

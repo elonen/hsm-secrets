@@ -12,8 +12,8 @@ import yubihsm.defs     # type: ignore [import]
 import yubihsm.objects  # type: ignore [import]
 
 from hsm_secrets.config import HSMOpaqueObject, X509CertAttribs, X509Info
-from hsm_secrets.key_adapters import PrivateKey, make_private_key_adapter
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_ui_msg, cli_warn, hsm_obj_exists, open_hsm_session, open_hsm_session_with_yubikey, pass_common_args
+from hsm_secrets.key_adapters import PrivateKeyOrAdapter, make_private_key_adapter
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_warn, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 
@@ -46,11 +46,11 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     """
     # Find the issuer CA definition
     issuer_x509_def = None
-    issuer_cert_id = -1
+    issuer_cert_def = None
     if (sign_crt or '').strip().lower() != 'self':
-        issuer_cert_id = ctx.conf.find_def(sign_crt, HSMOpaqueObject).id if sign_crt else ctx.conf.tls.default_ca_id
-        issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_id)
-        assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_id:04x}"
+        issuer_cert_def = ctx.conf.find_def(sign_crt or ctx.conf.tls.default_ca_id, HSMOpaqueObject)
+        issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
+        assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
 
     info = X509Info()
     info.attribs = X509CertAttribs(common_name = common_name)
@@ -69,7 +69,7 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     merged_info.path_len = None
     merged_info.ca = False
 
-    priv_key: PrivateKey
+    priv_key: PrivateKeyOrAdapter
     if keyfmt == 'rsa4096':
         priv_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
     elif keyfmt == 'ed25519':
@@ -94,30 +94,21 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     builder = X509CertBuilder(ctx.conf, merged_info, priv_key)
     issuer_cert = None
     if issuer_x509_def:
-         assert issuer_cert_id >= 0
+         assert issuer_cert_def
          with open_hsm_session(ctx) as ses:
-
-            ca_cert_obj = ses.get_object(issuer_cert_id, yubihsm.defs.OBJECT.OPAQUE)
-            assert isinstance(ca_cert_obj, yubihsm.objects.Opaque)
-            assert hsm_obj_exists(ca_cert_obj), f"CA cert ID not found on HSM: 0x{issuer_cert_id:04x}"
-
-            issuer_key_obj = ses.get_object(issuer_x509_def.key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-            assert isinstance(issuer_key_obj, yubihsm.objects.AsymmetricKey)
-            assert hsm_obj_exists(issuer_key_obj), f"CA key ID not found on HSM: 0x{issuer_x509_def.key.id:04x}"
-
-            issuer_cert = ca_cert_obj.get_certificate()
-            issuer_key = make_private_key_adapter(issuer_key_obj)
-
-            signed_cer = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]
-            cli_info(f"Signed with CA cert 0x{issuer_cert_id:04x}: {issuer_cert.subject}")
+            assert isinstance(issuer_cert_def, HSMOpaqueObject)
+            issuer_cert = ses.get_certificate(issuer_cert_def)
+            issuer_key = ses.get_private_key(issuer_x509_def.key)
+            signed_cert = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]
+            cli_info(f"Signed with CA cert 0x{issuer_cert_def.id:04x}: {issuer_cert.subject}")
     else:
-        signed_cer = builder.generate_self_signed_cert()
+        signed_cert = builder.generate_self_signed_cert()
         cli_warn("WARNING: Self-signed certificate, please sign the CSR manually")
         cli_info("")
 
     key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption())
     csr_pem = builder.generate_csr().public_bytes(encoding=serialization.Encoding.PEM)
-    crt_pem = signed_cer.public_bytes(encoding=serialization.Encoding.PEM)
+    crt_pem = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
     chain_pem = (crt_pem.strip() + b'\n' + issuer_cert.public_bytes(encoding=serialization.Encoding.PEM)) if issuer_cert else None
 
     key_file.write_bytes(key_pem)
@@ -160,9 +151,9 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     csr_obj = cryptography.x509.load_pem_x509_csr(csr_data)
 
     # Find the issuer CA definition
-    issuer_cert_id = ctx.conf.find_def(ca, HSMOpaqueObject).id if ca else ctx.conf.tls.default_ca_id
-    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_id)
-    assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_id:04x}"
+    issuer_cert_def = ctx.conf.find_def(ca or ctx.conf.tls.default_ca_id, HSMOpaqueObject)
+    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
+    assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
 
     if out:
         out_path = Path(str(out))
@@ -172,16 +163,9 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
         click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True, err=True)
 
     with open_hsm_session(ctx) as ses:
-        ca_cert_obj = ses.get_object(issuer_cert_id, yubihsm.defs.OBJECT.OPAQUE)
-        assert isinstance(ca_cert_obj, yubihsm.objects.Opaque)
-        assert hsm_obj_exists(ca_cert_obj), f"CA cert ID not found on HSM: 0x{issuer_cert_id:04x}"
-
-        ca_key_obj = ses.get_object(issuer_x509_def.key.id, yubihsm.defs.OBJECT.ASYMMETRIC_KEY)
-        assert isinstance(ca_key_obj, yubihsm.objects.AsymmetricKey)
-        assert hsm_obj_exists(ca_key_obj), f"CA key ID not found on HSM: 0x{issuer_x509_def.key.id:04x}"
-
-        issuer_cert = ca_cert_obj.get_certificate()
-        issuer_key = make_private_key_adapter(ca_key_obj)
+        assert isinstance(issuer_cert_def, HSMOpaqueObject)
+        issuer_cert = ses.get_certificate(issuer_cert_def)
+        issuer_key = ses.get_private_key(issuer_x509_def.key)
 
         builder = cryptography.x509.CertificateBuilder(
             issuer_name = issuer_cert.subject,
@@ -200,7 +184,7 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
             hash_algo = hashes.SHA256()
 
         signed_cer = builder.sign(private_key=issuer_key, algorithm=hash_algo)
-        cli_info(f"Signed with CA cert 0x{issuer_cert_id:04x}: {issuer_cert.subject}")
+        cli_info(f"Signed with CA cert 0x{issuer_cert_def.id:04x}: {issuer_cert.subject}")
 
         crt_pem = signed_cer.public_bytes(encoding=serialization.Encoding.PEM)
         out_path.write_bytes(crt_pem)
