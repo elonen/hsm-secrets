@@ -65,7 +65,7 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
 
     # Get first Yubikey HSM auth key label from device if not specified
     yubikey_label = yklabel
-    if not yubikey_label:
+    if not yubikey_label and not (auth_default_admin or auth_password_id or mock):
         creds = list_yubikey_hsm_creds()
         if not creds:
             if not (quiet or auth_default_admin or auth_password_id):

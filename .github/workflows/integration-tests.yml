@@ -1,4 +1,4 @@
-name: Python Tests
+name: Integration Tests
 
 on:
   push:
@@ -9,20 +9,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+    env:
+      TERM: xterm
+
     steps:
-    - uses: actions/checkout@v2
-    
+    - uses: actions/checkout@v4
+
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    
+
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y make openssh-client openssl libpcsclite-dev
-    
+        sudo apt-get install -y make openssh-client openssl libpcsclite-dev expect
+
     - name: Run tests
       run: |
         make test

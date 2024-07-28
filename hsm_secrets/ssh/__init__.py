@@ -7,6 +7,7 @@ import click
 from hsm_secrets.config import HSMAsymmetricKey, HSMConfig
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_result, cli_warn, open_hsm_session, pass_common_args
 from cryptography.hazmat.primitives import _serialization
+from cryptography.hazmat.primitives.serialization import ssh
 
 import yubihsm.defs    # type: ignore [import]
 from yubihsm.objects import AsymmetricKey   # type: ignore [import]
@@ -44,17 +45,18 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
             cli_result(f"{pubkey} {key.label}")
 
 
-@cmd_ssh.command('sign')
+
+@cmd_ssh.command('sign-user')
 @click.option('--out', '-o', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), help="Output file (default: deduce from input)", default=None)
 @click.option('--ca', '-c', required=False, help="CA key ID (hex) or label to sign with. Default: read from config", default=None)
 @click.option('--username', '-u', required=False, help="Key owner's name (for auditing)", default=None)
 @click.option('--certid', '-n', required=False, help="Explicit certificate ID (default: auto-generated)", default=None)
 @click.option('--validity', '-t', required=False, default=365*24*60*60, help="Validity period in seconds (default: 1 year)")
 @click.option('--principals', '-p', required=False, help="Comma-separated list of principals", default='')
-@click.option('--extentions', '-e', help="Comma-separated list of SSH extensions", default='permit-X11-forwarding,permit-agent-forwarding,permit-port-forwarding,permit-pty,permit-user-rc')
+@click.option('--extensions', '-e', help="Comma-separated list of SSH extensions", default='permit-X11-forwarding,permit-agent-forwarding,permit-port-forwarding,permit-pty,permit-user-rc')
 @click.argument('keyfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-')
 @pass_common_args
-def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extentions: str, keyfile: str):
+def sign_ssh_user_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extensions: str, keyfile: str):
     """Make and sign an SSH user certificate
 
     [keyfile]: file containing the public key to sign (default: stdin)
@@ -62,12 +64,68 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
     If --ca is not specified, the default CA key is used (as specified in the config file).
 
     Either --username or explicit --certid must be specified. If --certid is not specified,
-    a certificate ID is auto-generated key owner name, current time and principal list.
+    a certificate ID is auto-generated using the key owner name, current time, and principal list.
+
     Unique and clear certificate IDs are important for auditing and revocation.
 
     Output file is deduced from input file if not specified with --out (or '-' for stdout).
     For example, 'id_rsa.pub' will be signed to 'id_rsa-cert.pub'.
     """
+    if (not username and not certid) or (username and certid):
+        raise click.ClickException("Either --username or --certid must be specified, but not both")
+    timestamp = int(time.time())
+    certid = certid or (f"{username}-{timestamp}-{'+'.join(principals.split(','))}").strip().lower().replace(' ', '_')
+    _sign_ssh_key(ctx, out, ca, certid, validity, principals, extensions, keyfile, ssh.SSHCertificateType.USER, timestamp)
+
+
+@cmd_ssh.command('sign-host')
+@click.option('--out', '-o', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), help="Output file (default: deduce from input)", default=None)
+@click.option('--ca', '-c', required=False, help="CA key ID (hex) or label to sign with. Default: read from config", default=None)
+@click.option('--hostname', '-H', required=True, help="Primary hostname of the server")
+@click.option('--validity', '-t', required=False, default=365*24*60*60, help="Validity period in seconds (default: 1 year)")
+@click.option('--principals', '-p', required=False, help="Comma-separated list of additional hostnames, IP addresses, or wildcards this certificate is valid for", default=None)
+@click.argument('keyfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-')
+@pass_common_args
+def sign_ssh_host_key(ctx: HsmSecretsCtx, out: str, ca: str|None, hostname: str, validity: int, principals: str|None, keyfile: str):
+    """Make and sign an SSH host certificate
+
+    [keyfile]: file containing the public key to sign (default: stdin)
+
+    If --ca is not specified, the default CA key is used (as specified in the config file).
+
+    The --hostname is used as the primary principal and is included in the certificate ID.
+
+    --principals can be used to specify additional hostnames, IP addresses, or wildcards that this certificate is valid for.
+    This is useful for servers with multiple names, IP addresses, or for covering entire subdomains or services.
+
+    Wildcards are supported in principals and can be used as prefixes or suffixes. For example:
+    - wiki.* would match any hostname starting with "wiki."
+    - *.example.com would match any subdomain of example.com
+    - 192.168.1.* would match any IP in the 192.168.1.0/24 subnet
+
+    Output file is deduced from input file if not specified with --out (or '-' for stdout).
+    For example, 'ssh_host_rsa_key.pub' will be signed to 'ssh_host_rsa_key-cert.pub'.
+
+    Example usage:
+    sign-host --hostname wiki.example.com --principals "wiki.*,*.example.com,10.0.0.*" ssh_host_rsa_key.pub
+    """
+    principal_list = [hostname]
+    if principals:
+        principal_list.extend([p.strip() for p in principals.split(',') if p.strip() != hostname])
+    principals_str = ','.join(principal_list)
+
+    timestamp = int(time.time())
+    certid = f"host-{hostname}-{timestamp}+{len(principal_list)-1}-principals".strip().lower().replace(' ', '_')
+
+    cli_code_info(f"Creating host certificate for {hostname} with certid: {certid}")
+    cli_code_info(f"Principals: {principals_str}")
+
+    timestamp = int(time.time())
+    _sign_ssh_key(ctx, out, ca, certid, validity, principals_str, '', keyfile, ssh.SSHCertificateType.HOST, timestamp)
+
+
+
+def _sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, certid: str, validity: int, principals: str, extensions: str, keyfile: str, cert_type: ssh.SSHCertificateType, timestamp: int):
     from hsm_secrets.ssh.openssh.signing import sign_ssh_cert
     from hsm_secrets.ssh.openssh.ssh_certificate import cert_for_ssh_pub_id, str_to_extension
     from hsm_secrets.key_adapters import make_private_key_adapter
@@ -78,11 +136,6 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
     ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_def.id]
     if not ca_def:
         raise click.ClickException(f"CA key 0x{ca_key_def.id:04x} not found in config")
-
-    if not username and not certid:
-        raise click.ClickException("Either --username or --certid must be specified")
-    elif username and certid:
-        raise click.ClickException("Only one of --username or --certid must be specified")
 
     # Read public key
     key_str = ""
@@ -100,21 +153,22 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
     if len(parts) >= 3:
         key_comment = "__"+parts[2]
 
-    timestamp = int(time.time())
     princ_list = [s.strip() for s in principals.split(',')] if principals else []
-    certid = certid or (f"{username}-{timestamp}-{'+'.join(principals.split(','))}").strip().lower().replace(' ', '_')
-    cli_code_info(f"Signing key with CA `{ca_def[0].label}` as cert ID `{certid}` with principals: `{princ_list}`")
+
+    cert_type_str = "user" if cert_type == ssh.SSHCertificateType.USER else "host"
+    cli_code_info(f"Signing {cert_type_str} key with CA `{ca_def[0].label}` as cert ID `{certid}` with principals: `{princ_list}`")
 
     # Create certificate from public key
     cert = cert_for_ssh_pub_id(
         key_str,
         certid,
-        valid_seconds = validity,
-        principals = princ_list,
-        serial = timestamp,
-        extensions = {str_to_extension(s.strip()): b'' for s in extentions.split(',')})
+        cert_type=cert_type,
+        valid_seconds=validity,
+        principals=princ_list,
+        serial=timestamp,
+        extensions={str_to_extension(s.strip()): b'' for s in extensions.split(',')} if cert_type == ssh.SSHCertificateType.USER else {})
 
-    # Figre out output file
+    # Figure out output file
     out_fp = None
     path = None
     if out == '-' or (keyfile == '-' and not out):
@@ -138,10 +192,20 @@ def sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None,
         out_fp.close()
         if str(path) != '-':
             ca_pub_key = ca_priv_key.public_key().public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH)
-            cli_code_info(dedent(f"""
-                Certificate written to: {path}
-                  - Send it to the user and ask them to put it in `~/.ssh/` along with the private key
-                  - To view it, run: `ssh-keygen -L -f {path}`
-                  - To allow access (adapt principals as neede), add this to your server authorized_keys file(s):
-                    `cert-authority,principals="{','.join(cert.valid_principals)}" {ca_pub_key.decode()} HSM_{ca_def[0].label}`
-                """).strip())
+            if cert_type == ssh.SSHCertificateType.USER:
+                cli_code_info(dedent(f"""
+                    User certificate written to: {path}
+                    - Send it to the user and ask them to put it in `~/.ssh/` along with the private key
+                    - To view it, run: `ssh-keygen -L -f {path}`
+                    - To allow access (adapt principals as needed), add this to your server authorized_keys file(s):
+                      `cert-authority,principals="{','.join(cert.valid_principals)}" {ca_pub_key.decode()} HSM_{ca_def[0].label}`
+                    """).strip())
+            else:
+                cli_code_info(dedent(f"""
+                    Host certificate written to: {path}
+                    - Install it on the host machine, typically in `/etc/ssh/`
+                    - Update the SSH server config to use this certificate (e.g., `HostCertificate /etc/ssh/ssh_host_rsa_key-cert.pub`)
+                    - To view it, run: `ssh-keygen -L -f {path}`
+                    - To trust this CA for host certificates, add this to your client's `~/.ssh/known_hosts` file:
+                      `@cert-authority * {ca_pub_key.decode()} HSM_{ca_def[0].label}`
+                    """).strip())

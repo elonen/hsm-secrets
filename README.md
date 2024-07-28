@@ -1,5 +1,7 @@
 # `hsm-secrets` – Config file driven CLI for YubiHSM2 ops
 
+[![Integration Tests](https://github.com/elonen/hsm-secrets/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/elonen/hsm-secrets/actions/workflows/integration-tests.yml)
+
 Higher level interactive CLI tool for YubiHSM2 operations, based on a YAML configuration file (see [hsm-conf.yml](hsm-conf.yml)).
 
 The config file approach simplifies planning, setup and daily use while maintaining high security standards.
@@ -10,8 +12,8 @@ The config file approach simplifies planning, setup and daily use while maintain
   - Automatic key/cert generation based on the config file
 - Authenticate HSM operators by YubiKey 5 hardware tokens to avoid credential theft by malware
   - Integrated Yubikey HSM auth (yubihsm-auth) slot setup for operators
-- Discourage leaking secrets in process listing, local disk or terminal history
-  - Fully within one process, does not invoke external CLI processes
+- Discourage leaking secrets in process listing, local disk or terminal scrollback
+  - Fully within one process, does not invoke external CLI tools (except in unit tests)
 - Integrate daily operations under a single tool:
   - OpenSSH certificate creation and signing, including hardware token **sk-ed25519** and **sk-ecdsa** keys
   - X.509 certificate creationg and signing (TLS, SSH, X.509)

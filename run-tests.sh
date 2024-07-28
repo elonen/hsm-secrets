@@ -76,23 +76,6 @@ test_create_all() {
     [ "$count" -eq 35 ] || { echo "Expected 35 objects, but found $count"; return 1; }
 }
 
-test_ssh_certificates() {
-    setup
-    run_cmd ssh get-ca --all | ssh-keygen -l -f /dev/stdin
-    assert_success
-
-    ssh-keygen -t ed25519 -f $TEMPDIR/testkey -N '' -C 'testkey'
-    run_cmd ssh sign -u test.user -p users,admins $TEMPDIR/testkey.pub
-    assert_success
-
-    local output=$(ssh-keygen -L -f $TEMPDIR/testkey-cert.pub)
-    assert_success
-    assert_grep "Public key: ED25519" "$output"
-    assert_grep "^[[:space:]]*users$" "$output"
-    assert_grep "^[[:space:]]*admins$" "$output"
-    assert_grep 'Key ID: "test.user-[0-9]*-users+admins"' "$output"
-}
-
 test_tls_certificates() {
     setup
     run_cmd -q x509 get --all | openssl x509 -text -noout
@@ -143,6 +126,48 @@ test_wrapped_backup() {
     run_cmd -q hsm compare | grep -q '[x].*ca-root-key-rsa' || { echo "ERROR: Key not restored"; return 1; }
 }
 
+test_ssh_user_certificates() {
+    setup
+    run_cmd ssh get-ca --all | ssh-keygen -l -f /dev/stdin
+    assert_success
+
+    ssh-keygen -t ed25519 -f $TEMPDIR/testkey -N '' -C 'testkey'
+    run_cmd ssh sign-user -u test.user -p users,admins $TEMPDIR/testkey.pub
+    assert_success
+
+    local output=$(ssh-keygen -L -f $TEMPDIR/testkey-cert.pub)
+    assert_success
+    assert_grep "Public key: ED25519" "$output"
+    assert_grep "^[[:space:]]*users$" "$output"
+    assert_grep "^[[:space:]]*admins$" "$output"
+    assert_grep 'Key ID: "test.user-[0-9]*-users+admins"' "$output"
+}
+
+test_ssh_host_certificates() {
+    setup
+
+    # Generate a test host key
+    ssh-keygen -t ed25519 -f $TEMPDIR/test_host_key -N '' -C 'test_host'
+
+    # Sign the host key with wildcard principals
+    run_cmd ssh sign-host --hostname wiki.example.com --principals "wiki.*,10.0.0.*" $TEMPDIR/test_host_key.pub
+    assert_success
+
+    local output=$(ssh-keygen -L -f $TEMPDIR/test_host_key-cert.pub)
+    echo "Cert contents:"
+    echo "$output"
+
+    assert_success
+    assert_grep "Public key: ED25519" "$output"
+    assert_grep "Type: ssh-ed25519-cert-v01@openssh.com host certificate" "$output"
+    assert_grep "^[[:space:]]*wiki.example.com$" "$output"
+    assert_grep "^[[:space:]]*wiki.*$" "$output"
+    assert_grep "^[[:space:]]*10.0.0.*$" "$output"
+    assert_grep 'Key ID.*host-wiki.example.com-.*' "$output"
+
+}
+
+
 # ------------------------------------------------------
 
 function run_test_quiet() {
@@ -173,9 +198,10 @@ run_test() {
 echo "Running tests:"
 run_test test_fresh_device
 run_test test_create_all
-run_test test_ssh_certificates
 run_test test_tls_certificates
 run_test test_password_derivation
 run_test test_wrapped_backup
+run_test test_ssh_user_certificates
+run_test test_ssh_host_certificates
 
 echo "All tests passed successfully!"

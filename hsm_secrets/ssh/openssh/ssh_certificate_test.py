@@ -79,17 +79,27 @@ def parsecert(args: argparse.Namespace) -> None:
 def parsepub(args: argparse.Namespace) -> None:
     file_contents = read_file_str(args.pub_file)
 
-    cert = cert_for_ssh_pub_id(
+    # Create a user certificate
+    user_cert = cert_for_ssh_pub_id(
         file_contents,
-        cert_id = args.pub_file,
+        cert_id = "user@example.com",
         cert_type = ssh.SSHCertificateType.USER,
         principals=["basic_users", "admins"])
 
-    print("Parsed public key into a certificate:")
-    print_certificate_details(cert)
+    print("Parsed public key into a user certificate:")
+    print_certificate_details(user_cert)
 
-    print("")
-    print("Testing signing & verification with different issuers:")
+    # Create a host certificate
+    host_cert = cert_for_ssh_pub_id(
+        file_contents,
+        cert_id = "host.example.com",
+        cert_type = ssh.SSHCertificateType.HOST,
+        principals=["host.example.com", "*.example.com"])
+
+    print("\nParsed public key into a host certificate:")
+    print_certificate_details(host_cert)
+
+    print("\nTesting signing & verification with different issuers:")
 
     issuers = [
         ed25519.Ed25519PrivateKey.generate(),
@@ -98,13 +108,23 @@ def parsepub(args: argparse.Namespace) -> None:
     ]
     for ca in issuers:
         assert isinstance(ca, (rsa.RSAPrivateKey, ed25519.Ed25519PrivateKey, ec.EllipticCurvePrivateKey))
-        sign_ssh_cert(cert, ca)
-        print(f" - Signed ok with {ca.__class__.__name__}")
-        #print_certificate_details(cert)
-        if verify_ssh_cert(cert):
-            print(f"   - Verified OK")
+
+        # Sign and verify user certificate
+        sign_ssh_cert(user_cert, ca)
+        print(f" - Signed user certificate ok with {ca.__class__.__name__}")
+        if verify_ssh_cert(user_cert):
+            print(f"   - User certificate verified OK")
         else:
-            print(f"   - Verification FAILED!")
+            print(f"   - User certificate verification FAILED!")
+
+        # Sign and verify host certificate
+        sign_ssh_cert(host_cert, ca)
+        print(f" - Signed host certificate ok with {ca.__class__.__name__}")
+        if verify_ssh_cert(host_cert):
+            print(f"   - Host certificate verified OK")
+        else:
+            print(f"   - Host certificate verification FAILED!")
+
 
 def checksig(args: argparse.Namespace) -> None:
     cert_contents = read_file_str(args.cert_file)

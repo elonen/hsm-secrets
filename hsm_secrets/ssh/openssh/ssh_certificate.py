@@ -366,27 +366,27 @@ def str_to_extension(label: str) -> ExtensionLabelType:
 
 def cert_for_ssh_pub_id(
         encoded_public_key: str,            # in the format "<type> <base64_data> <name>"
-        cert_id: str,                        # E.g. "user.name-1234567-principal1+principal2"
-        cert_type: ssh.SSHCertificateType = ssh.SSHCertificateType.USER,
+        cert_id: str,                        # E.g. "user.name-1234567-principal1+principal2" or "host.example.com"
+        cert_type: ssh.SSHCertificateType,
         nonce: Optional[bytes] = None,       # Random nonce (32 bytes), if not provided, it is generated
         serial: Optional[int] = None,        # Serial number of the certificate. If None, current timestamp is used.
         principals: List[str] = [],
         valid_seconds: int = 60*60*24*31,   # 31 days
         critical_options: Dict[str, bytes] = {},
-        extensions: Dict[ExtensionLabelType, bytes] = {'permit-X11-forwarding': b'', 'permit-agent-forwarding': b'', 'permit-port-forwarding': b'', 'permit-pty': b'', 'permit-user-rc': b''},
+        extensions: Dict[ExtensionLabelType, bytes]|None = None,
     ) -> Union[RSACertificate, ECDSACertificate, ED25519Certificate, SKECDSACertificate, SKEd25519Certificate]:
     """
-    Build an SSH certificate object fom an encoded public key / ID (in the format "<type> <base64_data> <name>").
+    Build an SSH certificate object from an encoded public key / ID (in the format "<type> <base64_data> <name>").
 
     :param encoded_public_key: Encoded public key data.
     :param cert_type: The certificate type (USER or HOST).
-    :param cert_id: The certificate ID (e.g. "user.name-1234567-principal1+principal2").
+    :param cert_id: The certificate ID (e.g. "user.name-1234567-principal1+principal2" or "host.example.com").
     :param nonce: Random nonce (32 bytes). Generated if not provided.
     :param serial: Serial number of the certificate. If None, current timestamp is used.
     :param principals: List of principals that the certificate is valid for.
     :param valid_seconds: Number of seconds the certificate is valid for (starting from now -1 min).
     :param critical_options: Dictionary of critical options.
-    :param extensions: Dictionary of extensions.
+    :param extensions: Dictionary of extensions. Use None for default extensions.
     :return: The SSH certificate object.
     """
     parts = encoded_public_key.strip().split(' ')
@@ -416,7 +416,20 @@ def cert_for_ssh_pub_id(
     cert.valid_after = int(datetime.datetime.now().timestamp() - 60)     # 1 minute ago, to allow for clock skew
     cert.valid_before = cert.valid_after + valid_seconds
     cert.critical_options = critical_options
-    cert.extensions = {str(k): v for k, v in extensions.items()}
+
+    # Set default extensions based on certificate type
+    if cert_type == ssh.SSHCertificateType.USER:
+        default_extensions = {
+            'permit-X11-forwarding': b'',
+            'permit-agent-forwarding': b'',
+            'permit-port-forwarding': b'',
+            'permit-pty': b'',
+            'permit-user-rc': b''
+        }
+    else:  # HOST certificate
+        default_extensions = {}
+
+    cert.extensions =  {k: v for k, v in (extensions.items() if extensions is not None else default_extensions.items())}
 
     cert.decode_public_key(key_data)
     assert isinstance(cert, (RSACertificate, ECDSACertificate, ED25519Certificate, SKECDSACertificate, SKEd25519Certificate))
