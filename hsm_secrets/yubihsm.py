@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import datetime
 from typing import Sequence, cast
 import pickle
 import os
@@ -655,9 +656,24 @@ class MockHSMSession(HSMSession):
         asym_pem = self.backend.get_mock_object(key_id, OBJECT.ASYMMETRIC_KEY).data
         asym_key = haz_ser.load_pem_private_key(asym_pem, password=None)
         assert isinstance(asym_key, (haz_rsa.RSAPrivateKey, haz_ec.EllipticCurvePrivateKey, haz_ed25519.Ed25519PrivateKey))
-        return haz_x509.CertificateBuilder().subject_name(haz_x509.Name([
-            haz_x509.NameAttribute(haz_x509.NameOID.COMMON_NAME, "self-signed")
-        ])).sign(asym_key, haz_hashes.SHA256())
+        public_key = asym_key.public_key()
+
+        issuer_key = haz_ec.generate_private_key(haz_ec.SECP256R1())
+        builder = haz_x509.CertificateBuilder(
+            ).subject_name(haz_x509.Name([haz_x509.NameAttribute(haz_x509.NameOID.COMMON_NAME, u"Mock Attestation")])
+            ).issuer_name(haz_x509.Name([haz_x509.NameAttribute(haz_x509.NameOID.COMMON_NAME, u"The Mock Attestation Authority")])
+            ).public_key(public_key
+            ).not_valid_before(datetime.datetime.now()
+            ).not_valid_after(datetime.datetime.now() + datetime.timedelta(days=365)
+            ).serial_number(haz_x509.random_serial_number()
+            ).add_extension(haz_x509.BasicConstraints(ca=False, path_length=None), critical=True
+            ).add_extension(haz_x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False
+            ).add_extension(haz_x509.AuthorityKeyIdentifier.from_issuer_public_key(public_key), critical=False
+            ).add_extension(haz_x509.KeyUsage(
+                digital_signature=True, content_commitment=False, key_encipherment=True, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False, crl_sign=False, encipher_only=False, decipher_only=False
+            ), critical=True)
+        return builder.sign(issuer_key, haz_hashes.SHA256())
 
     def export_wrapped(self, wrap_key: HSMWrapKey, obj_id: HSMKeyID, obj_type: OBJECT) -> bytes:
         if not self.object_exists(wrap_key):
