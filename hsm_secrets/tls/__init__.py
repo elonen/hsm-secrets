@@ -35,6 +35,10 @@ def cmd_tls(ctx: click.Context):
 def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: list[str], san_ip: list[str], validity: int, keyfmt: str, sign_crt: str):
     """Create a TLS server certificate + key
 
+    TYPICAL USAGE:
+
+        $ hsm-secrets tls server-cert -o wiki.example.com.pem -c wiki.example.com -d intraweb.example.com
+
     Create a new TLS server certificate for the given CN and (optional) SANs.
     Basic name fields are read from the config file (country, org, etc.)
 

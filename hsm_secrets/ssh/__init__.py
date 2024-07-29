@@ -59,6 +59,10 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
 def sign_ssh_user_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|None, certid: str|None, validity: int, principals: str, extensions: str, keyfile: str):
     """Make and sign an SSH user certificate
 
+    TYPICAL USAGE:
+
+        $ ssh sign-user -u john.doe -p admin,users id_ed25519_sk_jdoe.pub
+
     [keyfile]: file containing the public key to sign (default: stdin)
 
     If --ca is not specified, the default CA key is used (as specified in the config file).
@@ -88,6 +92,10 @@ def sign_ssh_user_key(ctx: HsmSecretsCtx, out: str, ca: str|None, username: str|
 @pass_common_args
 def sign_ssh_host_key(ctx: HsmSecretsCtx, out: str, ca: str|None, hostname: str, validity: int, principals: str|None, keyfile: str):
     """Make and sign an SSH host certificate
+
+    TYPICAL USAGE:
+
+        $ ssh sign-host -H wiki.example.com -p "wiki.*,192.168.80.80" ssh_host_rsa_key.pub
 
     [keyfile]: file containing the public key to sign (default: stdin)
 
