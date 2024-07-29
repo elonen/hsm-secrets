@@ -20,7 +20,7 @@ import yubikit.core
 import yubikit.hsmauth as hsmauth
 
 import hsm_secrets.config as hscfg
-import curses
+import unicurses as curses
 import click
 
 from functools import wraps
@@ -425,25 +425,26 @@ def secure_display_secret(secret_to_show: str, wipe_char='x'):
     """
     secret = secret_to_show + " "
     def do_it(stdscr):
-        stdscr.clear()
+        from unicurses import getmaxyx, clear, box, mvwaddstr, wrefresh
+        clear()
 
         # Create a new window
-        height, width = stdscr.getmaxyx()
+        height, width = getmaxyx(stdscr)
         win_height = 3
         win_width = len(secret) + 4
         win = curses.newwin(win_height, win_width, height // 2 - 1, width // 2 - win_width // 2)
 
         # Display the secret
-        win.box()
-        win.addstr(1, 2, secret)
-        win.refresh()
+        box(win)
+        mvwaddstr(win, 1, 2, secret)
+        wrefresh(win)
 
         click.pause("") # Wait for ENTER key
 
         # Overwrite the secret with wipe_char
-        stdscr.clear()
-        win.box()
-        win.addstr(1, 2, wipe_char * len(secret))
-        win.refresh()
+        clear()
+        box(win)
+        mvwaddstr(win, 1, 2, wipe_char * len(secret))
+        wrefresh(win)
 
     curses.wrapper(do_it)

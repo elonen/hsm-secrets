@@ -119,7 +119,8 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
         for cd in creation_order:
             x509_info = merge_x509_info_with_defaults(scid_to_x509_def[cd.id].x509_info, ctx.conf)
             issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
-            cli_info(f"Creating 0x{cd.id:04x}: '{cd.label}' ({f"signed by: '{issuer.label}'" if issuer else 'self-signed'})")
+            signer = f"signed by: '{issuer.label}'" if issuer else 'self-signed'
+            cli_info(f"Creating 0x{cd.id:04x}: '{cd.label}' ({signer})")
             cli_info(indent(pretty_x509_info(x509_info), "    "))
 
             if not dry_run:

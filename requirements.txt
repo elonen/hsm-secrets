@@ -15,3 +15,5 @@ pyescrypt
 pycryptodome
 
 yubihsm-ssh-tool @ git+https://github.com/YubicoLabs/yubihsm-ssh-tool@9cec861
+
+uni-curses
