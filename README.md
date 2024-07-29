@@ -84,6 +84,8 @@ Work-in-progress, but usable and useful.
 
 ## Installation and upgrade
 
+LINUX:
+
 Assuming you have a `~/bin/` directory in path, this will install(/upgrade) the
 tool in a `_venv` and link it into your bin directory:
 
@@ -93,6 +95,24 @@ make clean
 make
 rm -f ~/bin/hsm-secrets; ln -s $(pwd)/_venv/bin/hsm-secrets ~/bin/
 ```
+
+WINDOWS:
+
+```
+git pull
+python3 -m venv _venv
+_venv\Scripts\activate
+pip install -r requirements.txt
+python setup.py install -e .
+```
+
+Then add to PowerShell profile something like this:
+
+```
+$env:HSM_SECRETS_CONFIG = "~\hsm-secrets\hsm-conf.yml"
+Set-Alias -Name hsm-secrets -Value "~\hsm-secrets\_venv\Scripts\hsm-secrets"
+```
+...and restart PowerShell.
 
 ## Authentication
 

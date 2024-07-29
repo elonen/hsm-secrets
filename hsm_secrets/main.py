@@ -59,7 +59,7 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
             raise click.UsageError(f"No configuration file found in env or {str(default_paths)}. Please specify a config file with -c/--config or set the {env_var} environment variable.")
 
     cli_info("Using config file: " + click.style(config, fg='cyan'), err=True)
-    conf = load_hsm_config(config)
+    conf = load_hsm_config(os.path.expanduser(config))
 
     assert conf.general.master_device, "No master YubiHSM serial specified in config file."
 
