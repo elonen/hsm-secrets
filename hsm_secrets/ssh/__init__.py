@@ -1,17 +1,13 @@
 from pathlib import Path
 from textwrap import dedent
 import time
-from typing import Sequence
+from typing import Sequence, cast
 import click
 
-from hsm_secrets.config import HSMAsymmetricKey, HSMConfig
+from hsm_secrets.config import HSMAsymmetricKey, HSMKeyID, click_hsm_obj_auto_complete
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_result, cli_warn, open_hsm_session, pass_common_args
 from cryptography.hazmat.primitives import _serialization
 from cryptography.hazmat.primitives.serialization import ssh
-
-import yubihsm.defs    # type: ignore [import]
-from yubihsm.objects import AsymmetricKey   # type: ignore [import]
-
 
 @click.group()
 @click.pass_context
@@ -23,24 +19,19 @@ def cmd_ssh(ctx: click.Context):
 @cmd_ssh.command('get-ca')
 @pass_common_args
 @click.option('--all', '-a', 'get_all', is_flag=True, help="Get all certificates")
-@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
-def get_ca(ctx: HsmSecretsCtx, get_all: bool, cert_ids: Sequence[str]):
+@click.argument('certs', nargs=-1, type=str, metavar='<id|label>...', shell_complete=click_hsm_obj_auto_complete(HSMAsymmetricKey, 'ssh.root_ca_keys'))
+def get_ca(ctx: HsmSecretsCtx, get_all: bool, certs: Sequence[str]):
     """Get the public keys of the SSH CA keys"""
-    all_ids = set([str(ca.id) for ca in ctx.conf.ssh.root_ca_keys])
-    selected_ids = all_ids if get_all else set(cert_ids)
-
-    if not selected_ids:
-        raise click.BadArgumentUsage("ERROR: specify at least one CA key ID, or use --all")
-
-    if len(selected_ids - all_ids) > 0:
-        raise click.ClickException(f"Unknown CA key IDs: {selected_ids - all_ids}")
-    selected_keys = [ca for ca in ctx.conf.ssh.root_ca_keys if str(ca.id) in selected_ids]
-
+    if get_all:
+        selected_keys = ctx.conf.ssh.root_ca_keys
+    else:
+        selected_keys = [cast(HSMAsymmetricKey, ctx.conf.find_def(s, HSMAsymmetricKey, ctx.conf.ssh.root_ca_keys)) for s in certs]
     if not selected_keys:
-        raise click.ClickException("No CA keys selected")
+        raise click.BadArgumentUsage("ERROR: No keys to get")
 
     with open_hsm_session(ctx) as ses:
         for key in selected_keys:
+            assert isinstance(key, HSMAsymmetricKey)
             pubkey = ses.get_public_key(key).public_bytes(encoding=_serialization.Encoding.OpenSSH, format=_serialization.PublicFormat.OpenSSH).decode('ascii')
             cli_result(f"{pubkey} {key.label}")
 

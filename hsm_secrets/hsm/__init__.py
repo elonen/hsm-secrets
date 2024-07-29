@@ -3,14 +3,15 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import tarfile
+from typing import Sequence
 import click
+from click.shell_completion import CompletionItem
 
-from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, find_all_config_items_per_type, parse_keyid
+from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, click_hsm_obj_auto_complete, find_all_config_items_per_type, find_config_items_of_class, parse_keyid
 from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
 
 import yubihsm.defs, yubihsm.exceptions, yubihsm.objects    # type: ignore [import]
-from yubihsm.core import AuthSession    # type: ignore [import]
 from yubihsm.defs import OBJECT    # type: ignore [import]
 
 from click import style
@@ -188,11 +189,12 @@ def default_admin_disable(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
 # ---------------
 
 @cmd_hsm.command('admin-sharing-ceremony')
-@click.option('--num-shares', type=int, required=True, help="Number of shares to generate")
-@click.option('--threshold', type=int, required=True, help="Number of shares required to reconstruct the key")
-@click.option('--skip-ceremony', is_flag=True, default=False, help="Skip the secret sharing ceremony, ask for password directly")
+@click.option('--num-shares', '-n', type=int, required=True, help="Number of shares to generate")
+@click.option('--threshold', '-t', type=int, required=True, help="Number of shares required to reconstruct the key")
+@click.option('--with-backup', '-b', is_flag=True, default=False, help="Generate a backup key in addition to the shared key")
+@click.option('--skip-ceremony', is_flag=True, default=False, help="Skip ceremony, store secret directly")
 @pass_common_args
-def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, skip_ceremony: bool):
+def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, with_backup: bool, skip_ceremony: bool):
     """Host an admin key Secret Sharing Ceremony
 
     The ceremony is a formal multi-step process where the system generates a new shared admin key
@@ -202,6 +204,13 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, s
 
     This is a very heavy process, and should be only done once, on the master YubiHSM.
     The resulting key can then be cloned to other devices via key wrapping operations.
+
+    A backup key can be generated in addition to the shared key. It's a non-shared
+    key that will be written down in parts by all custodians. You will be asked to
+    seal it in an envelope and hand over for secure storage by some "uber custodian".
+
+    If `--skip-ceremony` is given, the secret generation and sharing ceremony are skipped and
+    you are asked to enter the password to store on HSM directly.
     """
     swear_you_are_on_airgapped_computer(ctx.quiet)
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
@@ -210,12 +219,11 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, s
             info = ses.auth_key_put_derived(ctx.conf.admin.shared_admin_key, new_password)
             cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
 
-
         if skip_ceremony:
             apply_password_fn(prompt_for_secret("Enter the (new) shared admin password to store", confirm=True))
         else:
             secret = ses.get_pseudo_random(256//8)
-            cli_splitting_ceremony(threshold, num_shares, apply_password_fn, pre_secret=secret)
+            cli_splitting_ceremony(threshold, num_shares, apply_password_fn, with_backup_key=with_backup, pre_secret=secret)
 
         cli_info("OK. Shared admin key added successfully.")
 
@@ -258,7 +266,7 @@ def make_wrap_key(ctx: HsmSecretsCtx):
 # ---------------
 
 @cmd_hsm.command('delete')
-@click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label> ...')
+@click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label> ...', shell_complete=click_hsm_obj_auto_complete(None))
 @click.option('--alldevs', is_flag=True, help="Delete on all devices")
 @click.option('--force', is_flag=True, help="Force deletion without confirmation (use with caution)")
 @pass_common_args
@@ -407,7 +415,7 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
 
 @cmd_hsm.command('attest')
 @pass_common_args
-@click.argument('key_id', required=True, type=str, metavar='<id|label>')
+@click.argument('key_id', required=True, type=str, metavar='<id|label>', shell_complete=click_hsm_obj_auto_complete(HSMAsymmetricKey))
 @click.option('--out', '-o', type=click.File('w', encoding='utf8'), help='Output file (default: stdout)', default=click.get_text_stream('stdout'))
 def attest_key(ctx: HsmSecretsCtx, key_id: str, out: click.File):
     """Attest an asymmetric key in the YubiHSM
@@ -484,7 +492,7 @@ def backup_hsm(ctx: HsmSecretsCtx, out: click.File|None):
 
 @cmd_hsm.command('restore')
 @pass_common_args
-@click.argument('backup_file', type=click.Path(exists=True, allow_dash=False), required=True, metavar='<backup_file>')
+@click.argument('backup_file', type=click.Path(exists=True, allow_dash=False, dir_okay=False), required=True, metavar='<backup_file>')
 @click.option('--force', is_flag=True, help="Don't ask for confirmation before restoring")
 def restore_hsm(ctx: HsmSecretsCtx, backup_file: str, force: bool):
     """Restore a .tar.gz backup to HSM

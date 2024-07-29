@@ -1,7 +1,7 @@
 import re
 import secrets
 import click
-from hsm_secrets.config import HSMAuthKey
+from hsm_secrets.config import HSMAuthKey, HSMConfig, click_hsm_obj_auto_complete
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
 
 import yubikit.hsmauth
@@ -37,7 +37,7 @@ def change_yubikey_mgt(ctx: HsmSecretsCtx):
 
 @cmd_user.command('add-yubikey')
 @pass_common_args
-@click.argument('label', type=str, metavar='<label>')
+@click.argument('label', type=str, metavar='<label>', shell_complete=click_hsm_obj_auto_complete(HSMAuthKey, 'user_keys', ids=False))
 @click.option('--alldevs', is_flag=True, help="Add to all devices")
 def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
     """Register Yubikey auth for a user
@@ -129,7 +129,7 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
 @cmd_user.command('add-service')
 @pass_common_args
-@click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label>...')
+@click.argument('obj_ids', nargs=-1, type=str, metavar='<id|label>...', shell_complete=click_hsm_obj_auto_complete(HSMAuthKey, 'service_keys'))
 @click.option('--all', '-a', 'all_accts', is_flag=True, help="Add all configured service users")
 @click.option('--askpw', is_flag=True, help="Ask for password(s) instead of generating")
 def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw: bool):

@@ -72,12 +72,15 @@ def cli_splitting_ceremony(
     cli_ui_msg("")
 
     # Get custodian names and passwords
-    custodian_names = {}
+    custodian_names: dict[int, str] = {}
     custodian_passwords = {}
 
     click.clear()
     for i in range(1, num_shares + 1):
         name = click.prompt(f"Enter the name of custodian #{i}", err=True).strip() or f"#{i}"
+        if name in custodian_names.values():
+            raise click.UsageError(f"Name '{name}' is already in use. Please enter a unique name.")
+
         custodian_names[i] = name
         if click.confirm(f"Password-protect share?", abort=False, err=True):
             pw = click.prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True, err=True).strip()

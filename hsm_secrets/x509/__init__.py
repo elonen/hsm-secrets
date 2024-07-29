@@ -8,7 +8,7 @@ import yubihsm.objects    # type: ignore [import]
 import yubihsm.defs    # type: ignore [import]
 
 from cryptography.hazmat.primitives import serialization
-from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, click_hsm_obj_auto_complete, find_config_items_of_class
 
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
@@ -33,20 +33,16 @@ def cmd_x509(ctx: click.Context):
 @pass_common_args
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Create all certificates")
 @click.option("--dry-run", "-n", is_flag=True, help="Dry run (do not create certificates)")
-@click.argument('cert_ids', nargs=-1, type=str, metavar='<id>...')
-def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids: tuple):
+@click.argument('certs', nargs=-1, type=str, metavar='<id|label>...', shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, certs: tuple):
     """Create certificate(s) on the HSM
-
-    ID is a 16-bit hex value (e.g. '0x12af' or '12af').
-    You can specify multiple IDs to create multiple certificates,
-    or use the --all flag to create all certificates defined in the config.
 
     Specified certificates will be created in topological order, so that
     any dependencies are created first.
     """
-    if not all_certs and not cert_ids:
+    if not all_certs and not certs:
         raise click.ClickException("Error: No certificates specified for creation.")
-    create_certs_impl(ctx, all_certs, dry_run, cert_ids)
+    create_certs_impl(ctx, all_certs, dry_run, certs)
 
 
 @cmd_x509.command('get')
@@ -54,8 +50,8 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Get all certificates")
 @click.option('--outdir', '-o', type=click.Path(), required=False, help="Write PEMs into files here")
 @click.option('--bundle', '-b', type=click.Path(), required=False, help="Write a single PEM bundle file")
-@click.argument('cert_ids', nargs=-1, type=str, metavar='<id|label>...')
-def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: str|None, cert_ids: tuple):
+@click.argument('certs', nargs=-1, type=str, metavar='<id|label>...', shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: str|None, certs: tuple):
     """Get certificate(s) from the HSM
 
     You can specify multiple IDs/labels to get multiple certificates,
@@ -66,7 +62,7 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
         raise click.ClickException("Error: --outdir and --bundle options are mutually exclusive.")
 
     all_cert_defs: list[HSMOpaqueObject] = find_config_items_of_class(ctx.conf, HSMOpaqueObject)
-    selected_certs = all_cert_defs if all_certs else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in cert_ids]
+    selected_certs = all_cert_defs if all_certs else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in certs]
     if not selected_certs:
         raise click.ClickException("Error: No certificates selected.")
 

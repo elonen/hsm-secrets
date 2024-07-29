@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 import re
+import click.shell_completion
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
-from typing import List, Literal, NewType, Optional, Sequence, Union
+from typing import Any, Callable, List, Literal, NewType, Optional, Sequence, Union
 from yubihsm.defs import CAPABILITY, ALGORITHM  # type: ignore [import]
 import click
 import yaml
@@ -50,8 +51,8 @@ class HSMConfig(NoExtraBaseModel):
         assert 0 <= res <= 0xFFFF, f"Domain bitfield out of range: {res}"
         return res
 
-    def find_def(self, id_or_label: Union[int, str], enforce_type: Optional[type] = None) -> 'HSMObjBase':
-        return _find_def_by_id_or_label(self, id_or_label, enforce_type)
+    def find_def(self, id_or_label: Union[int, str], enforce_type: Optional[type] = None, sub_conf: Any|None = None) -> 'HSMObjBase':
+        return _find_def_by_id_or_label(sub_conf or self, id_or_label, enforce_type)
 
     @staticmethod
     def domain_bitfield_to_nums(bitfield: int) -> set['HSMDomainNum']:
@@ -330,7 +331,7 @@ def load_hsm_config(file_name: str) -> 'HSMConfig':
     return res
 
 
-def find_config_items_of_class(conf: HSMConfig, cls: type) -> list:
+def find_config_items_of_class(conf: Any, cls: type) -> list:
     """
     Find all instances of a given class in the configuration object, recursively.
     """
@@ -409,3 +410,35 @@ def find_all_config_items_per_type(conf: HSMConfig) -> tuple[dict, dict]:
     }
     config_items_per_type: dict = {t: find_config_items_of_class(conf, t) for t in config_to_hsm_type.keys()} # type: ignore
     return config_items_per_type, config_to_hsm_type
+
+
+def click_hsm_obj_auto_complete(cls: type|None, subsection: str|None = None, ids: bool = True, labels: bool = True) -> Callable:
+    """
+    Make a shell auto completion function for HSM objects (keys, etc.) in the configuration file.
+    :param cls: The class of the HSM object to complete. If None, all objects are included.
+    :subsection: The name of the configuration subsection to search in, e.g. 'ssh.root_ca_keys'
+    :param ids: Include the key IDs in the completion list.
+    :param labels: Include the key labels in the completion list.
+    """
+    def autocomplete(ctx, args, incomplete) -> list[click.shell_completion.CompletionItem]:
+        conf: HSMConfig = ctx.obj['config']
+        if subsection:
+            for attr in subsection.split('.'):
+                conf = getattr(conf, attr)
+
+        if cls:
+            items: list[HSMObjBase] = find_config_items_of_class(conf, cls)
+        else:
+            all_items: dict[type, list[HSMObjBase]] = find_all_config_items_per_type(conf)[0]
+            items = []
+            for key_list in all_items.values():
+                items.extend(key_list)
+
+        res = []
+        if ids:
+            res += [click.shell_completion.CompletionItem(f'0x{x.id:04x}', help=f"'{x.label}' ({type(x).__name__})") for x in items if incomplete in f'0x{x.id:04x}']
+        if labels:
+            res += [click.shell_completion.CompletionItem(x.label, help=f"0x{x.id:04x} ({type(x).__name__})") for x in items if incomplete in x.label]
+        return res
+
+    return autocomplete

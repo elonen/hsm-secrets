@@ -2,7 +2,7 @@ yubihsm[http,usb]
 yubikey-manager
 
 click
-types-click
+click-repl
 
 pydantic
 
