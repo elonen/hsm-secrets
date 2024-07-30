@@ -342,8 +342,10 @@ class RealHSMSession(HSMSession):
             label=keydef.label,
             algorithm=self.conf.algorithm_from_name(keydef.algorithm),
             domains=self.conf.get_domain_bitfield(keydef.domains),
-            capabilities=self.conf.capability_from_names(set(keydef.capabilities)),
-            delegated_capabilities=self.conf.capability_from_names(set(keydef.delegated_capabilities)),
+            capabilities=self.conf.capability_from_names(keydef.capabilities),
+            delegated_capabilities=self.conf.delegated_capability_from_names(
+                keydef.delegated_capabilities,
+                non_delegated_caps=keydef.capabilities),
             key=secret)
         return res.get_info()
 
@@ -372,7 +374,9 @@ class RealHSMSession(HSMSession):
             label=keydef.label,
             domains=self.conf.get_domain_bitfield(keydef.domains),
             capabilities=self.conf.capability_from_names(keydef.capabilities),
-            delegated_capabilities=self.conf.capability_from_names(keydef.delegated_capabilities),
+            delegated_capabilities=self.conf.delegated_capability_from_names(
+                keydef.delegated_capabilities,
+                non_delegated_caps=keydef.capabilities),
             password=password).get_info()
 
     def auth_key_put(self, keydef: HSMAuthKey, key_enc: bytes, key_mac: bytes) -> ObjectInfo:
@@ -384,7 +388,9 @@ class RealHSMSession(HSMSession):
             label=keydef.label,
             domains=self.conf.get_domain_bitfield(keydef.domains),
             capabilities=self.conf.capability_from_names(keydef.capabilities),
-            delegated_capabilities=self.conf.capability_from_names(keydef.delegated_capabilities),
+            delegated_capabilities=self.conf.delegated_capability_from_names(
+                keydef.delegated_capabilities,
+                non_delegated_caps=keydef.capabilities),
             key_enc=key_enc,
             key_mac=key_mac).get_info()
 
@@ -396,7 +402,7 @@ class RealHSMSession(HSMSession):
             object_id=keydef.id,
             label=keydef.label,
             domains=self.conf.get_domain_bitfield(keydef.domains),
-            capabilities=self.conf.capability_from_names(set(keydef.capabilities)),
+            capabilities=self.conf.capability_from_names(keydef.capabilities),
             algorithm=self.conf.algorithm_from_name(keydef.algorithm)).get_info()
 
     def asym_key_generate(self, keydef: HSMAsymmetricKey) -> ObjectInfo:
@@ -407,7 +413,7 @@ class RealHSMSession(HSMSession):
             object_id=keydef.id,
             label=keydef.label,
             domains=self.conf.get_domain_bitfield(keydef.domains),
-            capabilities=self.conf.capability_from_names(set(keydef.capabilities)),
+            capabilities=self.conf.capability_from_names(keydef.capabilities),
             algorithm=self.conf.algorithm_from_name(keydef.algorithm)).get_info()
 
     def hmac_key_generate(self, keydef: HSMHmacKey) -> ObjectInfo:
@@ -418,7 +424,7 @@ class RealHSMSession(HSMSession):
             object_id=keydef.id,
             label=keydef.label,
             domains=self.conf.get_domain_bitfield(keydef.domains),
-            capabilities=self.conf.capability_from_names(set(keydef.capabilities)),
+            capabilities=self.conf.capability_from_names(keydef.capabilities),
             algorithm=self.conf.algorithm_from_name(keydef.algorithm)).get_info()
 
     def get_pseudo_random(self, length: int) -> bytes:

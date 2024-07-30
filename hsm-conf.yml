@@ -102,18 +102,17 @@ user_keys:
         - sign-eddsa                    # X.509 signing in Ed25519
         - sign-ecdsa                    # X.509 signing in EC
         - encrypt-cbc                   # General AES symmetric data encryption
-        - decrypt-cbc                   # (--||--)
+        - decrypt-cbc
         - encrypt-ecb                   # (non-chained AES, not recommended for general use)
-        - decrypt-ecb                   # (--||--)
-        - get-pseudo-random             # For generating random salts
-        - change-authentication-key     # For changing this key's credentials
-        - sign-attestation-certificate  # For proving some other key is protected by an HSM
-        - exportable-under-wrap         # Allows replication of the key to another HSM for backup/HA
+        - decrypt-ecb
+        - get-pseudo-random             # Generating random numbrs
+        - sign-attestation-certificate  # Prove some other key is protected by an HSM
+        - exportable-under-wrap         # Allow backing up of this key
         - get-opaque                    # For getting certificates stored in the HSM
-        - export-wrapped                # For backup
-        - import-wrapped                # For backup restore (in case service keys are DoSed by `change-authentication-key`)
-      delegated_capabilities: []        # (No delegated capabilities, as this cannot create new keys to delegate to)
-      # TODO: Need to split this key into separate keys for different purposes? Would it give any real security benefit?
+        - change-authentication-key     # Change this key's credentials
+        - delete-authentication-key     # Delete this or any other auth key
+        - put-authentication-key        # Create new auth keys (allow operators to re-create keys for each other)
+      delegated_capabilities: ['same']  # (copy from 'capabilities' above)
 
 
 # Service keys are for automated use by services, probably less well authenticated than user keys.
@@ -129,6 +128,16 @@ service_keys:
         id: 0x0008
         domains: ['all']
         capabilities: ['get-log-entries', 'exportable-under-wrap']
+        delegated_capabilities: []
+
+    # For backup / restore only. This is necessary because HSM operator user keys above are not
+    # members of the 'x509' domain, to disallow them from using root CA keys directly.
+    # This user, however, can only export and import keys, not use them.
+    -
+        label: backup-restore
+        id: 0x0009
+        domains: ['all']
+        capabilities: ['export-wrapped', 'import-wrapped', 'exportable-under-wrap']
         delegated_capabilities: []
 
     # Service key for NAC (Network Access Control) for

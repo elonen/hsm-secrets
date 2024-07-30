@@ -7,7 +7,7 @@ import re
 import click.shell_completion
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
-from typing import Any, Callable, List, Literal, NewType, Optional, Sequence, Union
+from typing import Any, Callable, Iterable, List, Literal, NewType, Optional, Sequence, Union, cast
 from yubihsm.defs import CAPABILITY, ALGORITHM  # type: ignore [import]
 import click
 import yaml	# type: ignore [import]
@@ -17,6 +17,7 @@ import yaml	# type: ignore [import]
 class NoExtraBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+AnyCapability = Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'WrapCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName', 'WrapDelegateCapabilityName']
 
 class HSMConfig(NoExtraBaseModel):
     general: 'General'
@@ -58,8 +59,8 @@ class HSMConfig(NoExtraBaseModel):
     def domain_bitfield_to_nums(bitfield: int) -> set['HSMDomainNum']:
         return {i+1 for i in range(16) if bitfield & (1 << i)}
 
-    @staticmethod
-    def capability_from_names(names: set[Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'WrapCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName', 'WrapDelegateCapabilityName']]) -> CAPABILITY:
+    @classmethod
+    def capability_from_names(cls, names: Iterable[AnyCapability]) -> CAPABILITY:
         capability = CAPABILITY.NONE
         for name in names:
             if name == "none":
@@ -72,6 +73,26 @@ class HSMConfig(NoExtraBaseModel):
                 except AttributeError:
                     raise ValueError(f"Unknown capability name: {name}")
         return capability
+
+    @classmethod
+    def delegated_capability_from_names(
+        cls,
+        names: Iterable[Union['AuthKeyDelegatedCapabilityName', 'WrapDelegateCapabilityName']],
+        non_delegated_caps: Optional[Iterable[AnyCapability]] = None
+    ) -> CAPABILITY:
+        """
+        Convert a set of delegated capability names to a bitfield.
+        If 'same' is included in the names, the non-delegated capabilities must be passed in as well,
+        and the resulting bitfield will include both the 'names' and 'non_delegated_caps' sets.
+        """
+        names_set = {n for n in names}
+        without_same: list[AnyCapability] = [cast(AnyCapability, n) for n in (names_set - {"same"})]
+        res = cls.capability_from_names(without_same)
+        if "same" in names:
+            assert non_delegated_caps is not None, "Cannot use 'same' in delegated capabilities without passing in non-delegated capabilities."
+            res |= cls.capability_from_names(non_delegated_caps)
+        return res
+
 
     @staticmethod
     def capability_to_names(capability: CAPABILITY) -> set:
@@ -198,6 +219,7 @@ AuthKeyDelegatedCapabilityName = Literal[
     "rewrap-from-otp-aead-key", "rewrap-to-otp-aead-key", "set-option", "sign-attestation-certificate", "sign-ecdsa",
     "sign-eddsa", "sign-hmac", "sign-pkcs", "sign-pss", "sign-ssh-certificate", "unwrap-data", "verify-hmac", "wrap-data",
     "decrypt-ecb", "encrypt-ecb", "decrypt-cbc", "encrypt-cbc",
+    "same"
 ]
 class HSMAuthKey(HSMObjBase):
     capabilities: set[AuthKeyCapabilityName]
