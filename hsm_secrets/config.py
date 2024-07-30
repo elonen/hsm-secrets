@@ -10,7 +10,7 @@ from typing_extensions import Annotated
 from typing import Any, Callable, List, Literal, NewType, Optional, Sequence, Union
 from yubihsm.defs import CAPABILITY, ALGORITHM  # type: ignore [import]
 import click
-import yaml
+import yaml	# type: ignore [import]
 
 # -----  Pydantic models -----
 

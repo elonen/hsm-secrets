@@ -66,6 +66,11 @@ def cli_splitting_ceremony(
 
         First, we will enumerate the custodians, and ask if they want to password-protect
         their shares.
+
+        The optional password will be used to encrypt the share, and must be remembered
+        by the custodian to decrypt it later. It's an additional security measure, and not
+        strictly necessary. The password does NOT need to be very strong, it is
+        hashed with scrypt(n=2^20, r=8, p=1), which takes >1s to compute.
     """))
 
     click.confirm("Start the ceremony?", abort=True, err=True)
@@ -152,6 +157,7 @@ def cli_splitting_ceremony(
 
         typed_share = None
         while True:
+            cli_ui_msg(f"Type in share #{s.num}/{num_shares} to verify it. You can skip whitespaces and dashes.")
             input = click.prompt("Your share:", hide_input=True, err=True)
             try:
                 typed_share = SecretShare.from_str(input)
@@ -179,7 +185,7 @@ def cli_splitting_ceremony(
             return re.sub(r'^[0-9]+ */ *[0-9]+[: ]*', '', bp).replace(' ', '').strip()
 
         if with_backup_key:
-            cli_ui_msg(f"Now, type in backup key part #{s.num}/{num_shares} in hex format.")
+            cli_ui_msg(f"Now, type in backup key part #{s.num}/{num_shares} in hex format. You can skip the 'n/m:' prefix and whitespaces.")
             typed_backup_part = clean_up_backup_part(click.prompt("Your backup key part:", hide_input=True, err=True))
 
             while not str(typed_backup_part).lower() == backup_parts[int(s.num) - 1].hex().lower():
@@ -211,8 +217,8 @@ def cli_splitting_ceremony(
                     Only take this envelope out of the vault if
                     the following conditions are met:
 
-                    - ALL the sysops personnel, who are currently employed,
-                    agree that accessing this envelope is necessary.
+                    - ALL the core server admin personnel, who are currently
+                    employed, agree that accessing this envelope is necessary.
 
                     - The MAJORITY of them are present to authorize the
                     opening of this envelope.
@@ -256,7 +262,8 @@ def cli_reconstruction_ceremony(secret_starts_with_s = True) -> bytes:
     while len(shares) < threshold:
         cust_i = len(shares) + 1
         cli_ui_msg("")
-        share_str = click.prompt(f"Custodian {cust_i}/{threshold}, enter your share", hide_input=True, err=True)
+        cli_ui_msg(f"Custodian {cust_i}/{threshold}, please type in your share. You can skip whitespaces and dashes.")
+        share_str = click.prompt(f"Enter share", hide_input=True, err=True)
         try:
             s = SecretShare.from_str(share_str)
         except ValueError as e:

@@ -52,13 +52,15 @@ def get_password(ctx: HsmSecretsCtx, name: str, prev: int, rule: str|None):
         rotations = [r for r in rule_def.rotation_tokens if r.name_hmac in (None, name_hmac)]
         rotations.sort(key=lambda r: r.ts, reverse=True)
         if prev > len(rotations):
-            raise click.ClickException(f"Password has not been rotated {prev} times yet.")
+            raise click.ClickException(f"Password has not been rotated >={prev} times yet.")
 
         # Derive the secret from name and latest rotation
-        nonce = rotations[prev-1].nonce if rotations else 0
-        nonce_bytes = nonce.to_bytes((nonce.bit_length() + 7) // 8, 'big') if nonce else b''
-        derived_secret = ses.sign_hmac(hmac_key, name.encode('utf8') + nonce_bytes)
+        nonce_bytes = b''
+        if rotations and prev < len(rotations):
+            nonce_int = rotations[prev].nonce
+            nonce_bytes = nonce_int.to_bytes((nonce_int.bit_length() + 7) // 8, 'big')
 
+        derived_secret = ses.sign_hmac(hmac_key, name.encode('utf8') + nonce_bytes)
         password = _secret_to_password(derived_secret, rule_def)
 
         if ctx.quiet:

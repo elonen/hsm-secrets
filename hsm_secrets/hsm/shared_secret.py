@@ -37,7 +37,7 @@ class SecretShare:
 
     Spaces and dashes are optional and interchangeable in the string representation.
 
-    Encryption algorithm is AES-128-ECB using a key derived from a password with scrypt(N=2^14, r=8, p=1, key_len=16, salt='').
+    Encryption algorithm is AES-128-ECB using a key derived from a password with scrypt(N=2^20, r=8, p=1, key_len=16, salt='').
 
     The `ssss-combine -t 3 -x -D` CLI command can be used to combine plaintext shares.
     It expects format: `<N>-<P1><P2>...<P8>` (e.g. '1-cdef1234567890ab1234567890abcdef')
@@ -91,26 +91,40 @@ class SecretShare:
         res = None
         compact = re.sub(r'[-\s]+', '', s.lower())  # Remove spaces and dashes
 
+        def is_hex_string(s: str) -> bool:
+            return re.match(r'^[0-9a-f]+$', s.replace(' ', '').strip().lower()) is not None
+
         # Parse encrypted share
-        crypted_match = re.match(r'^([0-9a-f])[-\s]*crypted[-\s]*((?:[0-9a-f][-\s]*){2})((?:[0-9a-f][-\s]*){32})$', compact)
+        crypted_re = r'^([0-9a-f])[-\s]*crypted[-\s]*((?:[0-9a-f][-\s]*){2})((?:[0-9a-f][-\s]*){32})$'
+        crypted_match = re.match(crypted_re, compact)
         if crypted_match:
+            checksum = crypted_match.group(2)
+            if not is_hex_string(checksum):
+                raise ValueError("You typed non-hex character(s) in the checksum part of the share")
+            data_part = crypted_match.group(3)
+            if not is_hex_string(data_part):
+                raise ValueError("You typed non-hex character(s) in the data part of the share")
             res = SecretShare(
                 num = int(crypted_match.group(1), 16),
                 checksum = crypted_match.group(2),
-                data = bytes.fromhex(crypted_match.group(3)),
+                data = bytes.fromhex(data_part),
                 encrypted = True)
 
         # Parse plaintext share
-        plain_match = re.match(r'^([0-9a-f])[-\s]*((?:[0-9a-f][-\s]*){32})$', compact)
+        plain_re = r'^([0-9a-f])[-\s]*((?:[0-9a-f][-\s]*){32})$'
+        plain_match = re.match(plain_re, compact)
         if plain_match:
+            data_part = plain_match.group(2)
+            if not is_hex_string(data_part):
+                raise ValueError("You typed non-hex character(s) in the data part of the share")
             res = SecretShare(
                 num = int(plain_match.group(1), 16),
-                data = bytes.fromhex(plain_match.group(2)),
-                checksum = hashlib.md5(bytes.fromhex(plain_match.group(2))).hexdigest()[-2:],
+                data = bytes.fromhex(data_part),
+                checksum = hashlib.md5(bytes.fromhex(data_part)).hexdigest()[-2:],
                 encrypted = False)
 
         if res is None:
-            raise ValueError("Share is not in the correct format: " + s)
+            raise ValueError("Share is not in the correct format. Lowercased input string must match one of the following regexps:\n" + crypted_re + "\n" + plain_re)
 
         return res.validate()
 
@@ -192,7 +206,7 @@ def _derive_key(password: str, salt: str = '') -> bytes:
         password.encode('latin1', errors='strict')    # Check if password is Latin-1 compatible
     except UnicodeEncodeError:
         raise ValueError("Password must be Latin-1 compatible (due to scrypt)")
-    key = scrypt(password=password, salt=salt, key_len=128//8, N=2**14, r=8, p=1)   # type: ignore
+    key = scrypt(password=password, salt=salt, key_len=128//8, N=2**20, r=8, p=1)   # type: ignore
     assert isinstance(key, bytes) and len(key) == 128/8
     return key
 

@@ -119,7 +119,7 @@ def default_admin_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: b
         try:
             if use_backup_secret:
                 cli_ui_msg("Using backup secret to authenticate (instead of shared secret).")
-                is_hex = click.prompt("Is the backup secret hex-encoded (instead of a direct password) [y/n]?", type=bool, err=True)
+                is_hex = click.prompt("Is the backup secret hex-encoded (instead of a direct password) [Y/n]?", type=bool, err=True, default=True)
 
                 password = prompt_for_secret("Backup secret", check_fn=(pw_check_fromhex if is_hex else None))
                 if is_hex:
@@ -135,10 +135,9 @@ def default_admin_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: b
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     for serial in hsm_serials:
         try:
-            if not ctx.forced_auth_method and not ctx.mock_file:
-                assert password is not None
+            if password and not ctx.mock_file:
                 shared_key_id = ctx.conf.admin.shared_admin_key.id
-                with open_hsm_session_with_password(ctx, shared_key_id, password, device_serial=serial ) as ses:
+                with open_hsm_session_with_password(ctx, shared_key_id, password, device_serial=serial) as ses:
                     do_it(ctx.conf, ses)
             else:
                 with open_hsm_session(ctx, device_serial=serial) as ses:
@@ -213,19 +212,21 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, w
     you are asked to enter the password to store on HSM directly.
     """
     swear_you_are_on_airgapped_computer(ctx.quiet)
-    with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
-        def apply_password_fn(new_password: str):
+
+    def apply_password_fn(new_password: str):
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             confirm_and_delete_old_yubihsm_object_if_exists(ses, ctx.conf.admin.shared_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             info = ses.auth_key_put_derived(ctx.conf.admin.shared_admin_key, new_password)
             cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
 
-        if skip_ceremony:
-            apply_password_fn(prompt_for_secret("Enter the (new) shared admin password to store", confirm=True))
-        else:
+    if skip_ceremony:
+        apply_password_fn(prompt_for_secret("Enter the (new) shared admin password to store", confirm=True))
+    else:
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             secret = ses.get_pseudo_random(256//8)
-            cli_splitting_ceremony(threshold, num_shares, apply_password_fn, with_backup_key=with_backup, pre_secret=secret)
+        cli_splitting_ceremony(threshold, num_shares, apply_password_fn, with_backup_key=with_backup, pre_secret=secret)
 
-        cli_info("OK. Shared admin key added successfully.")
+    cli_info("OK. Shared admin key added successfully.")
 
 
 # ---------------
@@ -369,7 +370,6 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
                                 cli_info(f"Generating asymmetric key, type '{it.algorithm}'...")
                                 if 'rsa' in it.algorithm.lower():
                                     cli_warn("  Note! RSA key generation is very slow. Please wait. The YubiHSM2 should blinking rapidly while it works.")
-                                    cli_warn("  If the process aborts / times out, you can rerun this command to resume.")
                                 ses.asym_key_generate(it)
                                 cli_info(f"Symmetric key ID '{hex(it.id)}' ({it.label}) stored in YubiHSM device {ses.get_serial()}")
                                 n_created += 1

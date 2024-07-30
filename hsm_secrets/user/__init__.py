@@ -84,7 +84,7 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
     ykver = str(yubikey.info.version)
     if ykver >= "5.6.0":
-        cli_info(f"NOTE: This Yubikey's version {ykver} would support asymmetric keys. Maybe add support for this command?")
+        cli_info(f"NOTE: This Yubikey's version {ykver} would support asymmetric keys. Maybe ADD SUPPORT for this command?")
     else:
         cli_info(f"NOTE: This Yubikey's version is {ykver} (< 5.6.0). (Only symmetric keys supported.)")
 

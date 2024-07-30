@@ -195,7 +195,7 @@ def group_by_4(s: str) -> str:
     return res
 
 
-def list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
+def _list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
     """
     List the labels of all YubiKey HSM auth credentials.
     """
@@ -204,7 +204,7 @@ def list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
     return list(auth_ses.list_credentials())
 
 
-def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str, device_serial: str|None, yubikey_password: Optional[str] = None) -> AuthSession:
+def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str|None, device_serial: str|None, yubikey_password: Optional[str] = None) -> AuthSession:
     """
     Connects to a YubHSM and authenticates a session using the first YubiKey found.
     YubiHSM auth key ID is read from the config file by label (arg yubikey_slot_label).
@@ -227,11 +227,21 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         yubikey = scripting.single()    # Connect to the first YubiKey found
         hsmauth = HsmAuthSession(yubikey.smart_card())
 
+        # Get first Yubikey HSM auth key label from device if not specified
+        yubikey_label = yubikey_slot_label
+        if not yubikey_label:
+            yk_hsm_creds = list(hsmauth.list_credentials())
+            if not yk_hsm_creds:
+                raise click.ClickException("No Yubikey HSM credentials on device. Cannot authenticate.")
+            else:
+                yubikey_label = yk_hsm_creds[0].label
+                cli_info("Using Yubikey hsmauth label (first slot on device): " + click.style(yubikey_label, fg='cyan'))
+
         hsm = YubiHsm.connect(connector_url)
         verify_hsm_device_info(device_serial, hsm)
 
-        auth_key_id = config.find_auth_key(yubikey_slot_label).id
-        cli_info(f"Authenticating as YubiHSM key ID '{hex(auth_key_id)}' with local YubiKey ({yubikey.info.serial}) hsmauth slot '{yubikey_slot_label}'")
+        auth_key_id = config.find_auth_key(yubikey_label).id
+        cli_info(f"Authenticating as YubiHSM key ID '{hex(auth_key_id)}' with local YubiKey ({yubikey.info.serial}) hsmauth slot '{yubikey_label}'")
 
         try:
             symmetric_auth = hsm.init_session(auth_key_id)
@@ -241,11 +251,11 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
                 exit(1)
             raise
 
-        pwd = yubikey_password or prompt_for_secret(f"Enter PIN/password for YubiKey HSM slot '{yubikey_slot_label}'")
+        pwd = yubikey_password or prompt_for_secret(f"Enter PIN/password for YubiKey HSM slot '{yubikey_label}'")
 
         cli_ui_msg(f"Authenticating... " + click.style("(Touch your YubiKey if it blinks)", fg='yellow', blink=True))
         session_keys = hsmauth.calculate_session_keys_symmetric(
-            label=yubikey_slot_label,
+            label=yubikey_label,
             credential_password=pwd,
             context=symmetric_auth.context)
 
@@ -256,7 +266,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         return session
 
     except yubikit.core.InvalidPinError as e:
-        cli_error(f"InvalidPinError for YubiKey HSM slot '{yubikey_slot_label}':")
+        cli_error(f"InvalidPinError for YubiKey HSM slot")
         cli_error(str(e))
         exit(1)
 

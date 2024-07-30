@@ -7,7 +7,7 @@ from hsm_secrets.tls import cmd_tls
 from hsm_secrets.passwd import cmd_pass
 from hsm_secrets.config import HSMAuthKey, load_hsm_config
 from hsm_secrets.user import cmd_user
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_warn, list_yubikey_hsm_creds, pass_common_args, cli_info
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, pass_common_args, cli_info
 from hsm_secrets.x509 import cmd_x509
 from click_repl import register_repl    # type: ignore
 
@@ -64,22 +64,9 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
 
     assert conf.general.master_device, "No master YubiHSM serial specified in config file."
 
-    # Get first Yubikey HSM auth key label from device if not specified
-    yubikey_label = yklabel
-    if not yubikey_label and not (auth_default_admin or auth_password_id or mock):
-        creds = list_yubikey_hsm_creds()
-        if not creds:
-            if not (quiet or auth_default_admin or auth_password_id):
-                cli_warn("Note: No Yubikey HSM credentials found, Yubikey auth will be disabled.")
-            yubikey_label = ""
-        else:
-            yubikey_label = creds[0].label
-            if not (quiet or auth_default_admin or auth_password_id):
-                cli_info("Yubikey hsmauth label (using first slot): " + click.style(yubikey_label, fg='cyan'))
-
     ctx.obj = {
         # 'debug': debug,
-        'yubikey_label': yubikey_label,
+        'yubikey_label': yklabel,
         'config': conf,
         'quiet': quiet,
         'hsmserial': hsmserial or conf.general.master_device,
