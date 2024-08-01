@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 import re
+import typing
 import click.shell_completion
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
@@ -155,6 +156,19 @@ class HSMObjBase(NoExtraBaseModel):
     id: HSMKeyID
     domains: set[HSMDomainName]
 
+# -- Logging / audit --
+YubiHsm2AuditMode = Literal['off', 'on', 'fixed']
+YubiHsm2Command = Literal['echo', 'create-session', 'authenticate-session', 'session-message', 'device-info', 'reset-device', 'get-device-public-key', 'close-session', 'get-storage-info', 'put-opaque', 'get-opaque', 'put-authentication-key', 'put-asymmetric-key', 'generate-asymmetric-key', 'sign-pkcs1', 'list-objects', 'decrypt-pkcs1', 'export-wrapped', 'import-wrapped', 'put-wrap-key', 'get-log-entries', 'get-object-info', 'set-option', 'get-option', 'get-pseudo-random', 'put-hmac-key', 'sign-hmac', 'get-public-key', 'sign-pss', 'sign-ecdsa', 'derive-ecdh', 'delete-object', 'decrypt-oaep', 'generate-hmac-key', 'generate-wrap-key', 'verify-hmac', 'sign-ssh-certificate', 'put-template', 'get-template', 'decrypt-otp', 'create-otp-aead', 'randomize-otp-aead', 'rewrap-otp-aead', 'sign-attestation-certificate', 'put-otp-aead-key', 'generate-otp-aead-key', 'set-log-index', 'wrap-data', 'unwrap-data', 'sign-eddsa', 'blink-device', 'change-authentication-key', 'put-symmetric-key', 'generate-symmetric-key', 'decrypt-ecb', 'encrypt-ecb', 'decrypt-cbc', 'encrypt-cbc']
+class HSMAuditSettings(NoExtraBaseModel):
+    forced_audit: YubiHsm2AuditMode
+    default_command_logging: YubiHsm2AuditMode
+    command_logging: dict[YubiHsm2Command, YubiHsm2AuditMode]
+
+    def apply_defaults(self):
+        # Fill command_logging with default value for any missing commands
+        for cmd in typing.get_args(YubiHsm2Command):
+            if cmd not in self.command_logging:
+                self.command_logging[cmd] = self.default_command_logging
 
 # -- Asymmetric key models --
 AsymmetricAlgorithm = Literal["rsa2048", "rsa3072", "rsa4096", "ecp256", "ecp384", "ecp521", "eck256", "ecbp256", "ecbp384", "ecbp512", "ed25519", "ecp224"]
@@ -281,6 +295,8 @@ class Admin(NoExtraBaseModel):
     default_admin_key: HSMAuthKey
     shared_admin_key: HSMAuthKey
     wrap_key: HSMWrapKey
+    audit: HSMAuditSettings
+
 
 class X509(NoExtraBaseModel):
     root_certs: List[X509Cert]

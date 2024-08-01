@@ -82,6 +82,42 @@ admin:
         capabilities: ["wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
         delegated_capabilities: ['all']
 
+    audit:
+      # Specify logging/audit policies for the devices.
+      # 'fixed' is like 'on', but cannot be turned off again except by a factory reset
+      forced_audit: 'off'             # If on/fixed, HSM refuses further commands until log is audited when it fills up
+      default_command_logging: 'on'   # Default for commands not listed below
+      command_logging:                # Overrides for specific commands
+        reset-device: 'fixed'
+        put-opaque: 'fixed'
+        put-authentication-key: 'fixed'
+        put-asymmetric-key: 'fixed'
+        generate-asymmetric-key: 'fixed'
+        export-wrapped: 'fixed'
+        import-wrapped: 'fixed'
+        put-wrap-key: 'fixed'
+        set-option: 'fixed'
+        put-hmac-key: 'fixed'
+        delete-object: 'fixed'
+        generate-hmac-key: 'fixed'
+        generate-wrap-key: 'fixed'
+        put-template: 'fixed'
+        change-authentication-key: 'fixed'
+        put-symmetric-key: 'fixed'
+        generate-symmetric-key: 'fixed'
+        echo: 'off'
+        device-info: 'off'
+        get-storage-info: 'off'
+        get-object-info: 'off'
+        get-option: 'off'
+        get-pseudo-random: 'off'
+        blink-device: 'off'
+        get-log-entries: 'off'        # This seems to change after fetch (firmware bug?), so don't log it to avoid digest mismatch
+        create-session: 'off'         # Not much point, as auth session key is included in every other log entry
+        close-session: 'off'          # (--||--)
+        authenticate-session: 'off' # (--||--)
+        session-message: 'off'        # This is a low-level command, spams the log, not very useful to log
+
 
 # User keys are for general use by human operators.
 #

@@ -305,7 +305,10 @@ def open_hsm_session(
         ctxman = open_hsm_session_with_default_admin(ctx, device_serial)
     elif auth_method == HSMAuthMethod.PASSWORD:
         assert device_serial, "HSM device serial not provided nor inferred. Cannot use shared secret auth."
-        assert ctx.auth_password and ctx.auth_password_id
+        if not ctx.auth_password_id:
+            raise click.UsageError("Auth key ID (user login as) not specified for password auth method.")
+        if not ctx.auth_password:
+            raise click.UsageError("HSM_PASSWORD environment variable not set for password auth method.")
         ctxman = open_hsm_session_with_password(ctx, ctx.auth_password_id, ctx.auth_password, device_serial)
     else:
         raise ValueError(f"Unknown auth method: {auth_method}")

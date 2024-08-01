@@ -4,11 +4,12 @@ import datetime
 from typing import Sequence, cast
 import pickle
 import os
+import typing
 
 import click
-from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT, ORIGIN     # type: ignore [import]
+from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT, ORIGIN, COMMAND, AUDIT     # type: ignore [import]
 from yubihsm.objects import AsymmetricKey, HmacKey, SymmetricKey, WrapKey, YhsmObject, AuthenticationKey, Opaque     # type: ignore [import]
-from yubihsm.core import AuthSession     # type: ignore [import]
+from yubihsm.core import AuthSession, LogData, LogEntry     # type: ignore [import]
 from yubihsm.exceptions import YubiHsmDeviceError     # type: ignore [import]
 from yubihsm.objects import ObjectInfo
 
@@ -26,7 +27,7 @@ from cryptography.hazmat.primitives import _serialization as haz_priv_ser
 import cryptography.hazmat.primitives.asymmetric.padding as haz_asym_padding
 import cryptography.x509 as haz_x509
 
-from hsm_secrets.config import HSMAsymmetricKey, HSMAuthKey, HSMConfig, HSMHmacKey, HSMKeyID, HSMObjBase, HSMOpaqueObject, HSMSymmetricKey, HSMWrapKey, NoExtraBaseModel
+from hsm_secrets.config import HSMAsymmetricKey, HSMAuditSettings, HSMAuthKey, HSMConfig, HSMHmacKey, HSMKeyID, HSMObjBase, HSMOpaqueObject, HSMSymmetricKey, HSMWrapKey, NoExtraBaseModel, YubiHsm2AuditMode, YubiHsm2Command
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter, make_private_key_adapter
 
 """
@@ -286,7 +287,52 @@ class HSMSession(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_log_entries(self, previous_entry: LogEntry | None = None) -> LogData:
+        """
+        Get the log entries from the HSM.
+
+        NOTE! If `previous_entry` is given, it must be the exactly previous entry to
+        the first one on the device! It's used for validation, NOT pagination by the
+        underlying Yubico library.
+        """
+        pass
+
+    @abstractmethod
+    def free_log_entries(self, up_until_num: int) -> None:
+        """
+        Free log entries up until (and including) a given number (id), to make space for new ones.
+
+        :param up_until_num: Log entry number (id) to free up until
+        """
+        pass
+
+    @abstractmethod
+    def get_audit_settings(self) -> tuple[HSMAuditSettings, dict[str, YubiHsm2AuditMode]]:
+        """
+        Get the audit settings from the HSM.
+        First return value is the settings known in the config definition, second lists
+        any unknown ones read from the device.
+        """
+        pass
+
+    @abstractmethod
+    def set_audit_settings(self, settings: HSMAuditSettings) -> None:
+        """
+        Set the audit settings on the HSM.
+        """
+        pass
+
 # --------- Real YubiHSM2 ---------
+
+_conf_class_to_yhs_object_type = {
+    HSMAuthKey: OBJECT.AUTHENTICATION_KEY,
+    HSMWrapKey: OBJECT.WRAP_KEY,
+    HSMSymmetricKey: OBJECT.SYMMETRIC_KEY,
+    HSMAsymmetricKey: OBJECT.ASYMMETRIC_KEY,
+    HSMHmacKey: OBJECT.HMAC_KEY,
+    HSMOpaqueObject: OBJECT.OPAQUE
+}
 
 class RealHSMSession(HSMSession):
     """
@@ -301,9 +347,9 @@ class RealHSMSession(HSMSession):
         :param session: Authenticated session with the YubiHSM2
         :param dev_serial: Device serial number
         """
-        self.dev_serial = dev_serial
-        self.backend = session
-        self.conf = conf
+        self.dev_serial: int = dev_serial
+        self.backend: AuthSession = session
+        self.conf: HSMConfig = conf
 
     def get_serial(self) -> HSMKeyID:
         return self.dev_serial
@@ -472,6 +518,42 @@ class RealHSMSession(HSMSession):
         assert isinstance(asym_key, AsymmetricKey)
         return asym_key.get_public_key()
 
+    def get_log_entries(self, previous_entry: LogEntry | None = None) -> LogData:
+        return self.backend.get_log_entries(previous_entry)
+
+    def free_log_entries(self, up_until_num: int) -> None:
+        self.backend.set_log_index(up_until_num)
+
+    def get_audit_settings(self) -> tuple[HSMAuditSettings, dict[str, YubiHsm2AuditMode]]:
+        def tristate(val: AUDIT) -> YubiHsm2AuditMode:
+            return 'off' if val == AUDIT.OFF else 'on' if val == AUDIT.ON else 'fixed'
+
+        uknown_res: dict[str, YubiHsm2AuditMode] = {}
+        known_res = HSMAuditSettings(
+            forced_audit=tristate(self.backend.get_force_audit()),
+            default_command_logging='off',
+            command_logging = {})
+
+        std_enum_vals = {int(x[1].value) for x in COMMAND._member_map_.items()}
+        conf_cmd_literals = typing.get_args(YubiHsm2Command)
+
+        for cmd, a in self.backend.get_command_audit().items():
+            cmd_name = f'{cmd.name.lower().replace("_","-")}'
+            if cmd.value in std_enum_vals and cmd_name in conf_cmd_literals:
+                known_res.command_logging[cast(YubiHsm2Command, cmd_name)] = tristate(a)
+            else:
+                cmd_name = f'0x{cmd.value:02x}-{cmd.name}'
+                uknown_res[cmd_name] = tristate(a)
+
+        return known_res, uknown_res
+
+    def set_audit_settings(self, settings: HSMAuditSettings) -> None:
+        tristate: dict[YubiHsm2AuditMode, AUDIT] = {'off': AUDIT.OFF, 'on': AUDIT.ON, 'fixed': AUDIT.FIXED}
+        self.backend.set_force_audit(tristate[settings.forced_audit])
+        audit_mapping: dict[COMMAND, AUDIT]  = {COMMAND._member_map_[k.upper().replace("-","_")].value: tristate[v] for k,v in settings.command_logging.items()}
+        self.backend.set_command_audit(audit_mapping)
+
+
 # --------- Mock YubiHSM2 ---------
 
 
@@ -519,10 +601,22 @@ def save_mock_hsms(path: str):
 class MockHSMDevice:
     serial: int
     objects: dict[tuple[HSMKeyID, OBJECT], 'MockYhsmObject'] = {}
+    log_entries:list[LogEntry] = []
 
     def __init__(self, serial: int, objects: dict):
         self.serial = serial
         self.objects = objects
+        now = int(datetime.datetime.now().timestamp()*1000)
+        self.start_ts = now
+        initial_digest = b"0123456789abcdef"
+
+        # FORMAT: ClassVar[str] = "!HBHHHHBL16s"
+        # LENGTH: ClassVar[int] = struct.calcsize(FORMAT)
+        #reset_entry_bytes = b"\xff"*32
+        #reset_entry = LogEntry.parse(reset_entry_bytes)
+        #reset_entry.tick = now - self.start_ts
+        self.log_entries.append(LogEntry(0, cast(COMMAND, 0xff), 0xff, 0xff, 0xff, 0xff, 0xff, self.start_ts-now, initial_digest))
+        self.log_entries.append(LogEntry(1, cast(COMMAND, 0), 0, 0, 0, 0, 0, self.start_ts-now, initial_digest))
 
     def get_mock_object(self, key: HSMKeyID, type: OBJECT) -> 'MockYhsmObject':
         if (key, type) not in self.objects:
@@ -541,15 +635,6 @@ class MockHSMDevice:
             raise YubiHsmDeviceError(ERROR.OBJECT_NOT_FOUND)
         del self.objects[(key, type)]
 
-
-_conf_class_to_yhs_object_type = {
-    HSMAuthKey: OBJECT.AUTHENTICATION_KEY,
-    HSMWrapKey: OBJECT.WRAP_KEY,
-    HSMSymmetricKey: OBJECT.SYMMETRIC_KEY,
-    HSMAsymmetricKey: OBJECT.ASYMMETRIC_KEY,
-    HSMHmacKey: OBJECT.HMAC_KEY,
-    HSMOpaqueObject: OBJECT.OPAQUE
-}
 
 class MockYhsmObject:
     """
@@ -624,6 +709,7 @@ class MockHSMSession(HSMSession):
         global _g_mock_hsms
         self.backend = _g_mock_hsms[dev_serial]
         self.dev_serial = dev_serial
+        self.audit_settings = HSMAuditSettings(forced_audit='off', default_command_logging='off', command_logging={})
 
     def get_serial(self) -> int:
         return self.dev_serial
@@ -783,3 +869,15 @@ class MockHSMSession(HSMSession):
         asym_key = haz_ser.load_pem_private_key(asym_pem, password=None)
         assert isinstance(asym_key, (haz_rsa.RSAPrivateKey, haz_ec.EllipticCurvePrivateKey, haz_ed25519.Ed25519PrivateKey))
         return asym_key.public_key()
+
+    def get_log_entries(self, previous_entry: LogEntry | None = None) -> LogData:
+        return LogData(0, 0, self.backend.log_entries)
+
+    def free_log_entries(self, up_until_num: int) -> None:
+        self.backend.log_entries = [entry for entry in self.backend.log_entries if entry.number > up_until_num]
+
+    def get_audit_settings(self) -> tuple[HSMAuditSettings, dict[str, YubiHsm2AuditMode]]:
+        return self.audit_settings, {}
+
+    def set_audit_settings(self, settings: HSMAuditSettings) -> None:
+        self.audit_settings = settings
