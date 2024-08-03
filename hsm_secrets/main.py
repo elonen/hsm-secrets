@@ -2,6 +2,7 @@ import os
 import click
 
 from hsm_secrets.hsm import cmd_hsm
+from hsm_secrets.log import cmd_log
 from hsm_secrets.ssh import cmd_ssh
 from hsm_secrets.tls import cmd_tls
 from hsm_secrets.passwd import cmd_pass
@@ -103,6 +104,7 @@ cli.add_command(cmd_ssh,  "ssh")
 cli.add_command(cmd_tls,  "tls")
 cli.add_command(cmd_pass, "pass")
 cli.add_command(cmd_hsm,  "hsm")
+cli.add_command(cmd_log,  "log")
 cli.add_command(cmd_nop,  "nop")
 cli.add_command(cmd_x509, "x509")
 cli.add_command(cmd_user, "user")

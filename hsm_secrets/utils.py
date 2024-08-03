@@ -291,9 +291,15 @@ def open_hsm_session(
     # Mock HSM session for testing
     if ctx.mock_file:
         cli_warn("~🤡~ !! SIMULATED (mock) HSM session !! Authentication skipped. ~🤡~")
-        open_mock_hsms(ctx.mock_file, int(device_serial), ctx.conf)
+        auth_key_id = ctx.conf.admin.default_admin_key.id
+        if auth_method == HSMAuthMethod.PASSWORD:
+            assert ctx.auth_password_id
+            auth_key_id = ctx.auth_password_id
+        elif auth_method == HSMAuthMethod.YUBIKEY:
+            auth_key_id = ctx.conf.user_keys[0].id  # Mock YubiKey auth key with first user key from config
+        open_mock_hsms(ctx.mock_file, int(device_serial), ctx.conf, auth_key_id)
         try:
-            yield MockHSMSession(int(device_serial))
+            yield MockHSMSession(int(device_serial), auth_key_id)
         finally:
             save_mock_hsms(ctx.mock_file)
         return

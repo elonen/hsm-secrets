@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import datetime
+from hashlib import sha256
 from typing import Sequence, cast
 import pickle
 import os
@@ -27,7 +28,7 @@ from cryptography.hazmat.primitives import _serialization as haz_priv_ser
 import cryptography.hazmat.primitives.asymmetric.padding as haz_asym_padding
 import cryptography.x509 as haz_x509
 
-from hsm_secrets.config import HSMAsymmetricKey, HSMAuditSettings, HSMAuthKey, HSMConfig, HSMHmacKey, HSMKeyID, HSMObjBase, HSMOpaqueObject, HSMSymmetricKey, HSMWrapKey, NoExtraBaseModel, YubiHsm2AuditMode, YubiHsm2Command
+from hsm_secrets.config import HSMAsymmetricKey, HSMAuditSettings, HSMAuthKey, HSMConfig, HSMHmacKey, HSMKeyID, HSMObjBase, HSMOpaqueObject, HSMSymmetricKey, HSMWrapKey, NoExtraBaseModel, YubiHsm2AuditMode, YubiHsm2Command, lookup_hsm_cmd
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter, make_private_key_adapter
 
 """
@@ -526,7 +527,7 @@ class RealHSMSession(HSMSession):
 
     def get_audit_settings(self) -> tuple[HSMAuditSettings, dict[str, YubiHsm2AuditMode]]:
         def tristate(val: AUDIT) -> YubiHsm2AuditMode:
-            return 'off' if val == AUDIT.OFF else 'on' if val == AUDIT.ON else 'fixed'
+            return 'off' if val == AUDIT.OFF else ('on' if val == AUDIT.ON else 'fixed')
 
         uknown_res: dict[str, YubiHsm2AuditMode] = {}
         known_res = HSMAuditSettings(
@@ -547,10 +548,11 @@ class RealHSMSession(HSMSession):
 
         return known_res, uknown_res
 
+
     def set_audit_settings(self, settings: HSMAuditSettings) -> None:
         tristate: dict[YubiHsm2AuditMode, AUDIT] = {'off': AUDIT.OFF, 'on': AUDIT.ON, 'fixed': AUDIT.FIXED}
         self.backend.set_force_audit(tristate[settings.forced_audit])
-        audit_mapping: dict[COMMAND, AUDIT]  = {COMMAND._member_map_[k.upper().replace("-","_")].value: tristate[v] for k,v in settings.command_logging.items()}
+        audit_mapping: dict[COMMAND, AUDIT]  = {lookup_hsm_cmd(k): tristate[v] for k,v in settings.command_logging.items()}
         self.backend.set_command_audit(audit_mapping)
 
 
@@ -560,7 +562,7 @@ class RealHSMSession(HSMSession):
 _g_mock_hsms: dict[int, 'MockHSMDevice'] = {}
 _g_conf: HSMConfig|None
 
-def open_mock_hsms(path: str, serial: int, conf: HSMConfig):
+def open_mock_hsms(path: str, serial: int, conf: HSMConfig, auth_key_id: HSMKeyID):
     """
     Open mock HSM devices from a pickle file and/or
     create a new mock HSM device with the given serial.
@@ -579,7 +581,7 @@ def open_mock_hsms(path: str, serial: int, conf: HSMConfig):
         click.echo(click.style(f"~🤡~ Created new mock YubiHSM with serial {serial} ~🤡~", fg='yellow'), err=True)
 
         # Store the default admin key in the device, like on a fresh YubiHSM2
-        ses = MockHSMSession(serial)
+        ses = MockHSMSession(serial, auth_key_id)
         ses.auth_key_put_derived(
             keydef = _g_conf.admin.default_admin_key,
             password = _g_conf.admin.default_admin_password)
@@ -600,23 +602,48 @@ def save_mock_hsms(path: str):
 
 class MockHSMDevice:
     serial: int
-    objects: dict[tuple[HSMKeyID, OBJECT], 'MockYhsmObject'] = {}
-    log_entries:list[LogEntry] = []
+    objects: dict[tuple[HSMKeyID, OBJECT], 'MockYhsmObject']
+    log_entries:list[LogEntry]
+    prev_entry: LogEntry
 
     def __init__(self, serial: int, objects: dict):
         self.serial = serial
         self.objects = objects
-        now = int(datetime.datetime.now().timestamp()*1000)
-        self.start_ts = now
-        initial_digest = b"0123456789abcdef"
+        self.audit_settings = HSMAuditSettings(forced_audit='off', default_command_logging='off', command_logging={})
+        # Inject example initial log entries from an actual YubiHSM2
+        self.log_entries = [LogEntry.parse(bytes.fromhex(e)) for e in (
+            '0001ffffffffffffffffffffffffffffcf87d1b7256b135b12ca27ec1365e50e',
+            '0002000000ffff000000000000000000fc215fbee7154f4d061d80806250f678')]
+        self.prev_entry = self.log_entries[-1]
 
-        # FORMAT: ClassVar[str] = "!HBHHHHBL16s"
-        # LENGTH: ClassVar[int] = struct.calcsize(FORMAT)
-        #reset_entry_bytes = b"\xff"*32
-        #reset_entry = LogEntry.parse(reset_entry_bytes)
-        #reset_entry.tick = now - self.start_ts
-        self.log_entries.append(LogEntry(0, cast(COMMAND, 0xff), 0xff, 0xff, 0xff, 0xff, 0xff, self.start_ts-now, initial_digest))
-        self.log_entries.append(LogEntry(1, cast(COMMAND, 0), 0, 0, 0, 0, 0, self.start_ts-now, initial_digest))
+    def add_log(self, cmd_name: YubiHsm2Command, target_key: HSMKeyID|None, second_key: HSMKeyID|None):
+        # Emulate the YubiHSM2 logging
+        assert _g_conf
+        session_key = _g_conf.admin.default_admin_key.id    # TODO: emulate other auth keys on the mock device?
+        default_logging = self.audit_settings.default_command_logging
+
+        if self.audit_settings.command_logging.get(cmd_name, default_logging) != 'off':
+
+            if len(self.log_entries) >= 62 and self.audit_settings.forced_audit != 'off':
+                if cmd_name not in ('authenticate-session', 'reset-device', 'close-session', 'create-session', 'set-log-index', 'get-log-entries'):
+                    raise YubiHsmDeviceError(ERROR.LOG_FULL)
+
+            e = LogEntry(
+                number = (self.prev_entry.number + 1) & 0xffff,
+                command = lookup_hsm_cmd(cmd_name), length = 123,
+                session_key = session_key or 0,
+                target_key = target_key or 0,
+                second_key = second_key or 0,
+                result = 42, tick = self.prev_entry.tick + 7, digest = b'')
+            new_digest = sha256(e.data + self.prev_entry.digest).digest()[:16]
+
+            res = LogEntry(e.number, e.command, e.length,
+                e.session_key, e.target_key, e.second_key,
+                e.result, e.tick, new_digest)
+
+            self.log_entries.append(res)
+            self.prev_entry = res
+
 
     def get_mock_object(self, key: HSMKeyID, type: OBJECT) -> 'MockYhsmObject':
         if (key, type) not in self.objects:
@@ -676,6 +703,10 @@ class MockYhsmObject:
         if deleg_caps := getattr(self.mock_obj, "delegated_capabilities", None):
             yhsm_deleg_caps = _g_conf.capability_from_names(set(deleg_caps))
 
+        global _g_mock_hsms
+        device = _g_mock_hsms[self.mock_device_serial]
+        device.add_log('get-object-info', self.mock_obj.id, None)
+
         return ObjectInfo(
             id = self.mock_obj.id,
             object_type = self.object_type,
@@ -695,7 +726,6 @@ class MockYhsmObject:
         assert self.mock_device_serial in _g_mock_hsms, f"Mock device not found: {self.mock_device_serial}"
         device = _g_mock_hsms[self.mock_device_serial]
         device.del_mock_object(key[0], key[1])
-
     def __repr__(self):
         return "{0.__class__.__name__}(id={0.id})".format(self)
 
@@ -704,12 +734,11 @@ class MockHSMSession(HSMSession):
     """
     Implementation of the HSM session for a mock HSM device.
     """
-
-    def __init__(self, dev_serial: int):
+    def __init__(self, dev_serial: int, auth_key_id: HSMKeyID):
         global _g_mock_hsms
         self.backend = _g_mock_hsms[dev_serial]
         self.dev_serial = dev_serial
-        self.audit_settings = HSMAuditSettings(forced_audit='off', default_command_logging='off', command_logging={})
+        self.auth_key = auth_key_id
 
     def get_serial(self) -> int:
         return self.dev_serial
@@ -733,6 +762,7 @@ class MockHSMSession(HSMSession):
 
     def object_exists_raw(self, id: HSMKeyID, type: OBJECT) -> ObjectInfo | None:
         try:
+            self.backend.add_log('get-object-info', id, None)
             return self.backend.get_mock_object(id, type).get_info()
         except YubiHsmDeviceError as e:
             if e.code == ERROR.OBJECT_NOT_FOUND:
@@ -742,6 +772,7 @@ class MockHSMSession(HSMSession):
     def put_wrap_key(self, keydef: HSMWrapKey, secret: bytes) -> ObjectInfo:
         obj = MockYhsmObject(self.backend.serial, keydef, secret)
         self.backend.objects[(keydef.id, OBJECT.WRAP_KEY)] = obj
+        self.backend.add_log('put-wrap-key', keydef.id, None)
         return obj.get_info()
 
     def attest_asym_key(self, key_id: HSMKeyID) -> haz_x509.Certificate:
@@ -765,6 +796,8 @@ class MockHSMSession(HSMSession):
                 digital_signature=True, content_commitment=False, key_encipherment=True, data_encipherment=False,
                 key_agreement=False, key_cert_sign=False, crl_sign=False, encipher_only=False, decipher_only=False
             ), critical=True)
+
+        self.backend.add_log('sign-attestation-certificate', key_id, None)
         return builder.sign(issuer_key, haz_hashes.SHA256())
 
     def export_wrapped(self, wrap_key: HSMWrapKey, obj_id: HSMKeyID, obj_type: OBJECT) -> bytes:
@@ -778,6 +811,7 @@ class MockHSMSession(HSMSession):
         encryptor = cipher.encryptor()
         enc_blob = encryptor.update(export_blob) + encryptor.finalize()
         tag = encryptor.tag
+        self.backend.add_log('export-wrapped', wrap_key.id, obj_id)
         return pickle.dumps((enc_blob, tag))
 
     def import_wrapped(self, wrap_key: HSMWrapKey, data: bytes) -> ObjectInfo:
@@ -788,24 +822,28 @@ class MockHSMSession(HSMSession):
         obj: MockYhsmObject = pickle.loads(export_blob)
         assert isinstance(obj.mock_obj, HSM_KEY_TYPES)
         self.backend.put_mock_object(obj)
+        self.backend.add_log('import-wrapped', wrap_key.id, obj.id)
         return obj.get_info()
 
     def auth_key_put_derived(self, keydef: HSMAuthKey, password: str) -> ObjectInfo:
         data = f"derived:{password}".encode()
         obj = MockYhsmObject(self.backend.serial, keydef, data)
         self.backend.objects[(keydef.id, OBJECT.AUTHENTICATION_KEY)] = obj
+        self.backend.add_log('put-authentication-key', keydef.id, None)
         return obj.get_info()
 
     def auth_key_put(self, keydef: HSMAuthKey, key_enc: bytes, key_mac: bytes) -> ObjectInfo:
         data = f"key_enc:{key_enc.hex()},key_mac:{key_mac.hex()}".encode()
         obj = MockYhsmObject(self.backend.serial, keydef, data)
         self.backend.objects[(keydef.id, OBJECT.AUTHENTICATION_KEY)] = obj
+        self.backend.add_log('put-authentication-key', keydef.id, None)
         return obj.get_info()
 
     def sym_key_generate(self, keydef: HSMSymmetricKey) -> ObjectInfo:
         data = {"key_enc": self.get_pseudo_random(256//8), "key_mac": self.get_pseudo_random(256//8)}
         obj = MockYhsmObject(self.backend.serial, keydef, pickle.dumps(data))
         self.backend.objects[(keydef.id, OBJECT.SYMMETRIC_KEY)] = obj
+        self.backend.add_log('generate-symmetric-key', keydef.id, None)
         return obj.get_info()
 
     def asym_key_generate(self, keydef: HSMAsymmetricKey) -> ObjectInfo:
@@ -822,18 +860,22 @@ class MockHSMSession(HSMSession):
         priv_pem = priv_key.private_bytes(haz_ser.Encoding.PEM, haz_ser.PrivateFormat.PKCS8, haz_ser.NoEncryption())
         obj = MockYhsmObject(self.backend.serial, keydef, priv_pem)
         self.backend.objects[(keydef.id, OBJECT.ASYMMETRIC_KEY)] = obj
+        self.backend.add_log('generate-asymmetric-key', keydef.id, None)
         return obj.get_info()
 
     def hmac_key_generate(self, keydef: HSMHmacKey) -> ObjectInfo:
         data = self.get_pseudo_random(256//8)
         obj = MockYhsmObject(self.backend.serial, keydef, data)
         self.backend.put_mock_object(obj)
+        self.backend.add_log('generate-hmac-key', keydef.id, None)
         return obj.get_info()
 
     def get_pseudo_random(self, length: int) -> bytes:
+        self.backend.add_log('get-pseudo-random', None, None)
         return (b'0123' * length)[:length]  # Mock: use deterministic data for tests
 
     def list_objects(self) -> Sequence[MockYhsmObject]:
+        self.backend.add_log('list-objects', None, None)
         return list(self.backend.objects.values())
 
     def delete_object(self, objdef: HSMObjBase) -> None:
@@ -842,20 +884,24 @@ class MockHSMSession(HSMSession):
         self.delete_object_raw(objdef.id, obj_type)
 
     def delete_object_raw(self, id: HSMKeyID, type: OBJECT) -> None:
+        self.backend.add_log('delete-object', id, None)
         self.backend.del_mock_object(id, type)
 
     def sign_hmac(self, keydef: HSMHmacKey, data: bytes) -> bytes:
         hmac_key = self.backend.objects[(keydef.id, OBJECT.HMAC_KEY)].data
         hmac = haz_hmac.HMAC(hmac_key, haz_hashes.SHA256())
         hmac.update(data)
+        self.backend.add_log('sign-hmac', keydef.id, None)
         return hmac.finalize()
 
     def get_certificate(self, keydef: HSMOpaqueObject) -> haz_x509.Certificate:
+        self.backend.add_log('get-opaque', keydef.id, None)
         return haz_x509.load_pem_x509_certificate(self.backend.objects[(keydef.id, OBJECT.OPAQUE)].data)
 
     def put_certificate(self, keydef: HSMOpaqueObject, certificate: haz_x509.Certificate) -> ObjectInfo:
         obj = MockYhsmObject(self.backend.serial, keydef, certificate.public_bytes(encoding=haz_ser.Encoding.PEM))
         self.backend.objects[(keydef.id, OBJECT.OPAQUE)] = obj
+        self.backend.add_log('put-opaque', keydef.id, None)
         return obj.get_info()
 
     def get_private_key(self, keydef: HSMAsymmetricKey) -> PrivateKeyOrAdapter:
@@ -868,16 +914,24 @@ class MockHSMSession(HSMSession):
         asym_pem = self.backend.objects[(keydef.id, OBJECT.ASYMMETRIC_KEY)].data
         asym_key = haz_ser.load_pem_private_key(asym_pem, password=None)
         assert isinstance(asym_key, (haz_rsa.RSAPrivateKey, haz_ec.EllipticCurvePrivateKey, haz_ed25519.Ed25519PrivateKey))
+        self.backend.add_log('get-public-key', keydef.id, None)
         return asym_key.public_key()
 
     def get_log_entries(self, previous_entry: LogEntry | None = None) -> LogData:
-        return LogData(0, 0, self.backend.log_entries)
+        res = LogData(0, 0, self.backend.log_entries)
+        self.backend.add_log('get-log-entries', None, None)
+        return res
 
     def free_log_entries(self, up_until_num: int) -> None:
-        self.backend.log_entries = [entry for entry in self.backend.log_entries if entry.number > up_until_num]
+        self.backend.log_entries = [e for e in self.backend.log_entries if e.number > up_until_num]
+        self.backend.add_log('set-log-index', None, None)
 
     def get_audit_settings(self) -> tuple[HSMAuditSettings, dict[str, YubiHsm2AuditMode]]:
-        return self.audit_settings, {}
+        self.backend.audit_settings.apply_defaults()
+        return self.backend.audit_settings, {}    # No unknown audit settings on the mock device
 
     def set_audit_settings(self, settings: HSMAuditSettings) -> None:
-        self.audit_settings = settings
+        self.backend.add_log('set-option', None, None)
+        self.backend.audit_settings = settings
+        self.backend.audit_settings.apply_defaults()
+

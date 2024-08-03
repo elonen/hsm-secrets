@@ -9,7 +9,7 @@ import click.shell_completion
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
 from typing import Any, Callable, Iterable, List, Literal, NewType, Optional, Sequence, Union, cast
-from yubihsm.defs import CAPABILITY, ALGORITHM  # type: ignore [import]
+from yubihsm.defs import CAPABILITY, ALGORITHM, COMMAND  # type: ignore [import]
 import click
 import yaml	# type: ignore [import]
 
@@ -169,6 +169,11 @@ class HSMAuditSettings(NoExtraBaseModel):
         for cmd in typing.get_args(YubiHsm2Command):
             if cmd not in self.command_logging:
                 self.command_logging[cmd] = self.default_command_logging
+
+def lookup_hsm_cmd(cmd: YubiHsm2Command) -> COMMAND:
+    x = COMMAND._member_map_[cmd.upper().replace("-","_")]
+    assert isinstance(x, COMMAND), f"Command '{cmd}' not found in the YubiHSM library."
+    return x
 
 # -- Asymmetric key models --
 AsymmetricAlgorithm = Literal["rsa2048", "rsa3072", "rsa4096", "ecp256", "ecp384", "ecp521", "eck256", "ecbp256", "ecbp384", "ecbp512", "ed25519", "ecp224"]
