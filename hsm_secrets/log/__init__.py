@@ -17,7 +17,7 @@ def cmd_log(ctx: click.Context):
 
 @cmd_log.command('apply-settings')
 @pass_common_args
-@click.option('--alldevs', is_flag=True, help="Set on all devices")
+@click.option('--alldevs', '-a', is_flag=True, help="Set on all devices")
 @click.option('--force', is_flag=True, help="Don't ask for confirmation before setting")
 def apply_audit_settings(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
     """Apply log settings from config to HSM
@@ -86,7 +86,8 @@ def _check_and_format_audit_conf_differences(cur_settings: HSMAuditSettings, con
 @click.argument('db_path', type=click.Path(exists=False), required=False)
 @click.option('--clear', '-c', is_flag=True, help="Clear the log entries after fetching")
 @click.option('--no-verify', '-n', is_flag=True, help="Ignore log integrity verification failures")
-def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool):
+@click.option('--alldevs', '-a', is_flag=True, help="Fetch from all devices")
+def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, alldevs: bool):
     """
     Fetch log entries from HSM and store in SQLite DB
 
@@ -98,42 +99,46 @@ def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool):
     If --clear is specified, log entries will be cleared from the HSM after they are successfully verified and stored.
     """
     config: HSMConfig = ctx.conf
-    with open_hsm_session(ctx, HSMAuthMethod.PASSWORD) as session:
-        new_log_data = session.get_log_entries()
-        hsm_serial = session.get_serial()
+    hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
+    for serial in hsm_serials:
+        if alldevs:
+            cli_info(f"----- Fetching entries from device {serial} -----")
+        with open_hsm_session(ctx, HSMAuthMethod.PASSWORD, device_serial=serial) as session:
+            new_log_data = session.get_log_entries()
+            hsm_serial = session.get_serial()
 
-        if not db_path:
-            cli_info("No database path specified. Using in-memory database.")
-            if clear:
-                raise click.ClickException("Refusing to --clear log entries from device without a persistent database.")
-            db_path = ':memory:'
+            if not db_path:
+                cli_info("No database path specified. Using in-memory database.")
+                if clear:
+                    raise click.ClickException("Refusing to --clear log entries from device without a persistent database.")
+                db_path = ':memory:'
 
-        with sqlite3.connect(db_path) as conn:
-            log_db.init_db(conn)
-            conn.row_factory = sqlite3.Row
+            with sqlite3.connect(db_path) as conn:
+                log_db.init_db(conn)
+                conn.row_factory = sqlite3.Row
 
-            new, skipped = 0, 0
-            for entry in new_log_data.entries:
-                try:
-                    if not log_db.insert_log_entry(conn, hsm_serial, entry, datetime.datetime.now(), no_verify, lambda id: yhsm_log.find_info(id, config)):
-                        cli_info(f"- Log entry {entry.number} already in DB, skipping.")
-                        skipped += 1
-                        continue
-                    if e := log_db.get_last_log_entry(conn, hsm_serial):
-                        cli_info(yhsm_log.summarize_log_entry(e))
-                    new += 1
-                except ValueError as e:
-                    raise click.ClickException(f"Error inserting entry {entry.number}: {str(e)}")
+                new, skipped = 0, 0
+                for entry in new_log_data.entries:
+                    try:
+                        if not log_db.insert_log_entry(conn, hsm_serial, entry, datetime.datetime.now(), no_verify, lambda id: yhsm_log.find_info(id, config)):
+                            cli_info(f"- Log entry {entry.number} already in DB, skipping.")
+                            skipped += 1
+                            continue
+                        if e := log_db.get_last_log_entry(conn, hsm_serial):
+                            cli_info(yhsm_log.summarize_log_entry(e))
+                        new += 1
+                    except ValueError as e:
+                        raise click.ClickException(f"Error inserting entry {entry.number}: {str(e)}")
 
-            cli_info(f"\nFetched {new+skipped} entries. Stored {new} in '{db_path}', skipped {skipped} pre-existing.")
+                cli_info(f"\nFetched {new+skipped} entries. Stored {new} in '{db_path}', skipped {skipped} pre-existing.")
 
-            if clear:
-                last_entry = log_db.get_last_log_entry(conn, hsm_serial)
-                if last_entry:
-                    session.free_log_entries(last_entry["entry_number"])
-                    cli_info(f"Cleared log entries up to {last_entry['entry_number']}")
-                else:
-                    cli_info("No entries to clear")
+                if clear:
+                    last_entry = log_db.get_last_log_entry(conn, hsm_serial)
+                    if last_entry:
+                        session.free_log_entries(last_entry["entry_number"])
+                        cli_info(f"Cleared log entries up to {last_entry['entry_number']}")
+                    else:
+                        cli_info("No entries to clear")
 
 
 @cmd_log.command('review')
@@ -168,7 +173,8 @@ def log_review(ctx: HsmSecretsCtx, db_path: str, start_num: int|None, end_num: i
 @pass_common_args
 @click.argument('db_path', type=click.Path(exists=True))
 @click.option('--initial-num', '-i', type=int, help="Entry number to treat as first in the chain", default=1)
-def log_verify_all(ctx: HsmSecretsCtx, db_path: str, initial_num: int):
+@click.option('--alldevs', '-a', is_flag=True, help="Verify all devices")
+def log_verify_all(ctx: HsmSecretsCtx, db_path: str, initial_num: int, alldevs: bool):
     """
     Verify the entire (previously stored) log chain
 
@@ -177,16 +183,17 @@ def log_verify_all(ctx: HsmSecretsCtx, db_path: str, initial_num: int):
 
     <db_path> : Path to the SQLite database file containing the log entries.
     """
-    serial = int(ctx.hsm_serial)
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        entries = log_db.get_log_entries(conn, serial)
+    hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
+    for serial in hsm_serials:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            entries = log_db.get_log_entries(conn, int(serial))
 
-        try:
-            yhsm_log.verify_log_chain(entries, initial_num)
-            cli_info("Log chain verified successfully")
-        except ValueError as e:
-            cli_info(f"Log chain verification failed: {str(e)}")
+            try:
+                yhsm_log.verify_log_chain(entries, initial_num)
+                cli_info("Log chain verified successfully")
+            except ValueError as e:
+                cli_info(f"Log chain verification failed: {str(e)}")
 
 
 @cmd_log.command('export')
