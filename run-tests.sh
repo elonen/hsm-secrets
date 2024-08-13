@@ -104,14 +104,14 @@ EOF
 
     local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
     assert_success
-    [ "$count" -eq 36 ] || { echo "Expected 36 objects, but found $count"; return 1; }
+    [ "$count" -eq 39 ] || { echo "Expected 39 objects, but found $count"; return 1; }
 
     # Remove default admin key
     run_cmd hsm default-admin-disable
     assert_success
     local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
     assert_success
-    [ "$count" -eq 35 ] || { echo "Expected 35 objects, but found $count"; return 1; }
+    [ "$count" -eq 38 ] || { echo "Expected 38 objects, but found $count"; return 1; }
 }
 
 test_tls_certificates() {

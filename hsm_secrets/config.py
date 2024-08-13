@@ -128,7 +128,7 @@ class HSMConfig(NoExtraBaseModel):
 HSMKeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
 HSMKeyLabel = Annotated[str, Field(max_length=40)]
 HSMDomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
-HSMDomainName = Literal["all", "x509", "tls", "nac", "gpg", "codesign", "ssh", "password_derivation", "encryption"]
+HSMDomainName = Literal["all", "x509", "tls", "nac", "gpg", "codesign", "ssh_user", "ssh_host", "password_derivation", "encryption"]
 
 class HSMDomains(NoExtraBaseModel):
     x509: HSMDomainNum
@@ -136,7 +136,8 @@ class HSMDomains(NoExtraBaseModel):
     nac: HSMDomainNum
     gpg: HSMDomainNum
     codesign: HSMDomainNum
-    ssh: HSMDomainNum
+    ssh_user: HSMDomainNum
+    ssh_host: HSMDomainNum
     password_derivation: HSMDomainNum
     encryption: HSMDomainNum
 
@@ -324,7 +325,8 @@ class SSHTemplateSlots(NoExtraBaseModel):
     max: int
 
 class SSH(NoExtraBaseModel):
-    default_ca: HSMKeyID
+    default_user_ca: HSMKeyID
+    default_host_ca: HSMKeyID
     root_ca_keys: List[HSMAsymmetricKey]
 
 

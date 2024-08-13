@@ -127,9 +127,9 @@ def sign_ssh_host_key(ctx: HsmSecretsCtx, out: str, ca: str|None, hostname: str,
 def _sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, certid: str, validity: int, principals: str, extensions: str, keyfile: str, cert_type: ssh.SSHCertificateType, timestamp: int):
     from hsm_secrets.ssh.openssh.signing import sign_ssh_cert
     from hsm_secrets.ssh.openssh.ssh_certificate import cert_for_ssh_pub_id, str_to_extension
-    from hsm_secrets.key_adapters import make_private_key_adapter
 
-    ca_key_def = ctx.conf.find_def(ca or ctx.conf.ssh.default_ca, HSMAsymmetricKey)
+    default_ca = ctx.conf.ssh.default_user_ca if cert_type == ssh.SSHCertificateType.USER else ctx.conf.ssh.default_host_ca
+    ca_key_def = ctx.conf.find_def(ca or default_ca, HSMAsymmetricKey)
     assert isinstance(ca_key_def, HSMAsymmetricKey)
 
     ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_def.id]
