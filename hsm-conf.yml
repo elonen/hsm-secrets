@@ -21,10 +21,9 @@ general:
         nac: 3
         gpg: 4
         codesign: 5
-        ssh_user: 6
-        ssh_host: 7
-        password_derivation: 8
-        encryption: 9
+        ssh: 6
+        password_derivation: 7
+        encryption: 8
 
     x509_defaults:
         ca: true
@@ -129,7 +128,7 @@ admin:
 user_keys:
     - label: user_john.doe
       id: 0xE001
-      domains: ['tls', 'nac', 'gpg', 'codesign', 'ssh_user', 'ssh_host', 'password_derivation', 'encryption']
+      domains: ['tls', 'nac', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
       capabilities:
         - sign-ssh-certificate          # For SSH certificate creation
         - sign-hmac                     # For password derivation
@@ -579,12 +578,12 @@ codesign:
 # OpenSSH certificates are in proprietary format, so these are not signed by the X.509 root CAs.
 ssh:
     default_user_ca: 0x0720
-    default_host_ca: 0x0721
+    default_host_ca: 0x0720   # You could separate these, but given the HSM, having to change one but not the other is unlikely
     root_ca_keys:
         -
-            label: ssh-rsa-user-ca-root-key
+            label: ssh-rsa-ca-root-key
             id: 0x0710
-            domains: ['ssh_user']
+            domains: ['ssh']
             algorithm: rsa4096
             capabilities:
                 - sign-ssh-certificate
@@ -592,46 +591,18 @@ ssh:
                 - sign-pkcs
                 - exportable-under-wrap
         -
-            label: ssh-ed25519-user-ca-root-key
+            label: ssh-ed25519-ca-root-key
             id: 0x0720
-            domains: ['ssh_user']
+            domains: ['ssh']
             algorithm: ed25519
             capabilities:
                 - sign-ssh-certificate
                 - sign-eddsa
                 - exportable-under-wrap
         -
-            label: ssh-ecp384-user-ca-root-key
+            label: ssh-ecp384-ca-root-key
             id: 0x0730
-            domains: ['ssh_user']
-            algorithm: ecp384
-            capabilities:
-                - sign-ssh-certificate
-                - sign-ecdsa
-                - exportable-under-wrap
-        -
-            label: ssh-rsa-host-ca-root-key
-            id: 0x0711
-            domains: ['ssh_host']
-            algorithm: rsa4096
-            capabilities:
-                - sign-ssh-certificate
-                - sign-pss
-                - sign-pkcs
-                - exportable-under-wrap
-        -
-            label: ssh-ed25519-host-ca-root-key
-            id: 0x0721
-            domains: ['ssh_host']
-            algorithm: ed25519
-            capabilities:
-                - sign-ssh-certificate
-                - sign-eddsa
-                - exportable-under-wrap
-        -
-            label: ssh-ecp384-host-ca-root-key
-            id: 0x0731
-            domains: ['ssh_host']
+            domains: ['ssh']
             algorithm: ecp384
             capabilities:
                 - sign-ssh-certificate
