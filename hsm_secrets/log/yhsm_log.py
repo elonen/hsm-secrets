@@ -10,7 +10,7 @@ def find_info(id: int, conf: HSMConfig) -> str|None:
     try:
         if id in [0, 0xffff]:
             return None
-        kd = conf.find_def(id)
+        kd = conf.find_def_non_typed(id)
         return kd.label
     except KeyError:
         return "(UNKNOWN)"

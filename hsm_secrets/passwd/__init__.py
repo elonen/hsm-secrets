@@ -6,7 +6,8 @@ from yubihsm.objects import HmacKey  # type: ignore [import]
 import pyescrypt  # type: ignore [import]
 from mnemonic import Mnemonic
 
-from hsm_secrets.config import HSMConfig, HSMHmacKey, PasswordDerivationRule, PwRotationToken, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, HSMHmacKey, find_config_items_of_class
+HSMConfig.PasswordDerivation.PwdRule.PwdRotationToken
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_result, group_by_4, open_hsm_session, pass_common_args, secure_display_secret
 from hsm_secrets.yubihsm import HSMSession
 
@@ -108,7 +109,7 @@ def rotate_password(ctx: HsmSecretsCtx, name: list[str]|None, rule: str|None, al
 
         def rotate(name: str|None):
             name_hmac = int.from_bytes(ses.sign_hmac(key_def, name.encode('utf8')), 'big') if name else None
-            rotation = PwRotationToken(name_hmac=name_hmac, nonce=nonce, ts=int(datetime.now().timestamp()))
+            rotation = HSMConfig.PasswordDerivation.PwdRule.PwdRotationToken(name_hmac=name_hmac, nonce=nonce, ts=int(datetime.now().timestamp()))
             name_hmac_str = f"name_hmac: 0x{name_hmac:x}, " if name_hmac else ""
             rotation_str = f"          - {{{name_hmac_str}nonce: 0x{rotation.nonce:x}, ts: {rotation.ts}}}"
             if ctx.quiet:
@@ -125,8 +126,8 @@ def rotate_password(ctx: HsmSecretsCtx, name: list[str]|None, rule: str|None, al
 # --- Helpers ---
 
 
-def _find_deriv_rule_and_key(conf: HSMConfig, rule_id: str) -> tuple[PasswordDerivationRule, HSMHmacKey]:
-    rules: list[PasswordDerivationRule] = find_config_items_of_class(conf, PasswordDerivationRule)
+def _find_deriv_rule_and_key(conf: HSMConfig, rule_id: str) -> tuple[HSMConfig.PasswordDerivation.PwdRule, HSMHmacKey]:
+    rules: list[HSMConfig.PasswordDerivation.PwdRule] = find_config_items_of_class(conf, HSMConfig.PasswordDerivation.PwdRule)
     matches = [r for r in rules if r.id == rule_id]
     if not matches:
         raise click.ClickException(f"Derivation rule '{rule_id}' not found in config file.")
@@ -138,7 +139,7 @@ def _find_deriv_rule_and_key(conf: HSMConfig, rule_id: str) -> tuple[PasswordDer
 
 
 
-def _secret_to_password(derived_secret: bytes, rule_def: PasswordDerivationRule) -> str:
+def _secret_to_password(derived_secret: bytes, rule_def: HSMConfig.PasswordDerivation.PwdRule) -> str:
     if rule_def.format == "bip39":
         mnemo = Mnemonic("english")
         secret_padded = derived_secret + b'\x00' * max(128//8 - len(derived_secret), 0)

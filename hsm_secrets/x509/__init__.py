@@ -1,23 +1,26 @@
+import click
+import datetime
 from pathlib import Path
 from textwrap import indent
-from typing import cast
+from typing import cast, List, Optional
 from cryptography import x509
 
 from yubihsm.core import AuthSession    # type: ignore [import]
 import yubihsm.objects    # type: ignore [import]
 import yubihsm.defs    # type: ignore [import]
 
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import serialization, hashes
 from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, click_hsm_obj_auto_complete, find_config_items_of_class
 
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
-
-import click
-
-from hsm_secrets.key_adapters import make_private_key_adapter
+from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, click_hsm_obj_auto_complete
+from hsm_secrets.utils import HsmSecretsCtx, cli_info, cli_warn, open_hsm_session, pass_common_args
+from hsm_secrets.x509.def_utils import find_cert_def
+from hsm_secrets.key_adapters import Ed25519PrivateKeyHSMAdapter
 from hsm_secrets.yubihsm import HSMSession
 
 
@@ -44,6 +47,7 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, certs: t
         raise click.ClickException("Error: No certificates specified for creation.")
     create_certs_impl(ctx, all_certs, dry_run, certs)
 
+# ---------------
 
 @cmd_x509.command('get')
 @pass_common_args
@@ -62,7 +66,7 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
         raise click.ClickException("Error: --outdir and --bundle options are mutually exclusive.")
 
     all_cert_defs: list[HSMOpaqueObject] = find_config_items_of_class(ctx.conf, HSMOpaqueObject)
-    selected_certs = all_cert_defs if all_certs else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in certs]
+    selected_certs = all_cert_defs if all_certs else [ctx.conf.find_def(id, HSMOpaqueObject) for id in certs]
     if not selected_certs:
         raise click.ClickException("Error: No certificates selected.")
 
@@ -106,7 +110,7 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
 
     def _do_it(ses: HSMSession|None):
         selected_defs = list(scid_to_opq_def.values()) if all_certs \
-            else [cast(HSMOpaqueObject, ctx.conf.find_def(id, HSMOpaqueObject)) for id in cert_ids]
+            else [ctx.conf.find_def(id, HSMOpaqueObject) for id in cert_ids]
 
         creation_order = topological_sort_x509_cert_defs(selected_defs)
         id_to_cert_obj: dict[HSMKeyID, x509.Certificate] = {}
@@ -116,6 +120,7 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
             x509_info = merge_x509_info_with_defaults(scid_to_x509_def[cd.id].x509_info, ctx.conf)
             issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
             signer = f"signed by: '{issuer.label}'" if issuer else 'self-signed'
+
             cli_info(f"Creating 0x{cd.id:04x}: '{cd.label}' ({signer})")
             cli_info(indent(pretty_x509_info(x509_info), "    "))
 
@@ -144,9 +149,9 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                 builder = X509CertBuilder(ctx.conf, x509_def.x509_info, priv_key)
                 if issuer_cert:
                     assert issuer_key
-                    id_to_cert_obj[cd.id] = builder.generate_cross_signed_intermediate_cert([issuer_cert], [issuer_key])[0]
+                    id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key)
                 else:
-                    id_to_cert_obj[cd.id] = builder.generate_self_signed_cert()
+                    id_to_cert_obj[cd.id] = builder.generate_and_self_sign()
 
         # Put the certificates into the HSM
         for cd in creation_order:
@@ -163,3 +168,173 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
     else:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             _do_it(ses)
+
+# ---------------
+
+@cmd_x509.command('crl_init')
+@pass_common_args
+@click.option('--ca', '-c', required=True, help="CA key ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+@click.option('--out', '-o', required=True, type=click.Path(dir_okay=False), help="Output CRL file")
+@click.option('--validity', '-v', default=7, help="CRL validity period in days")
+@click.option('--this-update', type=click.DateTime(), default=None, help="This Update date (default: now)")
+@click.option('--next-update', type=click.DateTime(), default=None, help="Next Update date (default: now + validity)")
+@click.option('--crl-number', type=int, default=1, help="CRL Number (default: 1)")
+def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: Optional[datetime.datetime],
+             next_update: Optional[datetime.datetime], crl_number: int):
+    """Create empty CRL signed by a CA"""
+    ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
+    ca_x509_def = find_cert_def(ctx.conf, ca_cert_def.id)
+    assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
+
+    with open_hsm_session(ctx) as ses:
+        ca_cert = ses.get_certificate(ca_cert_def)
+        ca_key = ses.get_private_key(ca_x509_def.key)
+
+        builder = x509.CertificateRevocationListBuilder()
+        builder = builder.issuer_name(ca_cert.subject)
+        builder = builder.last_update(this_update or datetime.datetime.now(datetime.UTC))
+        builder = builder.next_update(next_update or (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=validity)))
+
+        crl = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+
+        crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
+        Path(out).write_bytes(crl_pem)
+
+        cli_info(f"Initialized CRL signed by CA 0x{ca_cert_def.id:04x}")
+        cli_info(f"CRL written to: {out}")
+
+# ---------------
+
+@cmd_x509.command('crl_update')
+@pass_common_args
+@click.argument('crl_file', type=click.Path(exists=True, dir_okay=False))
+@click.option('--ca', '-c', required=True, help="CA key ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+@click.option('--out', '-o', type=click.Path(dir_okay=False), help="Output updated CRL file (default: overwrite input)")
+@click.option('--validity', '-v', default=None, help="New CRL validity period in days")
+@click.option('--add', '-a', multiple=True, help="Add revoked cert: serial_number:date:reason")
+@click.option('--remove', '-r', multiple=True, help="Remove revoked cert: serial_number")
+def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: Optional[int],
+               add: List[str], remove: List[str]):
+    """Update an existing CRL
+
+    Add or remove revoked certificates, and update the CRL validity period.
+
+    Example: '--add 123456:2022-12-31:privilegeWithdrawn', where
+    the date is in ISO format (YYYY-MM-DD) and the reason is one of:
+    'unspecified', 'keyCompromise', 'cACompromise', 'affiliationChanged', 'superseded',
+    'cessationOfOperation', 'certificateHold', 'privilegeWithdrawn', 'aACompromise', 'removeFromCRL'.
+
+    If you omit the date and reason, the current date and 'unspecified' will be used.
+
+    Example: '--remove 123456'
+    """
+    ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
+    ca_x509_def = find_cert_def(ctx.conf, ca_cert_def.id)
+    assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
+
+    with open_hsm_session(ctx) as ses:
+        ca_cert = ses.get_certificate(ca_cert_def)
+        ca_key = ses.get_private_key(ca_x509_def.key)
+
+        # Read existing CRL
+        existing_crl = x509.load_pem_x509_crl(Path(crl_file).read_bytes())
+
+        builder = x509.CertificateRevocationListBuilder()
+        builder = builder.issuer_name(ca_cert.subject)
+
+        # Copy existing revoked certificates
+        for rev_cert in existing_crl:
+            if rev_cert.serial_number in [int(serial) for serial in remove]:
+                cli_info(f"- Removing previous revokation: {rev_cert.serial_number}")
+                continue
+            builder = builder.add_revoked_certificate(rev_cert)
+
+        if len(remove) != len(existing_crl) - len(builder._revoked_certificates):
+            cli_warn("Warning: Some revoked certificates to remove were not found in the existing CRL")
+
+        # Add new ones
+        for cert_info in add:
+
+            parts = cert_info.split(':')
+            if len(parts) == 3:
+                serial, date, reason = parts
+            elif len(parts) == 2:
+                serial, date = parts
+                reason = 'unspecified'
+            elif len(parts) == 1:
+                serial = parts[0]
+                date = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d')
+                reason = 'unspecified'
+            else:
+                raise click.ClickException(f"Error: Invalid revocation info: {cert_info}")
+
+            if not serial.isdigit():
+                raise click.ClickException(f"Error: Invalid serial number: {serial}")
+            if not (date and date.count('-') == 2):
+                raise click.ClickException(f"Error: Invalid date format: {date} (use YYYY-MM-DD)")
+
+            valid_reasons = {flag.value for flag in x509.ReasonFlags}
+            if reason not in valid_reasons:
+                raise click.ClickException(f"Error: Invalid revocation reason: {reason} - must be one of: {', '.join(valid_reasons)}")
+
+            builder = builder.add_revoked_certificate(x509.RevokedCertificateBuilder(
+                ).serial_number(int(serial)
+                ).revocation_date(datetime.datetime.fromisoformat(date)
+                ).add_extension(x509.CRLReason(x509.ReasonFlags(reason)), critical=False
+                ).build())
+
+        # Update CRL number
+        new_crl_number = existing_crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number + 1
+        builder = builder.add_extension(x509.CRLNumber(new_crl_number), critical=False)
+
+        # Calc new validity
+        if validity:
+            next_update = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=validity)
+        else:
+            if not existing_crl.next_update:
+                raise click.ClickException("Error: No validity period specified and no existing CRL next_update")
+            if last_update := existing_crl.last_update:
+                next_update = last_update + (existing_crl.next_update - last_update)
+                cli_info(f"Extending CRL validity to: {next_update} (same duration as previous)")
+            else:
+                cli_warn("Warning: Validity time not extended! No last_update in existing CRL, and no new validity period specified.")
+                next_update = existing_crl.next_update
+
+        builder = builder.last_update(datetime.datetime.now(datetime.UTC))
+        builder = builder.next_update(next_update)
+
+        # Sign the CRL
+        ed = isinstance(ca_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
+        crl = builder.sign(private_key=ca_key, algorithm=None if ed else hashes.SHA256())
+
+        # Write the updated CRL
+        out_file = out or crl_file
+        crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
+        Path(out_file).write_bytes(crl_pem)
+
+        cli_info(f"Updated CRL signed by CA 0x{ca_cert_def.id:04x}")
+        cli_info(f"CRL written to: {out_file}")
+
+# ---------------
+
+@cmd_x509.command('crl_show')
+@pass_common_args
+@click.argument('crl_file', type=click.Path(exists=True, dir_okay=False))
+def show_crl(ctx: HsmSecretsCtx, crl_file: str):
+    """Display information about a CRL"""
+    crl = x509.load_pem_x509_crl(Path(crl_file).read_bytes())
+
+    cli_info(f"CRL Issuer: {crl.issuer.rfc4514_string()}")
+    cli_info(f"Last Update: {crl.last_update}")
+    cli_info(f"Next Update: {crl.next_update}")
+
+    crl_number = crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+    cli_info(f"CRL Number: {crl_number}")
+
+    cli_info(f"Number of revoked certificates: {len(crl)}")
+
+    if len(crl) > 0:
+        cli_info("\nRevoked Certificates:")
+        for cert in crl:
+            reason = cert.extensions.get_extension_for_class(x509.CRLReason).value.reason
+            cli_info(f"  - Serial: {cert.serial_number}, Revoked On: {cert.revocation_date}, Reason: {reason.name}")

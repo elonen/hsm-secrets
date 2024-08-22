@@ -25,7 +25,7 @@ def get_ca(ctx: HsmSecretsCtx, get_all: bool, certs: Sequence[str]):
     if get_all:
         selected_keys = ctx.conf.ssh.root_ca_keys
     else:
-        selected_keys = [cast(HSMAsymmetricKey, ctx.conf.find_def(s, HSMAsymmetricKey, ctx.conf.ssh.root_ca_keys)) for s in certs]
+        selected_keys = [ctx.conf.find_def(s, HSMAsymmetricKey, ctx.conf.ssh.root_ca_keys) for s in certs]
     if not selected_keys:
         raise click.BadArgumentUsage("ERROR: No keys to get")
 
@@ -130,7 +130,6 @@ def _sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, certid: str, valid
 
     default_ca = ctx.conf.ssh.default_user_ca if cert_type == ssh.SSHCertificateType.USER else ctx.conf.ssh.default_host_ca
     ca_key_def = ctx.conf.find_def(ca or default_ca, HSMAsymmetricKey)
-    assert isinstance(ca_key_def, HSMAsymmetricKey)
 
     ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_def.id]
     if not ca_def:

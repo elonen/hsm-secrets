@@ -286,7 +286,7 @@ def delete_object(ctx: HsmSecretsCtx, obj_ids: tuple, alldevs: bool, force: bool
             not_found = set(obj_ids)
             for id_or_label in obj_ids:
                 try:
-                    id_int = ctx.conf.find_def(id_or_label).id
+                    id_int = ctx.conf.find_def_non_typed(id_or_label).id
                 except KeyError:
                     cli_warn(f"Object '{id_or_label}' not found in the configuration file. Assuming it's raw ID on the device.")
                     id_int = parse_keyid(id_or_label)

@@ -8,32 +8,125 @@ import typing
 import click.shell_completion
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StringConstraints
 from typing_extensions import Annotated
-from typing import Any, Callable, Iterable, List, Literal, NewType, Optional, Sequence, Union, cast
+from typing import Any, Callable, Dict, Iterable, List, Literal, NewType, Optional, Sequence, TypeVar, Union, cast
 from yubihsm.defs import CAPABILITY, ALGORITHM, COMMAND  # type: ignore [import]
 import click
 import yaml	# type: ignore [import]
-
-# -----  Pydantic models -----
 
 class NoExtraBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 AnyCapability = Union['AsymmetricCapabilityName', 'SymmetricCapabilityName', 'WrapCapabilityName', 'HmacCapabilityName', 'AuthKeyCapabilityName', 'AuthKeyDelegatedCapabilityName', 'WrapDelegateCapabilityName']
 
+# Some type definitions for the models
+HSMKeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
+HSMKeyLabel = Annotated[str, Field(max_length=40)]
+HSMDomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
+HSMDomainName = Literal["all", "x509", "tls", "nac","piv",  "ssh", "gpg", "codesign", "password_derivation", "encryption"]
+
+class HSMObjBase(NoExtraBaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: HSMKeyLabel
+    id: HSMKeyID
+    domains: set[HSMDomainName]
+
+
+# -----  Config model tree -----
+T = TypeVar('T')
+
 class HSMConfig(NoExtraBaseModel):
-    general: 'General'
+    general: 'HSMConfig.General'
     user_keys: list['HSMAuthKey']
     service_keys: list['HSMAuthKey']
 
-    admin: 'Admin'
-    x509: 'X509'
-    tls: 'TLS'
-    nac: 'NAC'
-    gpg: 'GPG'
-    codesign: 'CodeSign'
-    ssh: 'SSH'
-    password_derivation: 'PasswordDerivation'
-    encryption: 'Encryption'
+    admin: 'HSMConfig.Admin'
+    x509: 'HSMConfig.X509'
+    tls: 'HSMConfig.TLS'
+    nac: 'HSMConfig.NAC'
+    piv: 'HSMConfig.PIV'
+    gpg: 'HSMConfig.GPG'
+    codesign: 'HSMConfig.CodeSign'
+    ssh: 'HSMConfig.SSH'
+    password_derivation: 'HSMConfig.PasswordDerivation'
+    encryption: 'HSMConfig.Encryption'
+
+    class General(NoExtraBaseModel):
+        master_device: str              # serial number of the master device
+        all_devices: dict[str, str]     # serial number -> connection URL
+
+        domains: 'HSMDomains'
+        x509_defaults: 'X509Info'
+
+        class HSMDomains(NoExtraBaseModel):
+            x509: HSMDomainNum
+            tls: HSMDomainNum
+            nac: HSMDomainNum
+            piv: HSMDomainNum
+            ssh: HSMDomainNum
+            gpg: HSMDomainNum
+            codesign: HSMDomainNum
+            password_derivation: HSMDomainNum
+            encryption: HSMDomainNum
+
+    class Admin(NoExtraBaseModel):
+        default_admin_password: str
+        default_admin_key: 'HSMAuthKey'
+        shared_admin_key: 'HSMAuthKey'
+        wrap_key: 'HSMWrapKey'
+        audit: 'HSMAuditSettings'
+
+    class X509(NoExtraBaseModel):
+        root_certs: List['X509Cert']
+
+    class TLS(NoExtraBaseModel):
+        default_ca_id: HSMKeyID
+        intermediate_certs: List['X509Cert']
+
+    class PIV(NoExtraBaseModel):
+        default_ca_id: HSMKeyID
+        intermediate_certs: List['X509Cert']
+        dc_cert_templates: Dict[str, 'X509Info']  # Overrides global defaults
+        user_cert_templates: Dict[str, 'X509Info']
+
+    class NAC(NoExtraBaseModel):
+        intermediate_certs: List['X509Cert']
+
+    class GPG(NoExtraBaseModel):
+        keys: List['HSMAsymmetricKey']
+
+    class CodeSign(NoExtraBaseModel):
+        intermediate_certs: List['X509Cert']
+
+    class SSHTemplateSlots(NoExtraBaseModel):
+        min: int
+        max: int
+
+    class SSH(NoExtraBaseModel):
+        default_user_ca: HSMKeyID
+        default_host_ca: HSMKeyID
+        root_ca_keys: List['HSMAsymmetricKey']
+
+    class PasswordDerivation(NoExtraBaseModel):
+        keys: List['HSMHmacKey']
+        default_rule: HSMKeyLabel
+        rules: List['PwdRule']
+
+        class PwdRule(NoExtraBaseModel):
+            id: HSMKeyLabel
+            key: HSMKeyID
+            format: Literal["bip39", "hex"] = Field(default="bip39")
+            separator: str = Field(default=".")
+            bits: Literal[64, 128, 256] = Field(default=64)
+            rotation_tokens: List['PwdRotationToken'] = Field(default_factory=list)
+
+            class PwdRotationToken(NoExtraBaseModel):
+                name_hmac: Optional[Annotated[int, Field(strict=True, gt=0)]] = Field(default=None)
+                nonce: Annotated[int, Field(strict=True, gt=0)]
+                ts: Annotated[int, Field(strict=True, ge=0)]
+
+    class Encryption(NoExtraBaseModel):
+        keys: List['HSMSymmetricKey']
+
 
     def find_auth_key(self, label: str) -> 'HSMAuthKey':
         for key_set in [self.user_keys, self.service_keys]:
@@ -53,8 +146,14 @@ class HSMConfig(NoExtraBaseModel):
         assert 0 <= res <= 0xFFFF, f"Domain bitfield out of range: {res}"
         return res
 
-    def find_def(self, id_or_label: Union[int, str], enforce_type: Optional[type] = None, sub_conf: Any|None = None) -> 'HSMObjBase':
-        return _find_def_by_id_or_label(sub_conf or self, id_or_label, enforce_type)
+    def find_def(self, id_or_label: Union[int, str], type_to_find: type[T], sub_conf: Any = None) -> T:
+        assert type_to_find is not None, "enforce_type cannot be None, use find_def_non_typed() instead."
+        res = self.find_def_non_typed(id_or_label, type_to_find, sub_conf)
+        assert isinstance(res, type_to_find), f"Expected type {type_to_find}, but got {type(res)}"
+        return res
+
+    def find_def_non_typed(self, id_or_label: Union[int, str], type_to_find: Optional[type] = None, sub_conf: Any|None = None) -> 'HSMObjBase':
+        return _find_def_by_id_or_label(sub_conf or self, id_or_label, type_to_find)
 
     @staticmethod
     def domain_bitfield_to_nums(bitfield: int) -> set['HSMDomainNum']:
@@ -124,39 +223,8 @@ class HSMConfig(NoExtraBaseModel):
         return res
 
 
-# Some type definitions for the models
-HSMKeyID = Annotated[int, Field(strict=True, gt=0, lt=0xFFFF)]
-HSMKeyLabel = Annotated[str, Field(max_length=40)]
-HSMDomainNum = Annotated[int, Field(strict=True, gt=0, lt=17)]
-HSMDomainName = Literal["all", "x509", "tls", "nac", "gpg", "codesign", "ssh", "password_derivation", "encryption"]
-
-class HSMDomains(NoExtraBaseModel):
-    x509: HSMDomainNum
-    tls: HSMDomainNum
-    nac: HSMDomainNum
-    gpg: HSMDomainNum
-    codesign: HSMDomainNum
-    ssh: HSMDomainNum
-    password_derivation: HSMDomainNum
-    encryption: HSMDomainNum
-
-
-
-class General(NoExtraBaseModel):
-    master_device: str              # serial number of the master device
-    all_devices: dict[str, str]     # serial number -> connection URL
-
-    domains: HSMDomains
-    x509_defaults: 'X509Info'
-
-
-class HSMObjBase(NoExtraBaseModel):
-    model_config = ConfigDict(extra="forbid")
-    label: HSMKeyLabel
-    id: HSMKeyID
-    domains: set[HSMDomainName]
-
 # -- Logging / audit --
+
 YubiHsm2AuditMode = Literal['off', 'on', 'fixed']
 YubiHsm2Command = Literal['echo', 'create-session', 'authenticate-session', 'session-message', 'device-info', 'reset-device', 'get-device-public-key', 'close-session', 'get-storage-info', 'put-opaque', 'get-opaque', 'put-authentication-key', 'put-asymmetric-key', 'generate-asymmetric-key', 'sign-pkcs1', 'list-objects', 'decrypt-pkcs1', 'export-wrapped', 'import-wrapped', 'put-wrap-key', 'get-log-entries', 'get-object-info', 'set-option', 'get-option', 'get-pseudo-random', 'put-hmac-key', 'sign-hmac', 'get-public-key', 'sign-pss', 'sign-ecdsa', 'derive-ecdh', 'delete-object', 'decrypt-oaep', 'generate-hmac-key', 'generate-wrap-key', 'verify-hmac', 'sign-ssh-certificate', 'put-template', 'get-template', 'decrypt-otp', 'create-otp-aead', 'randomize-otp-aead', 'rewrap-otp-aead', 'sign-attestation-certificate', 'put-otp-aead-key', 'generate-otp-aead-key', 'set-log-index', 'wrap-data', 'unwrap-data', 'sign-eddsa', 'blink-device', 'change-authentication-key', 'put-symmetric-key', 'generate-symmetric-key', 'decrypt-ecb', 'encrypt-ecb', 'decrypt-cbc', 'encrypt-cbc']
 class HSMAuditSettings(NoExtraBaseModel):
@@ -251,7 +319,7 @@ class HSMOpaqueObject(HSMObjBase):
     sign_by: Optional[HSMKeyID]    # ID of the key to sign the object with (if applicable)
 
 # -- Helper models --
-X509KeyUsage = Literal[
+X509KeyUsageName = Literal[
     "digitalSignature",     # Allow signing files, messages, etc.
     "nonRepudiation",       # Allow for assurance of the signer's identity, preventing them from denying their actions (e.g. in legal disputes)
     "keyEncipherment",      # Allow for encrypting other keys
@@ -262,94 +330,102 @@ X509KeyUsage = Literal[
     "encipherOnly",         # In keyAgreement: only allow encryption, not decryption
     "decipherOnly"          # In keyAgreement: only allow decryption, not encryption
 ]
-X509ExtendedKeyUsage = Literal["serverAuth", "clientAuth", "codeSigning", "emailProtection", "timeStamping"]
-X509NameType = Literal["dns", "ip", "rfc822", "uri", "directory", "registered_id", "other"]
+X509ExtendedKeyUsageName = Literal["serverAuth", "clientAuth", "codeSigning", "emailProtection", "timeStamping", "ocspSigning", "anyExtendedKeyUsage", "smartcardLogon", "kerberosPKINITKDC"]
+X509NameType = Literal["dns", "ip", "rfc822", "uri", "upn", "directory", "registered_id", "oid"]
 
-class X509CertAttribs(NoExtraBaseModel):
-    common_name: str                                    # FQDN for host, or username for user, etc.
-    subject_alt_names: Optional[dict[X509NameType, list[str]]] = Field(default=None) # Subject Alternative Names (SANs)
-    organization: Optional[str] = Field(default=None)   # Legal entity name
-    # organizational_unit: str                          # Deprecated TLS field, so commented out
-    locality: Optional[str] = Field(default=None)       # City
-    state: Optional[str] = Field(default=None)          # State or province where the organization is located
-    country: Optional[str] = Field(default=None)        # Country code (2-letter ISO 3166-1)
+class X509Extension(BaseModel):
+    critical: bool = False
 
-class X509NameConstraint(NoExtraBaseModel):
-    permitted: Optional[dict[X509NameType, list[str]]] = Field(default_factory=dict)
-    excluded: Optional[dict[X509NameType, list[str]]] = Field(default_factory=dict)
 
 class X509Info(NoExtraBaseModel):
-    ca: Optional[bool] = Field(default=None)  # Whether this certificate is a CA (able to sign other certificates)
-    path_len: Optional[int] = Field(default=None)  # Maximum number of intermediate CAs that can be signed by this CA
-    validity_days: Optional[int] = Field(default=None)  # Default validity period for the certificate
-    attribs: Optional[X509CertAttribs] = Field(default=None)
-    key_usage: Optional[set[X509KeyUsage]] = Field(default=None)
-    extended_key_usage: Optional[set[X509ExtendedKeyUsage]] = Field(default=None)
-    name_constraints: Optional[X509NameConstraint] = Field(default=None)
+    validity_days: Optional[int] = None
+    attribs: Optional['X509Info.CertAttribs'] = None
+    basic_constraints: Optional['X509Info.BasicConstraints'] = None
+    key_usage: Optional['X509Info.KeyUsage'] = None
+    extended_key_usage: Optional['X509Info.ExtendedKeyUsage'] = None
+    subject_alt_name: Optional['X509Info.SubjectAltName'] = None
+    issuer_alt_name: Optional['X509Info.IssuerAltName'] = None
+    subject_key_identifier: Optional['X509Info.SubjectKeyIdentifier'] = None
+    authority_key_identifier: Optional['X509Info.AuthorityKeyIdentifier'] = None
+    name_constraints: Optional['X509Info.NameConstraints'] = None
+    crl_distribution_points: Optional['X509Info.CRLDistributionPoints'] = None
+    authority_info_access: Optional['X509Info.AuthorityInfoAccess'] = None
+    certificate_policies: Optional['X509Info.CertificatePolicies'] = None
+    policy_constraints: Optional['X509Info.PolicyConstraints'] = None
+    inhibit_any_policy: Optional['X509Info.InhibitAnyPolicy'] = None
+
+    # Nested models (x509 extensions)
+
+    class BasicConstraints(X509Extension):
+        ca: bool = False
+        path_len: Optional[int] = None
+
+    class CertAttribs(NoExtraBaseModel):
+        common_name: str                                    # FQDN for host, or username for user, etc.
+        organization: Optional[str] = Field(default=None)   # Legal entity name
+        organizational_unit: str = Field(default=None)      # NOTE: Deprecated TLS field
+        locality: Optional[str] = Field(default=None)       # City
+        state: Optional[str] = Field(default=None)          # State or province where the organization is located
+        country: Optional[str] = Field(default=None)        # Country code (2-letter ISO 3166-1)
+
+    class KeyUsage(X509Extension):
+        usages: set[X509KeyUsageName] = Field(default_factory=set)
+
+    class ExtendedKeyUsage(X509Extension):
+        usages: set[X509ExtendedKeyUsageName] = Field(default_factory=set)
+
+    class SubjectAltName(X509Extension):
+        names: Dict[X509NameType, List[str]] = Field(default_factory=dict)
+
+    class IssuerAltName(X509Extension):
+        names: Dict[X509NameType, List[str]] = Field(default_factory=dict)
+
+    class NameConstraints(X509Extension):
+        permitted: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=dict)
+        excluded: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=dict)
+
+    class CRLDistributionPoints(X509Extension):
+        urls: List[str] = Field(default_factory=list)
+
+    class AuthorityInfoAccess(X509Extension):
+        ocsp: List[str] = Field(default_factory=list)
+        ca_issuers: List[str] = Field(default_factory=list)
+
+    class SubjectKeyIdentifier(X509Extension):
+        method: Literal["hash", "160-bit"] = "hash"
+
+    class AuthorityKeyIdentifier(X509Extension):
+        key_identifier: Optional[str] = None
+        authority_cert_issuer: Optional[Dict[X509NameType, List[str]]] = None
+        authority_cert_serial_number: Optional[str] = None
+
+    class CertificatePolicies(X509Extension):
+        policies: List['X509Info.CertificatePolicies.PolicyInformation'] = Field(default_factory=list)
+
+        class PolicyInformation(BaseModel):
+            policy_identifier: str
+            policy_qualifiers: Optional[List[Union[str, 'X509Info.CertificatePolicies.PolicyInformation.UserNotice']]] = None
+
+            class UserNotice(BaseModel):
+                notice_ref: Optional['X509Info.CertificatePolicies.PolicyInformation.NoticeReference'] = None
+                explicit_text: Optional[str] = None
+
+            class NoticeReference(BaseModel):
+                organization: str
+                notice_numbers: List[int]
+
+    class PolicyConstraints(X509Extension):
+        require_explicit_policy: Optional[int] = None
+        inhibit_policy_mapping: Optional[int] = None
+
+    class InhibitAnyPolicy(X509Extension):
+        skip_certs: int
+
 
 class X509Cert(NoExtraBaseModel):
     key: HSMAsymmetricKey
     x509_info: Optional[X509Info] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
     signed_certs: List[HSMOpaqueObject] = Field(default_factory=list)  # Storage for signed certificates
-
-
-# -----  Subsystem models -----
-
-class Admin(NoExtraBaseModel):
-    default_admin_password: str
-    default_admin_key: HSMAuthKey
-    shared_admin_key: HSMAuthKey
-    wrap_key: HSMWrapKey
-    audit: HSMAuditSettings
-
-
-class X509(NoExtraBaseModel):
-    root_certs: List[X509Cert]
-
-class TLS(NoExtraBaseModel):
-    default_ca_id: HSMKeyID
-    intermediate_certs: List[X509Cert]
-
-class NAC(NoExtraBaseModel):
-    intermediate_certs: List[X509Cert]
-
-class GPG(NoExtraBaseModel):
-    keys: List[HSMAsymmetricKey]
-
-class CodeSign(NoExtraBaseModel):
-    intermediate_certs: List[X509Cert]
-
-class SSHTemplateSlots(NoExtraBaseModel):
-    min: int
-    max: int
-
-class SSH(NoExtraBaseModel):
-    default_user_ca: HSMKeyID
-    default_host_ca: HSMKeyID
-    root_ca_keys: List[HSMAsymmetricKey]
-
-
-class PwRotationToken(NoExtraBaseModel):
-    name_hmac: Optional[Annotated[int, Field(strict=True, gt=0)]] = Field(default=None)
-    nonce: Annotated[int, Field(strict=True, gt=0)]
-    ts: Annotated[int, Field(strict=True, ge=0)]
-
-class PasswordDerivationRule(NoExtraBaseModel):
-    id: HSMKeyLabel
-    key: HSMKeyID
-    format: Literal["bip39", "hex"] = Field(default="bip39")
-    separator: str = Field(default=".")
-    bits: Literal[64, 128, 256] = Field(default=64)
-    rotation_tokens: List[PwRotationToken] = Field(default_factory=list)
-
-class PasswordDerivation(NoExtraBaseModel):
-    keys: List[HSMHmacKey]
-    default_rule: HSMKeyLabel
-    rules: List[PasswordDerivationRule]
-
-
-class Encryption(NoExtraBaseModel):
-    keys: List[HSMSymmetricKey]
 
 
 # ----- Utility functions -----
@@ -370,7 +446,7 @@ def load_hsm_config(file_name: str) -> 'HSMConfig':
         for key in key_list:
             if hasattr(key, 'id'):
                 if key.id in seen_ids:
-                    raise click.ClickException(f"Duplicate key ID '{key.id}' found in the configuration file. YubiHSM allows this between different key types, but this tool enforces strict uniqueness.")
+                    raise click.ClickException(f"Duplicate key ID 0x{key.id:04x} found in the configuration file. YubiHSM allows this between different key types, but this tool enforces strict uniqueness.")
                 seen_ids.add(key.id)
     return res
 

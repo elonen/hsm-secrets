@@ -21,33 +21,39 @@ def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSM
 
     merged = deepcopy(x509_info)
 
-    merged.ca = defaults.ca if merged.ca is None else merged.ca
-
-    if merged.path_len is None:
-        merged.path_len = defaults.path_len
-
     if merged.validity_days is None:
         merged.validity_days = defaults.validity_days
 
     if merged.attribs is None:
         merged.attribs = deepcopy(defaults.attribs)
     else:
+        # Assume common_name is set, and fill in missing values from defaults (if set)
         for attr in ['organization', 'locality', 'state', 'country']:
             if getattr(merged.attribs, attr) is None:
                 setattr(merged.attribs, attr, getattr(defaults.attribs, attr))
 
-        if defaults.attribs:
-            if not merged.attribs.subject_alt_names and defaults.attribs.subject_alt_names:
-                merged.attribs.subject_alt_names = defaults.attribs.subject_alt_names.copy()
+    attributes_to_copy = [
+        'basic_constraints',
+        'key_usage',
+        'extended_key_usage',
+        'subject_alt_name',
+        'issuer_alt_name',
+        'name_constraints',
+        'crl_distribution_points',
+        'authority_info_access',
+        'certificate_policies',
+        'policy_constraints',
+        'inhibit_any_policy'
+    ]
 
-    if merged.key_usage is None:
-        merged.key_usage = defaults.key_usage.copy() if defaults.key_usage else None
+    for attr in attributes_to_copy:
+        merged_attr = getattr(merged, attr)
+        defaults_attr = getattr(defaults, attr)
 
-    if merged.extended_key_usage is None:
-        merged.extended_key_usage = defaults.extended_key_usage.copy() if defaults.extended_key_usage else None
-
-    if merged.name_constraints is None:
-        merged.name_constraints = defaults.name_constraints.copy() if defaults.name_constraints else None
+        if merged_attr is None and defaults_attr:
+            setattr(merged, attr, defaults_attr.model_copy(deep=True))
+        elif merged_attr and defaults_attr:
+            setattr(merged, attr, defaults_attr.model_copy(deep=True))
 
     return merged
 
@@ -56,13 +62,17 @@ def pretty_x509_info(x509_info: X509Info) -> str:
     """
     Pretty-print an X509Info object.
     """
-    res =  f"path_len:           {x509_info.path_len}\n"
-    res += f"validity_days:      {x509_info.validity_days}\n"
+    res  = f"validity_days:      {x509_info.validity_days}\n"
     res += f"key_usage:          {x509_info.key_usage}\n"
     res += f"extended_key_usage: {x509_info.extended_key_usage}\n"
 
+    if x509_info.basic_constraints:
+        res += f"basic_constraints:  (critical: {x509_info.basic_constraints.critical})\n"
+        res =  f"  path_len:         {x509_info.basic_constraints.path_len}\n"
+        res += f"  ca:               {x509_info.basic_constraints.ca}\n"
+
     if x509_info.name_constraints:
-        res += "name_constraints:\n"
+        res += f"name_constraints:  (critical: {x509_info.name_constraints.critical})\n"
         if name_dict := x509_info.name_constraints.permitted:
             res += "    permitted_subtrees:\n"
             for (k,v) in name_dict.items():
@@ -70,7 +80,7 @@ def pretty_x509_info(x509_info: X509Info) -> str:
         if name_dict := x509_info.name_constraints.excluded:
             res += "    excluded_subtrees:\n"
             for (k,v) in name_dict.items():
-                res += f"        {k}: {v}\n"
+                res += f"        - {k}: {v}\n"
 
     if x509_info.attribs:
         res += "attribs:\n"
@@ -79,10 +89,45 @@ def pretty_x509_info(x509_info: X509Info) -> str:
         res += f"    locality:          {x509_info.attribs.locality}\n"
         res += f"    state:             {x509_info.attribs.state}\n"
         res += f"    country:           {x509_info.attribs.country}\n"
-        if x509_info.attribs.subject_alt_names:
-            res += f"    subject_alt_names: {x509_info.attribs.subject_alt_names}\n"
     else:
         res += "attribs: None\n"
+
+    if x509_info.subject_alt_name:
+        res += f"subject_alt_name:  (critical: {x509_info.subject_alt_name.critical})\n"
+        for (k,v) in sorted(x509_info.subject_alt_name.names.items(), key=lambda x: x[0]):
+            res += f"    - {k}: {v}\n"
+
+    if x509_info.issuer_alt_name:
+        res += f"issuer_alt_name:  (critical: {x509_info.issuer_alt_name.critical})\n"
+        for (k,v) in sorted(x509_info.issuer_alt_name.names.items(), key=lambda x: x[0]):
+            res += f"    - {k}: {v}\n"
+
+    if x509_info.crl_distribution_points:
+        res += f"crl_distribution_points:  (critical: {x509_info.crl_distribution_points.critical})\n"
+        for url in x509_info.crl_distribution_points.urls:
+            res += f"    - {url}\n"
+
+    if x509_info.authority_info_access:
+        res += f"authority_info_access:  (critical: {x509_info.authority_info_access.critical})\n"
+        for url in x509_info.authority_info_access.ocsp:
+            res += f"    - OCSP: {url}\n"
+        for url in x509_info.authority_info_access.ca_issuers:
+            res += f"    - CA Issuers: {url}\n"
+
+    if x509_info.certificate_policies:
+        res += f"certificate_policies:  (critical: {x509_info.certificate_policies.critical})\n"
+        for policy in x509_info.certificate_policies.policies:
+            res += f"    - {policy}\n"
+
+    if x509_info.policy_constraints:
+        res += f"policy_constraints:  (critical: {x509_info.policy_constraints.critical})\n"
+        res += f"    require_explicit_policy: {x509_info.policy_constraints.require_explicit_policy}\n"
+        res += f"    inhibit_policy_mapping: {x509_info.policy_constraints.inhibit_policy_mapping}\n"
+
+    if x509_info.inhibit_any_policy:
+        res += f"inhibit_any_policy:  (critical: {x509_info.inhibit_any_policy.critical})\n"
+        res += f"    skip_certs: {x509_info.inhibit_any_policy.skip_certs}\n"
+
     return res
 
 
