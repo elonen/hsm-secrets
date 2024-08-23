@@ -55,7 +55,7 @@ setup() {
     run_cmd -q hsm compare --create
     assert_success
 
-    run_cmd x509 create -a
+    run_cmd x509 cert create -a
     assert_success
 
     # `add-service` command is interactive => use `expect` to provide input
@@ -116,7 +116,7 @@ EOF
 
 test_tls_certificates() {
     setup
-    run_cmd -q x509 get --all | openssl x509 -text -noout
+    run_cmd -q x509 cert get --all | openssl x509 -text -noout
     assert_success
 
     run_cmd tls server-cert --out $TEMPDIR/www-example-com.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt rsa4096
@@ -141,7 +141,7 @@ test_crl_commands() {
     setup
 
     # Initialize a new CRL
-    run_cmd x509 crl_init --ca 0x0211 --out $TEMPDIR/test.crl --validity 30
+    run_cmd x509 crl init --ca 0x0211 --out $TEMPDIR/test.crl --validity 30
     assert_success
     [ -f $TEMPDIR/test.crl ] || { echo "ERROR: CRL file not created"; return 1; }
 
@@ -156,7 +156,7 @@ test_crl_commands() {
 
     # Update the CRL with a revoked certificate
     local revoke_date=$(date -u +"%Y-%m-%d")
-    run_cmd x509 crl_update $TEMPDIR/test.crl --ca 0x0211 --add "1000:$revoke_date:keyCompromise"
+    run_cmd x509 crl update $TEMPDIR/test.crl --ca 0x0211 --add "1000:$revoke_date:keyCompromise"
     assert_success
 
     # Verify the updated CRL
@@ -169,7 +169,7 @@ test_crl_commands() {
     assert_grep "Key Compromise" "$update_output"
 
     # Show CRL information
-    local show_output=$(run_cmd x509 crl_show $TEMPDIR/test.crl)
+    local show_output=$(run_cmd x509 crl show $TEMPDIR/test.crl)
     assert_success
     echo "$show_output"
     assert_grep "CRL Issuer.*Duckburg," "$show_output"
@@ -177,7 +177,7 @@ test_crl_commands() {
     assert_grep ".*1000.*$revoke_date.*keyCompromise" "$show_output"
 
     # Update CRL to remove a certificate
-    run_cmd x509 crl_update $TEMPDIR/test.crl --ca 0x0211 --remove 1000
+    run_cmd x509 crl update $TEMPDIR/test.crl --ca 0x0211 --remove 1000
     assert_success
 
     # Verify the final CRL state

@@ -27,12 +27,34 @@ from hsm_secrets.yubihsm import HSMSession
 @click.group()
 @click.pass_context
 def cmd_x509(ctx: click.Context):
-    """General X.509 Certificate Management"""
+    """General X.509 commands for certs and CRLs"""
     ctx.ensure_object(dict)
+
+@cmd_x509.group('cert')
+def cmd_x509_cert():
+    """On-HSM certificate management
+
+    The YubiHSM2 can store and manage X.509 certificates, and sign them with
+    private keys stored on the device. These commands allow you to create and
+    retrieve certificates from the HSM. Their corresponding private keys must
+    in the HSM already.
+    """
+    pass
+
+@cmd_x509.group('crl')
+def cmd_x509_crl():
+    """Certificate Revocation List management
+
+    These commands allow you to create, update, and display information about CRLs.
+    They operate on PEM files, and require the CA certificate to be present in the HSM.
+    Revoked certificates are specified by serial number only - you don't need to have the
+    actual certificate at hand to revoke it.
+    """
+    pass
 
 # ---------------
 
-@cmd_x509.command('create')
+@cmd_x509_cert.command('create')
 @pass_common_args
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Create all certificates")
 @click.option("--dry-run", "-n", is_flag=True, help="Dry run (do not create certificates)")
@@ -49,7 +71,7 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, certs: t
 
 # ---------------
 
-@cmd_x509.command('get')
+@cmd_x509_cert.command('get')
 @pass_common_args
 @click.option('--all', '-a', 'all_certs', is_flag=True, help="Get all certificates")
 @click.option('--outdir', '-o', type=click.Path(), required=False, help="Write PEMs into files here")
@@ -171,9 +193,9 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
 
 # ---------------
 
-@cmd_x509.command('crl_init')
+@cmd_x509_crl.command('init')
 @pass_common_args
-@click.option('--ca', '-c', required=True, help="CA key ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+@click.option('--ca', '-c', required=True, help="CA cert ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
 @click.option('--out', '-o', required=True, type=click.Path(dir_okay=False), help="Output CRL file")
 @click.option('--validity', '-v', default=7, help="CRL validity period in days")
 @click.option('--this-update', type=click.DateTime(), default=None, help="This Update date (default: now)")
@@ -206,10 +228,10 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
 
 # ---------------
 
-@cmd_x509.command('crl_update')
+@cmd_x509_crl.command('update')
 @pass_common_args
 @click.argument('crl_file', type=click.Path(exists=True, dir_okay=False))
-@click.option('--ca', '-c', required=True, help="CA key ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+@click.option('--ca', '-c', required=True, help="CA cert ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
 @click.option('--out', '-o', type=click.Path(dir_okay=False), help="Output updated CRL file (default: overwrite input)")
 @click.option('--validity', '-v', default=None, help="New CRL validity period in days")
 @click.option('--add', '-a', multiple=True, help="Add revoked cert: serial_number:date:reason")
@@ -227,7 +249,9 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
 
     If you omit the date and reason, the current date and 'unspecified' will be used.
 
-    Example: '--remove 123456'
+    Example: '--remove 123456'.
+
+    Remove and add commands can be specified multiple times.
     """
     ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
     ca_x509_def = find_cert_def(ctx.conf, ca_cert_def.id)
@@ -318,7 +342,7 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
 
 # ---------------
 
-@cmd_x509.command('crl_show')
+@cmd_x509_crl.command('show')
 @pass_common_args
 @click.argument('crl_file', type=click.Path(exists=True, dir_okay=False))
 def show_crl(ctx: HsmSecretsCtx, crl_file: str):
