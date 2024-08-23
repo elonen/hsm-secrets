@@ -137,6 +137,56 @@ test_tls_certificates() {
     [ -f $TEMPDIR/www-example-com.chain.pem ] || { echo "ERROR: Chain bundle not saved"; return 1; }
 }
 
+test_crl_commands() {
+    setup
+
+    # Initialize a new CRL
+    run_cmd x509 crl_init --ca 0x0211 --out $TEMPDIR/test.crl --validity 30
+    assert_success
+    [ -f $TEMPDIR/test.crl ] || { echo "ERROR: CRL file not created"; return 1; }
+
+    # Verify the initial CRL with OpenSSL
+    local initial_output=$(openssl crl -in $TEMPDIR/test.crl -text -noout)
+    assert_success
+    echo "$initial_output"
+    assert_grep "Certificate Revocation List" "$initial_output"
+    assert_grep "Issuer.*Duckburg" "$initial_output"
+    assert_grep "Next Update:" "$initial_output"
+    assert_grep "No Revoked Certificates" "$initial_output"
+
+    # Update the CRL with a revoked certificate
+    local revoke_date=$(date -u +"%Y-%m-%d")
+    run_cmd x509 crl_update $TEMPDIR/test.crl --ca 0x0211 --add "1000:$revoke_date:keyCompromise"
+    assert_success
+
+    # Verify the updated CRL
+    local update_output=$(openssl crl -in $TEMPDIR/test.crl -text -noout)
+    assert_success
+    echo "$update_output"
+    assert_grep "Certificate Revocation List" "$update_output"
+    assert_grep "Serial Number: 03E8" "$update_output"
+    assert_grep "Revocation Date:" "$update_output"
+    assert_grep "Key Compromise" "$update_output"
+
+    # Show CRL information
+    local show_output=$(run_cmd x509 crl_show $TEMPDIR/test.crl)
+    assert_success
+    echo "$show_output"
+    assert_grep "CRL Issuer.*Duckburg," "$show_output"
+    assert_grep "Number of revoked certificates: 1" "$show_output"
+    assert_grep ".*1000.*$revoke_date.*keyCompromise" "$show_output"
+
+    # Update CRL to remove a certificate
+    run_cmd x509 crl_update $TEMPDIR/test.crl --ca 0x0211 --remove 1000
+    assert_success
+
+    # Verify the final CRL state
+    local final_output=$(openssl crl -in $TEMPDIR/test.crl -text -noout)
+    assert_success
+    echo "$final_output"
+    assert_grep "No Revoked Certificates" "$final_output"
+}
+
 test_password_derivation() {
     setup
     local output=$(run_cmd -q pass get www.example.com)
@@ -305,6 +355,7 @@ echo "Running tests:"
 run_test test_fresh_device
 run_test test_create_all
 run_test test_tls_certificates
+run_test test_crl_commands
 run_test test_password_derivation
 run_test test_wrapped_backup
 run_test test_ssh_user_certificates

@@ -194,6 +194,7 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
         builder = builder.issuer_name(ca_cert.subject)
         builder = builder.last_update(this_update or datetime.datetime.now(datetime.UTC))
         builder = builder.next_update(next_update or (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=validity)))
+        builder = builder.add_extension(x509.CRLNumber(crl_number), critical=False)
 
         crl = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
 
@@ -325,8 +326,8 @@ def show_crl(ctx: HsmSecretsCtx, crl_file: str):
     crl = x509.load_pem_x509_crl(Path(crl_file).read_bytes())
 
     cli_info(f"CRL Issuer: {crl.issuer.rfc4514_string()}")
-    cli_info(f"Last Update: {crl.last_update}")
-    cli_info(f"Next Update: {crl.next_update}")
+    cli_info(f"Last Update: {crl.last_update_utc}")
+    cli_info(f"Next Update: {crl.next_update_utc}")
 
     crl_number = crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
     cli_info(f"CRL Number: {crl_number}")
@@ -334,7 +335,7 @@ def show_crl(ctx: HsmSecretsCtx, crl_file: str):
     cli_info(f"Number of revoked certificates: {len(crl)}")
 
     if len(crl) > 0:
-        cli_info("\nRevoked Certificates:")
+        cli_info("Revoked Certificates:")
         for cert in crl:
             reason = cert.extensions.get_extension_for_class(x509.CRLReason).value.reason
-            cli_info(f"  - Serial: {cert.serial_number}, Revoked On: {cert.revocation_date}, Reason: {reason.name}")
+            cli_info(f"  - Serial: {cert.serial_number}, Revoked On: {cert.revocation_date}, Reason: {reason.value}")
