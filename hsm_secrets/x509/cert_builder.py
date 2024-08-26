@@ -1,10 +1,10 @@
 from enum import Enum
 from cryptography import x509
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID, AuthorityInformationAccessOID
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKeyTypes
 from cryptography.x509.extensions import ExtensionTypeVar
+import cryptography.x509.oid as x509_oid
 
 import datetime
 from datetime import timedelta
@@ -36,8 +36,14 @@ class X509CertBuilder:
     private_key: PrivateKeyOrAdapter|None
     public_key: CertificatePublicKeyTypes
     csr: x509.CertificateSigningRequest|None
+    dn_subject_override: Optional[str] = None
 
-    def __init__(self, hsm_config: HSMConfig, cert_def_info: X509Info, key_or_csr: Union[PrivateKeyOrAdapter, yubihsm.objects.AsymmetricKey, x509.CertificateSigningRequest]):
+    def __init__(self,
+                 hsm_config: HSMConfig,
+                 cert_def_info: X509Info,
+                 key_or_csr: Union[PrivateKeyOrAdapter, yubihsm.objects.AsymmetricKey, x509.CertificateSigningRequest],
+                 dn_subject_override: Optional[str] = None
+                 ):
         """
         Initialize a new X.509 certificate builder.
 
@@ -47,6 +53,8 @@ class X509CertBuilder:
         """
         self.hsm_config = hsm_config
         self.cert_def_info = merge_x509_info_with_defaults(cert_def_info, hsm_config)
+
+        self.dn_subject_override = dn_subject_override
 
         if isinstance(key_or_csr, x509.CertificateSigningRequest):
             self.csr = key_or_csr
@@ -96,19 +104,19 @@ class X509CertBuilder:
         assert self.private_key, "No private key available for CSR generation"
         builder = x509.CertificateSigningRequestBuilder().subject_name(self._mk_name_attribs())
 
-        if self.cert_def_info.basic_constraints and self.cert_def_info.basic_constraints.ca:
+        if self.cert_def_info.basic_constraints is not None:
             builder = builder.add_extension(x509.BasicConstraints(self.cert_def_info.basic_constraints.ca, self.cert_def_info.basic_constraints.path_len), critical=True)
 
         if self.cert_def_info.attribs and self.cert_def_info.subject_alt_name:
             builder = builder.add_extension(*self._mkext_alt_name())
 
-        if self.cert_def_info.key_usage:
+        if self.cert_def_info.key_usage and self.cert_def_info.key_usage.usages:
             builder = builder.add_extension(*self._mkext_key_usage())
 
-        if self.cert_def_info.extended_key_usage:
+        if self.cert_def_info.extended_key_usage and self.cert_def_info.extended_key_usage.usages:
             builder = builder.add_extension(*self._mkext_extended_key_usage())
 
-        if self.cert_def_info.name_constraints:
+        if self.cert_def_info.name_constraints and (self.cert_def_info.name_constraints.permitted or self.cert_def_info.name_constraints.excluded):
             builder = builder.add_extension(*self._mkext_name_constraints())
 
         ed = isinstance(self.private_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
@@ -275,7 +283,7 @@ class X509CertBuilder:
             amend_mode = amend_ocsp_urls,
             new_ext_src = self.cert_def_info.authority_info_access,
             fn_mk_new_ext = lambda nes: (x509.AuthorityInformationAccess([x509.AccessDescription(
-                access_method=AuthorityInformationAccessOID.OCSP,
+                access_method=x509_oid.AuthorityInformationAccessOID.OCSP,
                 access_location=x509.UniformResourceIdentifier(url)) for url in nes.ocsp]), False),
             fn_add = lambda o,n,oc,nc: (x509.AuthorityInformationAccess(list(set(o) | set(n))), oc or nc)
         )
@@ -309,25 +317,25 @@ class X509CertBuilder:
         if self.cert_def_info.attribs and self.cert_def_info.subject_alt_name:
             builder = builder.add_extension(*self._mkext_alt_name())
 
-        if self.cert_def_info.key_usage:
+        if self.cert_def_info.key_usage and self.cert_def_info.key_usage.usages:
             builder = builder.add_extension(*self._mkext_key_usage())
 
-        if self.cert_def_info.extended_key_usage:
+        if self.cert_def_info.extended_key_usage and self.cert_def_info.extended_key_usage.usages:
             builder = builder.add_extension(*self._mkext_extended_key_usage())
 
-        if self.cert_def_info.name_constraints:
+        if self.cert_def_info.name_constraints and (self.cert_def_info.name_constraints.permitted or self.cert_def_info.name_constraints.excluded):
             builder = builder.add_extension(*self._mkext_name_constraints())
 
-        if self.cert_def_info.basic_constraints:
+        if self.cert_def_info.basic_constraints is not None:
             builder = builder.add_extension(*self._mk_basic_constraints())
 
-        if self.cert_def_info.crl_distribution_points:
+        if self.cert_def_info.crl_distribution_points and self.cert_def_info.crl_distribution_points.urls:
             builder = builder.add_extension(*self._mk_crl_distribution_points())
 
-        if self.cert_def_info.authority_info_access:
+        if self.cert_def_info.authority_info_access and self.cert_def_info.authority_info_access.ocsp:
             builder = builder.add_extension(*self._mk_authority_info_access())
 
-        if self.cert_def_info.certificate_policies:
+        if self.cert_def_info.certificate_policies and self.cert_def_info.certificate_policies.policies:
             builder = builder.add_extension(*self._mk_cert_policies())
 
         if self.cert_def_info.policy_constraints:
@@ -396,24 +404,31 @@ class X509CertBuilder:
     def _mk_authority_info_access(self) -> tuple[x509.AuthorityInformationAccess, bool]:
         assert self.cert_def_info.authority_info_access, "X509Info.authority_info_access is missing"
         aia_ocsp = [x509.AccessDescription(
-            access_method=AuthorityInformationAccessOID.OCSP,
+            access_method=x509_oid.AuthorityInformationAccessOID.OCSP,
             access_location=x509.UniformResourceIdentifier(url))
             for url in self.cert_def_info.authority_info_access.ocsp]
         return x509.AuthorityInformationAccess(aia_ocsp), self.cert_def_info.authority_info_access.critical
 
     def _mk_name_attribs(self) -> x509.Name:
+        """
+        Parse x500/LDAP-style Distinguished Name (DN) from self.dn_subject_override,
+        or if not set, use the attributes from self.cert_def_info.
+        """
+        if self.dn_subject_override:
+            return x509.Name(parse_x500_dn_subject(self.dn_subject_override))
+
         assert self.cert_def_info.attribs, "X509Info.attribs is missing"
         name_attributes: List[x509.NameAttribute] = [
-            x509.NameAttribute(NameOID.COMMON_NAME, self.cert_def_info.attribs.common_name)
+            x509.NameAttribute(x509_oid.NameOID.COMMON_NAME, self.cert_def_info.attribs.common_name)
         ]
         if self.cert_def_info.attribs.organization:
-            name_attributes.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, self.cert_def_info.attribs.organization))
+            name_attributes.append(x509.NameAttribute(x509_oid.NameOID.ORGANIZATION_NAME, self.cert_def_info.attribs.organization))
         if self.cert_def_info.attribs.locality:
-            name_attributes.append(x509.NameAttribute(NameOID.LOCALITY_NAME, self.cert_def_info.attribs.locality))
+            name_attributes.append(x509.NameAttribute(x509_oid.NameOID.LOCALITY_NAME, self.cert_def_info.attribs.locality))
         if self.cert_def_info.attribs.state:
-            name_attributes.append(x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, self.cert_def_info.attribs.state))
+            name_attributes.append(x509.NameAttribute(x509_oid.NameOID.STATE_OR_PROVINCE_NAME, self.cert_def_info.attribs.state))
         if self.cert_def_info.attribs.country:
-            name_attributes.append(x509.NameAttribute(NameOID.COUNTRY_NAME, self.cert_def_info.attribs.country))
+            name_attributes.append(x509.NameAttribute(x509_oid.NameOID.COUNTRY_NAME, self.cert_def_info.attribs.country))
         return x509.Name(name_attributes)
 
     def _mkext_alt_name(self) -> tuple[x509.SubjectAlternativeName, bool]:
@@ -452,17 +467,17 @@ class X509CertBuilder:
 
     def _mkext_extended_key_usage(self) -> tuple[x509.ExtendedKeyUsage, bool]:
         eku_map: Dict[str, x509.ObjectIdentifier] = {
-            "serverAuth": ExtendedKeyUsageOID.SERVER_AUTH,
-            "clientAuth": ExtendedKeyUsageOID.CLIENT_AUTH,
-            "codeSigning": ExtendedKeyUsageOID.CODE_SIGNING,
-            "emailProtection": ExtendedKeyUsageOID.EMAIL_PROTECTION,
-            "timeStamping": ExtendedKeyUsageOID.TIME_STAMPING,
-            "OCSPSigning": ExtendedKeyUsageOID.OCSP_SIGNING,
-            "anyExtendedKeyUsage": ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE,
-            "smartcardLogon": ExtendedKeyUsageOID.SMARTCARD_LOGON,
-            "kerberosPKINITKDC": ExtendedKeyUsageOID.KERBEROS_PKINIT_KDC,
-            "ipsecIKE": ExtendedKeyUsageOID.IPSEC_IKE,
-            "certificateTransparency": ExtendedKeyUsageOID.CERTIFICATE_TRANSPARENCY
+            "serverAuth": x509_oid.ExtendedKeyUsageOID.SERVER_AUTH,
+            "clientAuth": x509_oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+            "codeSigning": x509_oid.ExtendedKeyUsageOID.CODE_SIGNING,
+            "emailProtection": x509_oid.ExtendedKeyUsageOID.EMAIL_PROTECTION,
+            "timeStamping": x509_oid.ExtendedKeyUsageOID.TIME_STAMPING,
+            "OCSPSigning": x509_oid.ExtendedKeyUsageOID.OCSP_SIGNING,
+            "anyExtendedKeyUsage": x509_oid.ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE,
+            "smartcardLogon": x509_oid.ExtendedKeyUsageOID.SMARTCARD_LOGON,
+            "kerberosPKINITKDC": x509_oid.ExtendedKeyUsageOID.KERBEROS_PKINIT_KDC,
+            "ipsecIKE": x509_oid.ExtendedKeyUsageOID.IPSEC_IKE,
+            "certificateTransparency": x509_oid.ExtendedKeyUsageOID.CERTIFICATE_TRANSPARENCY
         }
         assert self.cert_def_info.extended_key_usage, "X509Info.extended_key_usage is missing"
         usages = [eku_map[usage] for usage in self.cert_def_info.extended_key_usage.usages if usage in eku_map]
@@ -513,3 +528,51 @@ class X509CertBuilder:
             permitted_subtrees = None if not permitted else permitted,
             excluded_subtrees = None if not excluded else excluded)
         return res, self.cert_def_info.name_constraints.critical
+
+
+def parse_x500_dn_subject(subject_string: str) -> List[x509.NameAttribute]:
+    """Parse a comma-separated x500/LDAP style DN string into a list of NameAttributes.
+    Example: "CN=John Doe, O=Company, C=US" -> [NameAttribute(NameOID.COMMON_NAME, "John Doe"), ...]
+    """
+    subject_attrs = []
+
+    # X.500/LDAP abbreviations
+    # These are checked first, and if not found, check against x509_oid.NameOID.
+    # Finally, try to parse the string as an OID number.
+    name_oid_abbrev = {
+        'CN': x509_oid.NameOID.COMMON_NAME,
+        'C': x509_oid.NameOID.COUNTRY_NAME,
+        'L': x509_oid.NameOID.LOCALITY_NAME,
+        'ST': x509_oid.NameOID.STATE_OR_PROVINCE_NAME,
+        'STREET': x509_oid.NameOID.STREET_ADDRESS,
+        'O': x509_oid.NameOID.ORGANIZATION_NAME,
+        'OU': x509_oid.NameOID.ORGANIZATIONAL_UNIT_NAME,
+        'DC': x509_oid.NameOID.DOMAIN_COMPONENT,
+        'UID': x509_oid.NameOID.USER_ID,
+        'E': x509_oid.NameOID.EMAIL_ADDRESS,
+        'SERIALNUMBER': x509_oid.NameOID.SERIAL_NUMBER,
+        'T': x509_oid.NameOID.TITLE,
+        'G': x509_oid.NameOID.GENERATION_QUALIFIER,
+        'SURNAME': x509_oid.NameOID.SURNAME,
+        'GIVENNAME':x509_oid.NameOID.GIVEN_NAME,
+    }
+
+    for item in subject_string.split(','):
+        key, value = item.strip().split('=', 1)
+        key = key.strip().upper()
+        value = value.strip()
+
+        if key in name_oid_abbrev:
+            oid = name_oid_abbrev[key]
+        elif hasattr(x509_oid.NameOID, key):
+            oid = getattr(x509_oid.NameOID, key)
+        else:
+            try:
+                oid = x509_oid.ObjectIdentifier(key)
+            except ValueError:
+                raise ValueError(f"Unsupported subject attribute: {key}. "
+                                 f"Use a standard abbreviation or a valid OID.")
+
+        subject_attrs.append(x509.NameAttribute(oid, value))
+
+    return subject_attrs

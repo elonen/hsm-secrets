@@ -383,14 +383,10 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool, create: bool):
                                 n_created += 1
                             elif isinstance(it, HSMHmacKey):
                                 cli_result(f"  └-> {gear_emoji} Creating...")
-                                print("...")
                                 confirm_and_delete_old_yubihsm_object_if_exists(ses, it.id, OBJECT.HMAC_KEY)
                                 cli_info(f"Generating HMAC key, type '{it.algorithm}'...")
-                                print("a")
                                 ses.hmac_key_generate(it)
-                                print("b")
                                 cli_info(f"HMAC key ID '{hex(it.id)}' ({it.label}) stored in YubiHSM device {ses.get_serial()}")
-                                print("c")
                                 n_created += 1
                             else:
                                 cli_result(click.style(f"  └-> Unsupported object type: {it.__class__.__name__}. This is a bug. SKIPPING.", fg='red'))

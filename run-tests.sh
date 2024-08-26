@@ -27,7 +27,7 @@ EXPECT_POSTAMBLE='
 
 run_cmd() {
     echo "$ $CMD $@"
-    $CMD "$@"
+    $CMD "$@" 2>&1
 }
 
 assert_success() {
@@ -55,8 +55,11 @@ setup() {
     run_cmd -q hsm compare --create
     assert_success
 
-    run_cmd x509 cert create -a
+    local output=$(run_cmd x509 cert create -a)
     assert_success
+    echo "$output"
+    assert_not_grep "Cert errors" "$output"
+    assert_not_grep "Cert warnings" "$output"
 
     # `add-service` command is interactive => use `expect` to provide input
     expect << EOF
@@ -119,8 +122,11 @@ test_tls_certificates() {
     run_cmd -q x509 cert get --all | openssl x509 -text -noout
     assert_success
 
-    run_cmd tls server-cert --out $TEMPDIR/www-example-com.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt rsa4096
+    local output=$(run_cmd tls server-cert --out $TEMPDIR/www-example-com.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt rsa4096)
     assert_success
+    echo "$output"
+    assert_not_grep "Cert errors" "$output"
+    assert_not_grep "Cert warnings" "$output"
 
     local output=$(openssl crl2pkcs7 -nocrl -certfile $TEMPDIR/www-example-com.cer.pem | openssl pkcs7 -print_certs | openssl x509 -text -noout)
     assert_success

@@ -18,7 +18,6 @@ def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSM
     defaults = hsm_config.general.x509_defaults
     if x509_info is None:
         return deepcopy(defaults)
-
     merged = deepcopy(x509_info)
 
     if merged.validity_days is None:
@@ -49,11 +48,12 @@ def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSM
     for attr in attributes_to_copy:
         merged_attr = getattr(merged, attr)
         defaults_attr = getattr(defaults, attr)
-
-        if merged_attr is None and defaults_attr:
+        if merged_attr:
+            setattr(merged, attr, merged_attr)
+        elif merged_attr is None and defaults_attr is not None:
             setattr(merged, attr, defaults_attr.model_copy(deep=True))
-        elif merged_attr and defaults_attr:
-            setattr(merged, attr, defaults_attr.model_copy(deep=True))
+        else:
+            setattr(merged, attr, None) # Remove if empty
 
     return merged
 

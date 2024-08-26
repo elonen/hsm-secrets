@@ -2,6 +2,7 @@ from ipaddress import ip_address
 import re
 import enum
 import datetime
+from typing_extensions import Literal
 import click
 
 from pathlib import Path
@@ -9,11 +10,9 @@ from typing import Union, List, Tuple, BinaryIO, Optional, cast, get_args
 
 from urllib.parse import urlparse
 
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography import x509
-import cryptography.x509.oid as x509_oid
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID, ObjectIdentifier
 
 import ykman.device
 import ykman.scripting
@@ -22,6 +21,7 @@ from yubikit.piv import PivSession, SLOT, PIN_POLICY, TOUCH_POLICY
 from yubikit.core.smartcard import ApduError, SW
 
 from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, X509NameType
+from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker, PIVUserCertificateChecker
 from hsm_secrets.utils import HsmSecretsCtx, cli_info, cli_warn, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import X509CertBuilder
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
@@ -35,26 +35,19 @@ def cmd_piv(ctx: click.Context):
     ctx.ensure_object(dict)
 
 
-class KeyType(enum.Enum):
+class PivKeyType(enum.Enum):
     RSA2048 = "rsa2048"
-    RSA4096 = "rsa4096"
     ECP256 = "ecp256"
     ECP384 = "ecp384"
 
 
-def generate_key_pair(key_type: KeyType) -> Tuple[Union[rsa.RSAPublicKey, ec.EllipticCurvePublicKey], Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey]]:
-    """Generate a key pair of the specified type.
-    :param key_type: The type of key to generate
-    :return: A tuple containing (public_key, private_key)
-    """
+def _generate_piv_key_pair(key_type: PivKeyType) -> Tuple[Union[rsa.RSAPublicKey, ec.EllipticCurvePublicKey], Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey]]:
     private_key: Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey]
-    if key_type == KeyType.RSA2048:
+    if key_type == PivKeyType.RSA2048:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    elif key_type == KeyType.RSA4096:
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
-    elif key_type == KeyType.ECP256:
+    elif key_type == PivKeyType.ECP256:
         private_key = ec.generate_private_key(ec.SECP256R1())
-    elif key_type == KeyType.ECP384:
+    elif key_type == PivKeyType.ECP384:
         private_key = ec.generate_private_key(ec.SECP384R1())
     else:
         raise ValueError(f"Unsupported key type: {key_type}")
@@ -62,59 +55,9 @@ def generate_key_pair(key_type: KeyType) -> Tuple[Union[rsa.RSAPublicKey, ec.Ell
     return public_key, private_key
 
 
-def save_certificate(cert: x509.Certificate, output_file: BinaryIO) -> None:
-    """Save the certificate to the specified file-like object in PEM format."""
+def _save_pem_certificate(cert: x509.Certificate, output_file: BinaryIO) -> None:
     pem_data = cert.public_bytes(encoding=serialization.Encoding.PEM)
     output_file.write(pem_data)
-
-
-
-def sign_csr_with_ca(
-    ses: HSMSession,
-    ctx: HsmSecretsCtx,
-    csr: x509.CertificateSigningRequest,
-    validity_days: int,
-    issuer_cert_def: HSMOpaqueObject,
-    hash_algorithm: Optional[hashes.HashAlgorithm] = None
-) -> x509.Certificate:
-    """
-    Sign the CSR with the specified CA key in the HSM.
-
-    :param ctx: HsmSecretsCtx object containing configuration and session information
-    :param csr: The Certificate Signing Request to sign
-    :param validity_days: The number of days the certificate should be valid
-    :param ca_cert: The CA certificate object from the configuration
-    :return: A signed X.509 Certificate
-    """
-    csr_obj = x509.load_pem_x509_csr(csr.public_bytes(encoding=serialization.Encoding.PEM))
-
-    # Find the issuer CA definition
-    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
-    assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
-
-    issuer_cert = ses.get_certificate(issuer_cert_def)
-    issuer_key = ses.get_private_key(issuer_x509_def.key)
-
-    builder = x509.CertificateBuilder(
-        issuer_name = issuer_cert.subject,
-        subject_name = csr_obj.subject,
-        public_key = csr_obj.public_key(),
-        serial_number = x509.random_serial_number(),
-        not_valid_before = datetime.datetime.utcnow(),
-        not_valid_after = datetime.datetime.utcnow() + datetime.timedelta(days=validity_days))
-
-    for ext in csr_obj.extensions:
-        builder = builder.add_extension(ext.value, critical=ext.critical)
-
-    hash_algo = hash_algorithm or issuer_cert.signature_hash_algorithm
-    if not isinstance(hash_algo, (hashes.SHA224, hashes.SHA256, hashes.SHA384, hashes.SHA512, hashes.SHA3_224, hashes.SHA3_256, hashes.SHA3_384, hashes.SHA3_512)):
-        cli_warn(f"WARNING: Unsupported hash algorithm: {hash_algo}. Falling back to SHA-256")
-        hash_algo = hashes.SHA256()
-
-    signed_cer = builder.sign(private_key=issuer_key, algorithm=hash_algo)
-    cli_info(f"Signed with CA cert 0x{issuer_cert_def.id:04x}: {issuer_cert.subject}")
-
-    return signed_cer
 
 
 def import_to_yubikey_piv(
@@ -177,95 +120,25 @@ def import_to_yubikey_piv(
 
 
 
-def parse_subject_string(subject_string: str) -> List[x509.NameAttribute]:
-    """Parse a comma-separated subject string into a list of NameAttributes."""
-    subject_attrs = []
-
-    # Standard X.500/LDAP abbreviations
-    standard_name_oid_mapping = {
-        'CN': NameOID.COMMON_NAME,
-        'C': NameOID.COUNTRY_NAME,
-        'L': NameOID.LOCALITY_NAME,
-        'ST': NameOID.STATE_OR_PROVINCE_NAME,
-        'STREET': NameOID.STREET_ADDRESS,
-        'O': NameOID.ORGANIZATION_NAME,
-        'OU': NameOID.ORGANIZATIONAL_UNIT_NAME,
-        'DC': NameOID.DOMAIN_COMPONENT,
-        'UID': NameOID.USER_ID,
-    }
-
-    # Additional common abbreviations
-    extended_name_oid_mapping = {
-        'E': NameOID.EMAIL_ADDRESS,
-        'SERIALNUMBER': NameOID.SERIAL_NUMBER,
-        'T': NameOID.TITLE,
-        'G': NameOID.GENERATION_QUALIFIER,
-        'SURNAME': NameOID.SURNAME,
-        'GIVENNAME': NameOID.GIVEN_NAME,
-    }
-
-    # Combine both mappings, with standard abbreviations taking precedence
-    name_oid_mapping = {**extended_name_oid_mapping, **standard_name_oid_mapping}
-
-    for item in subject_string.split(','):
-        key, value = item.strip().split('=', 1)
-        key = key.strip().upper()
-        value = value.strip()
-
-        if key in name_oid_mapping:
-            oid = name_oid_mapping[key]
-        elif hasattr(NameOID, key):
-            oid = getattr(NameOID, key)
-        else:
-            try:
-                oid = ObjectIdentifier(key)
-            except ValueError:
-                raise ValueError(f"Unsupported subject attribute: {key}. "
-                                 f"Use a standard abbreviation or a valid OID.")
-
-        subject_attrs.append(x509.NameAttribute(oid, value))
-
-    return subject_attrs
-
-
-
-def _validate_policy_oid(ctx, param, value: str) -> str:
-    if re.match(r'^\d+(\.\d+)*$', value):
-        return value
-    raise click.BadParameter(f"Invalid OID format: '{value}'. Must be in dotted notation.")
-
-def _validate_url(ctx, param, value: str) -> str:
-    if urlparse(value).scheme in ['http', 'https']:
-        return value
-    raise click.BadParameter("URL must be a valid HTTP(S) URL")
-
-
-
 @cmd_piv.command('user-cert')
 @pass_common_args
 @click.option('--user', '-u', required=True, help="User identifier (username for Windows, email for macOS/Linux)")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
 @click.option('--subject', '-s', required=False, help="Cert subject (DN), default: from config")
 @click.option('--validity', '-v', type=int, help="Validity period in days, default: from config")
-@click.option('--key-type', '-k', type=click.Choice(['RSA2048', 'RSA4096', 'ECP256', 'ECP384']), default='RSA2048', help="Key type, default: same as CA")
+@click.option('--key-type', '-k', type=click.Choice(['RSA2048', 'ECP256', 'ECP384']), default='RSA2048', help="Key type, default: same as CA")
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename stem, default: ./<user>-piv[.key/.cer]")
 @click.option('--os-type', type=click.Choice(['windows', 'other']), default='windows', help="Target operating system")
 @click.option('--san', multiple=True, help="AdditionalSANs, e.g., 'DNS:example.com', 'IP:10.0.0.2', etc.")
-@click.option('--policy-oid', multiple=True, help="Certificate Policy OIDs", callback=_validate_policy_oid)
-@click.option('--crl-url', multiple=True, help="CRL Distribution Point URL, default: from config", callback=_validate_url)
-@click.option('--ocsp-url', multiple=True, help="OCSP Responder URL, default: from config", callback=_validate_url)
-def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: str, validity: int, key_type: str, ca: str, out: str, os_type: str, san: List[str], policy_oid: List[str], crl_url: List[str], ocsp_url: List[str]):
+def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: str, validity: int, key_type: str, ca: str, out: str, os_type: Literal["windows", "other"], san: List[str]):
     """Create a PIV user certificate
 
     This command generates a new PIV user certificate and key pair, and signs it with a CA certificate.
 
-    Supported SAN types:
-    - DNS:example.com
-    - IP:10.0.0.2
+    Example SAN types:
     - RFC822:alice@example.com
     - UPN:alice@example.com
-    - URI:https://example.com
     - DIRECTORY:/C=US/O=Example/CN=example.com
     - OID:1.2.3.4.5=myValue
     """
@@ -282,6 +155,7 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
             raise click.ClickException(f"Template '{template}' not found in configuration")
         cert_template = ctx.conf.piv.user_cert_templates[template]
     else:
+        # Use first template if not specified
         cert_template = next(iter(ctx.conf.piv.user_cert_templates.values()))
         assert cert_template, "No user certificate templates found in configuration"
 
@@ -293,34 +167,35 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
     # Override template values with command-line options
     if validity:
         x509_info.validity_days = validity
-    if crl_url:
-        x509_info.crl_distribution_points = x509_info.CRLDistributionPoints(urls=crl_url)
-    if ocsp_url:
-        x509_info.authority_info_access = x509_info.AuthorityInfoAccess(ocsp=ocsp_url)
+
+    # Generate subject DN if not explicitly provided
     if not subject:
-        s = []
-        for k,v in {
-            'CN': user,
-            'O': x509_info.attribs.organization if x509_info.attribs else None,
-            'L': x509_info.attribs.locality if x509_info.attribs else None,
-            'ST': x509_info.attribs.state if x509_info.attribs else None,
-            'C': x509_info.attribs.country if x509_info.attribs else None
-        }.items():
-            if v:
-                s.append(f"{k}={v}")
-        subject = ','.join(s)
+        subject = f"CN={user}"
+        if x509_info.attribs:
+            for k,v in {
+                'O': x509_info.attribs.organization,
+                'L': x509_info.attribs.locality,
+                'ST': x509_info.attribs.state,
+                'C': x509_info.attribs.country,
+            }.items():
+                if v:
+                    subject += f",{k}={v}"
 
     # Generate key pair
-    key_type_enum = KeyType[key_type]
-    _public_key, private_key = generate_key_pair(key_type_enum)
+    key_type_enum = PivKeyType[key_type]
+    _public_key, private_key = _generate_piv_key_pair(key_type_enum)
 
     # Add explicitly provided SANs
     x509_info.subject_alt_name = x509_info.subject_alt_name or x509_info.SubjectAltName()
+    valid_san_types = get_args(X509NameType)
     for san_entry in san:
-        san_type, san_value = san_entry.split(':', 1)
+        try:
+            san_type, san_value = san_entry.split(':', 1)
+        except ValueError:
+            raise click.ClickException(f"Invalid SAN: '{san_entry}'. Must be in the form 'type:value', where type is one of: {', '.join(valid_san_types)}")
         san_type_lower = san_type.lower()
-        if san_type_lower not in get_args(X509NameType):
-            raise click.ClickException(f"Provided '{san_type.lower()}' is not a supported X509NameType")
+        if san_type_lower not in valid_san_types:
+            raise click.ClickException(f"Provided '{san_type.lower()}' is not a supported X509NameType. Must be one of: {', '.join(valid_san_types)}")
         x509_info.subject_alt_name.names.setdefault(san_type_lower, []).append(san_value)    # type: ignore [arg-type]
 
     # Add UPN or email to SANs based on OS type
@@ -330,7 +205,7 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
         x509_info.subject_alt_name.names.setdefault('rfc822', []).append(user)
 
     # Create X509CertBuilder
-    cert_builder = X509CertBuilder(ctx.conf, x509_info, private_key)
+    cert_builder = X509CertBuilder(ctx.conf, x509_info, private_key, dn_subject_override=subject)
 
     # Sign the certificate with CA
     ca_id = ca or ctx.conf.piv.default_ca_id
@@ -339,11 +214,11 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
     with open_hsm_session(ctx) as ses:
         issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
         assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
-
         issuer_cert = ses.get_certificate(issuer_cert_def)
         issuer_key = ses.get_private_key(issuer_x509_def.key)
-
         signed_cert = cert_builder.build_and_sign(issuer_cert, issuer_key)
+
+    PIVUserCertificateChecker(signed_cert, os_type).check_and_show_issues()
 
     # Save files
     key_file.write_bytes(private_key.private_bytes(
@@ -355,7 +230,7 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
     csr = cert_builder.generate_csr()
     csr_file.write_bytes(csr.public_bytes(serialization.Encoding.PEM))
 
-    save_certificate(signed_cert, cer_file.open('wb'))
+    _save_pem_certificate(signed_cert, cer_file.open('wb'))
 
     cli_info(f"Private key saved to: {key_file}")
     cli_info(f"CSR saved to: {csr_file}")
@@ -370,34 +245,36 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename, default: deduced from input")
 @click.option('--san', multiple=True, help="Additional (GeneralName) SANs")
-@click.option('--policy-oid', multiple=True, help="Certificate Policy OIDs")
-@click.option('--crl-url', multiple=True, help="CRL Distribution Point URL, default: from config", callback=_validate_url)
-@click.option('--ocsp-url', multiple=True, help="OCSP Responder URL, default: from config", callback=_validate_url)
-def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: List[str], policy_oid: List[str], crl_url: List[str], ocsp_url: List[str]):
-    """Sign a Domain Controller certificate"""
-    # Load CSR
+@click.option('--template', '-t', required=False, help="Template label, default: first template")
+def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: List[str], template: str|None):
+    """Sign a DC Kerberos PKINIT certificate for PIV"""
     csr_path = Path(csr.name)
     with csr_path.open('rb') as f:
         csr_obj: x509.CertificateSigningRequest = x509.load_pem_x509_csr(f.read())
 
-
     out_path: Path = Path(out) if out else csr_path.with_suffix('.cer.pem')
 
-    # Get CA information
+    # Get CA (issuer)
     ca_id = ca or ctx.conf.piv.default_ca_id
     issuer_cert_def = ctx.conf.find_def(ca_id, HSMOpaqueObject)
     issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
     assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
 
-    # Merge X509 info with defaults
-    x509_info = merge_x509_info_with_defaults(ctx.conf.piv.dc_cert_templates.get("default"), ctx.conf)
+    # Get template
+    if template:
+        if template not in ctx.conf.piv.dc_cert_templates:
+            raise click.ClickException(f"Template '{template}' not found in configuration")
+        cert_template = ctx.conf.piv.dc_cert_templates[template]
+    else:
+        # Use first template if not specified
+        cert_template = next(iter(ctx.conf.piv.dc_cert_templates.values()))
+        assert cert_template, "No DC certificate templates found in configuration"
+
+    # Merge cert template with global defaults
+    x509_info = merge_x509_info_with_defaults(cert_template, ctx.conf)
     assert x509_info.attribs, "No user certificate attributes found in configuration"
     if validity:
         x509_info.validity_days = validity
-    if crl_url:
-        x509_info.crl_distribution_points = x509_info.CRLDistributionPoints(urls=crl_url)
-    if ocsp_url:
-        x509_info.authority_info_access = x509_info.AuthorityInfoAccess(ocsp=ocsp_url)
 
     # Add explicitly provided SANs
     x509_info.subject_alt_name = x509_info.subject_alt_name or x509_info.SubjectAltName()
@@ -417,12 +294,11 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
         issuer_key = ses.get_private_key(issuer_x509_def.key)
         signed_cert = cert_builder.build_and_sign(issuer_cert, issuer_key)
 
+    PIVDomainControllerCertificateChecker(signed_cert).check_and_show_issues()
+
     # Save the signed certificate
-    save_certificate(signed_cert, out_path.open('wb'))
+    _save_pem_certificate(signed_cert, out_path.open('wb'))
     cli_info(f"Signed certificate saved to: {out_path}")
-
-
-
 
 
 

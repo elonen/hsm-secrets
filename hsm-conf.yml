@@ -31,23 +31,30 @@ general:
         basic_constraints:
           ca: true
           path_len: 0             # Allow end-entity certificate signing only, by default
+        attribs:
+            country: US
+            state: Calisota
+            locality: Duckburg
+            organization: Example Inc.
+            common_name: ''
         key_usage:
+          critical: true
           usages:
-            - digitalSignature
-            - keyAgreement
             - keyCertSign
+            - digitalSignature
             - cRLSign
         extended_key_usage:
           usages:
             - serverAuth
             - clientAuth
             - timeStamping
-        attribs:
-            country: US
-            state: Calisota
-            locality: Duckburg
-            organization: Example Inc.
-            common_name: '__ERROR__UNDEFINED__'
+        certificate_policies:
+          critical: false
+          policies:
+            - policy_identifier: "2.5.29.32.0"  # AnyPolicy OID
+              policy_qualifiers:
+                - type: user_notice
+                  explicit_text: "Issued for proprietary corporate use only. Not for public trust."
         crl_distribution_points:
           urls:
             - "http://crl.example.com/all.crl"
@@ -224,20 +231,17 @@ x509:
                 - exportable-under-wrap
           x509_info:
             basic_constraints:
-              path_len: 2
+              path_len: null  # No limit for root CAs
             attribs:
                 common_name: 'Example Root A1'
-            key_usage:
-              usages:
-                - keyCertSign
-                - cRLSign
-            extended_key_usage: {}
+            extended_key_usage: {}       # No EKU for root CAs
             crl_distribution_points: {}  # No CRL (or OCSPs) for root CAs
             authority_info_access: {}
-          signed_certs:
+
+          signed_certs:   # Certificates to create (and store in HSM) for this key
             - id: 0x0111
               label: ca-root-cert-rsa
-              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign']   # Allow the signed root cert to be read by all services
+              domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']   # Allow the signed root cert to be read by all services
               algorithm: opaque-x509-certificate
               sign_by: 0x0111   # Root CA signs its own certificate
         -
@@ -251,49 +255,41 @@ x509:
                 - exportable-under-wrap
           x509_info:
             basic_constraints:
-              path_len: 2
+              path_len: null
             attribs:
                 common_name: 'Example Root A1'
-            key_usage:
-              usages:
-                - keyCertSign
-                - cRLSign
             extended_key_usage: {}
             crl_distribution_points: {}
             authority_info_access: {}
           signed_certs:
             - id: 0x0121
               label: ca-root-cert-ed25519
-              domains: ['x509', 'tls', 'nac', 'gpg', 'codesign']
+              domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']
               algorithm: opaque-x509-certificate
               sign_by: 0x0121
         -
-            key:
-                label: ca-root-key-ecp384
-                id: 0x0130
-                domains: ['x509']
-                algorithm: ecp384
-                capabilities:
-                    - sign-ecdsa
-                    - exportable-under-wrap
-            x509_info:
-                basic_constraints:
-                  path_len: 2
-                attribs:
-                    common_name: 'Example Root A1'
-                key_usage:
-                  usages:
-                    - keyCertSign
-                    - cRLSign
-                extended_key_usage: {}
-                crl_distribution_points: {}
-                authority_info_access: {}
-            signed_certs:
-                - id: 0x0131
-                  label: ca-root-cert-ecp384
-                  domains: ['x509', 'tls', 'nac', 'gpg', 'codesign']
-                  algorithm: opaque-x509-certificate
-                  sign_by: 0x0131
+          key:
+              label: ca-root-key-ecp384
+              id: 0x0130
+              domains: ['x509']
+              algorithm: ecp384
+              capabilities:
+                  - sign-ecdsa
+                  - exportable-under-wrap
+          x509_info:
+              basic_constraints:
+                path_len: null
+              attribs:
+                  common_name: 'Example Root A1'
+              extended_key_usage: {}
+              crl_distribution_points: {}
+              authority_info_access: {}
+          signed_certs:
+              - id: 0x0131
+                label: ca-root-cert-ecp384
+                domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']
+                algorithm: opaque-x509-certificate
+                sign_by: 0x0131
 
 # TLS (HTTPS, TCP, ...) intermediate keys.
 tls:
@@ -312,7 +308,10 @@ tls:
           x509_info:
             attribs:
                 common_name: 'Example TLS Intermediate I1'
+            basic_constraints:
+              path_len: 0 # Allow end-entity certificate signing only
             name_constraints:
+                critical: true
                 permitted:
                     dns:
                         - .hsm.biz
@@ -349,7 +348,10 @@ tls:
           x509_info:
             attribs:
                 common_name: 'Example TLS Intermediate I1'
+            basic_constraints:
+              path_len: 0
             name_constraints:
+                critical: true
                 permitted:
                     dns:
                         - .hsm.biz
@@ -397,7 +399,10 @@ tls:
           x509_info:
             attribs:
                 common_name: 'Example TLS Intermediate I1'
+            basic_constraints:
+              path_len: 0
             name_constraints:
+                critical: true
                 permitted:
                     dns:
                         - .hsm.biz
@@ -492,10 +497,6 @@ nac:
               algorithm: opaque-x509-certificate
               sign_by: 0x0131
 
-#class PIV(NoExtraBaseModel):
-#    default_ca_id: HSMKeyID
-#    intermediate_certs: List[X509Cert]
-#    user_cert_templates: Dict[str, X509Info]  # Overrides global defaults
 piv:
     # PIV (Personal Identity Verification) keys for smartcard login
     default_ca_id: 0x0431
@@ -505,7 +506,7 @@ piv:
             label: piv-rsa-intermediate-key
             id: 0x0410
             domains: ['piv']
-            algorithm: rsa2048
+            algorithm: rsa2048  # RSA2048 is the maximum for PIV. Included here, but use ECC if possible.
             capabilities:
                 - sign-pss
                 - sign-pkcs
@@ -515,6 +516,7 @@ piv:
             attribs:
                 common_name: 'Example PIV Intermediate P1'
             key_usage:
+              critical: true
               usages:
                 - digitalSignature
                 - keyAgreement
@@ -539,6 +541,7 @@ piv:
             attribs:
                 common_name: 'Example PIV Intermediate P1'
             key_usage:
+              critical: true
               usages:
                 - digitalSignature
                 - keyAgreement
@@ -551,24 +554,23 @@ piv:
               algorithm: opaque-x509-certificate
               sign_by: 0x0131
 
-    # Domain Controller certificate templates for PIV cards
+    # Domain Controller Kerberos PIV certificate template(s)
     # (KDC = Key Distribution Center, i.e. Active Directory)
     dc_cert_templates:
       "default":
-        validity_days: 3650
+        validity_days: 1825
         attribs:
             common_name: 'Example PIV DC D1'
         crl_distribution_points:
           urls:
             - "http://crl.example.local/piv.crl"  # Use CRL in LAN for PIV
         key_usage:
+          critical: true
           usages:
-            - nonRepudiation
             - digitalSignature
             - keyEncipherment
         extended_key_usage:
           usages:
-            - clientAuth
             - serverAuth
             - kerberosPKINITKDC
 
@@ -582,6 +584,7 @@ piv:
           urls:
             - "http://crl.example.local/piv.crl"
         key_usage:
+          critical: true
           usages:
             - nonRepudiation
             - digitalSignature

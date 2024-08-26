@@ -336,7 +336,6 @@ X509NameType = Literal["dns", "ip", "rfc822", "uri", "upn", "directory", "regist
 class X509Extension(BaseModel):
     critical: bool = False
 
-
 class X509Info(NoExtraBaseModel):
     validity_days: Optional[int] = None
     attribs: Optional['X509Info.CertAttribs'] = None
@@ -357,8 +356,14 @@ class X509Info(NoExtraBaseModel):
     # Nested models (x509 extensions)
 
     class BasicConstraints(X509Extension):
-        ca: bool = False
-        path_len: Optional[int] = None
+        ca: bool = True
+        path_len: Optional[int] = 0
+
+        def __init__(self, **data):
+            super().__init__(**data)
+            # set Basic Constraints critical by default unless explicitly set to False
+            if 'critical' not in data:
+                self.critical = True
 
     class CertAttribs(NoExtraBaseModel):
         common_name: str                                    # FQDN for host, or username for user, etc.

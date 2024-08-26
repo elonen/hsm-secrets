@@ -16,6 +16,7 @@ from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, c
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
 from hsm_secrets.x509.cert_builder import X509CertBuilder
+from hsm_secrets.x509.cert_checker import X509IntermediateCACertificateChecker, X509RootCACertificateChecker
 from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
 from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, click_hsm_obj_auto_complete
 from hsm_secrets.utils import HsmSecretsCtx, cli_info, cli_warn, open_hsm_session, pass_common_args
@@ -172,8 +173,13 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                 if issuer_cert:
                     assert issuer_key
                     id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key)
+                    # NOTE: We'll assume all signed certs on HSM are CA -- fix this if storing leaf certs for some reason
+                    X509IntermediateCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
                 else:
                     id_to_cert_obj[cd.id] = builder.generate_and_self_sign()
+                    cli_info(f"Self-signed certificate created; assuming it's a root CA for checks...")
+                    X509RootCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
+
 
         # Put the certificates into the HSM
         for cd in creation_order:
@@ -191,7 +197,7 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             _do_it(ses)
 
-# ---------------
+# --------------- CRL commands ---------------
 
 @cmd_x509_crl.command('init')
 @pass_common_args

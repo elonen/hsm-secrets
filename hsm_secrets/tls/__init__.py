@@ -14,10 +14,12 @@ import yubihsm          # type: ignore [import]
 import yubihsm.defs     # type: ignore [import]
 import yubihsm.objects  # type: ignore [import]
 
-from hsm_secrets.config import HSMOpaqueObject, X509Info
+from hsm_secrets.config import HSMOpaqueObject, X509Info, X509KeyUsageName
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter, make_private_key_adapter
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_warn, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import X509CertBuilder
+from hsm_secrets.x509.cert_checker import BaseCertificateChecker, IssueSeverity
+from hsm_secrets.x509.csr_utils import load_csr, sign_csr_with_ca
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 
 @click.group()
@@ -62,9 +64,14 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     info = X509Info()
     info.attribs = X509Info.CertAttribs(common_name = common_name)
     info.attribs.common_name = common_name
-    info.key_usage = X509Info.KeyUsage(usages = set(['digitalSignature', 'keyEncipherment', 'keyAgreement']), critical = True)
+
+    ku: set[X509KeyUsageName] = set(['digitalSignature', 'keyEncipherment', 'keyAgreement'])
+    info.key_usage = X509Info.KeyUsage(usages = ku, critical = True)
+
     info.extended_key_usage = X509Info.ExtendedKeyUsage(usages = set(['serverAuth']), critical = False)
     info.validity_days = validity
+    if common_name not in (san_dns or []):
+        san_dns = [common_name] + list(san_dns or [])   # Add CN to DNS SANs if not already there
     if san_dns or san_ip:
         info.subject_alt_name = X509Info.SubjectAltName(names = {'dns': [], 'ip': []}, critical = False)
         for n in san_dns or []:
@@ -73,7 +80,7 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
             info.subject_alt_name.names['ip'].append(n)
 
     merged_info = merge_x509_info_with_defaults(info, ctx.conf)
-    merged_info.basic_constraints = X509Info.BasicConstraints(ca = False, path_len = None)
+    merged_info.basic_constraints = X509Info.BasicConstraints(ca=False, path_len=None, critical=False) # end-entity cert
 
     priv_key: PrivateKeyOrAdapter
     if keyfmt == 'rsa4096':
@@ -111,10 +118,7 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
         cli_warn("WARNING: Self-signed certificate, please sign the CSR manually")
         cli_info("")
 
-    if issues := _check_tls_server_certificate(signed_cert):
-        cli_warn("WARNING: Certificate has the following issues (may get rejected by some clients):")
-        for issue in issues:
-            cli_warn(f"  - {issue}")
+    TLSServerCertificateChecker(signed_cert).check_and_show_issues()
 
     key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption())
     csr_pem = builder.generate_csr().public_bytes(encoding=serialization.Encoding.PEM)
@@ -150,173 +154,58 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     Sign a Certificate Signing Request (CSR) with a CA key from the HSM.
     The output is a signed certificate in PEM format.
     """
-    if csr == '-':
-        cli_info("Reading CSR from stdin...")
-        csr_path = Path('-')
-        csr_data = click.get_text_stream('stdin').read().encode()
-    else:
-        csr_path = Path(str(csr))
-        csr_data = csr_path.read_bytes()
-
-    csr_obj = x509.load_pem_x509_csr(csr_data)
-
-    # Find the issuer CA definition
-    issuer_cert_def = ctx.conf.find_def(ca or ctx.conf.tls.default_ca_id, HSMOpaqueObject)
-    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
-    assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
+    csr_obj = load_csr(csr)
+    ca_id = ca or ctx.conf.tls.default_ca_id
+    signed_cert = sign_csr_with_ca(ctx, csr_obj, ca_id, validity)
+    TLSServerCertificateChecker(signed_cert).check_and_show_issues()
 
     if out:
         out_path = Path(str(out))
     else:
-        out_path = Path(str(csr_path).replace('.csr.', '.')).with_suffix('.cer.pem')
+        out_path = Path(str(csr)).with_suffix('.cer.pem')
     if out_path.exists():
         click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True, err=True)
 
-    with open_hsm_session(ctx) as ses:
-        assert isinstance(issuer_cert_def, HSMOpaqueObject)
-        issuer_cert = ses.get_certificate(issuer_cert_def)
-        issuer_key = ses.get_private_key(issuer_x509_def.key)
-
-        builder = x509.CertificateBuilder(
-            issuer_name = issuer_cert.subject,
-            subject_name = csr_obj.subject,
-            public_key = csr_obj.public_key(),
-            serial_number = x509.random_serial_number(),
-            not_valid_before = datetime.now(),
-            not_valid_after = datetime.now() + timedelta(days=validity))
-
-        for ext in csr_obj.extensions:
-            builder = builder.add_extension(ext.value, critical=ext.critical)
-
-        hash_algo = issuer_cert.signature_hash_algorithm
-        if not isinstance(hash_algo, (hashes.SHA224, hashes.SHA256, hashes.SHA384, hashes.SHA512, hashes.SHA3_224, hashes.SHA3_256, hashes.SHA3_384, hashes.SHA3_512)):
-            cli_warn(f"WARNING: Unsupported hash algorithm: {hash_algo}. Falling back to SHA-256")
-            hash_algo = hashes.SHA256()
-
-        signed_cert = builder.sign(private_key=issuer_key, algorithm=hash_algo)
-        cli_info(f"Signed with CA cert 0x{issuer_cert_def.id:04x}: {issuer_cert.subject}")
-
-        if issues := _check_tls_server_certificate(signed_cert):
-            cli_warn("WARNING: Certificate has the following issues (may get rejected by some clients):")
-            for issue in issues:
-                cli_warn(f"  - {issue}")
-
-        crt_pem = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
-        out_path.write_bytes(crt_pem)
-
-        cli_info(f"Cert written to: {out_path}")
-        cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {out_path} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
-
+    out_path.write_bytes(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
+    cli_info(f"Signed certificate saved to: {out_path}")
+    cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {out_path} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
 # ----- Helpers -----
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
-def _check_tls_server_certificate(cert: x509.Certificate) -> list[str]:
-    """Check a TLS server certificate for common issues."""
-    issues = []
-
-    # Check KU and EKU
-    try:
-        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+class TLSServerCertificateChecker(BaseCertificateChecker):
+    def _check_specific_key_usage(self, key_usage: x509.KeyUsage):
         if not key_usage.digital_signature:
-            issues.append("KeyUsage does not include digitalSignature")
-        if isinstance(cert.public_key(), rsa.RSAPublicKey) and not key_usage.key_encipherment:
-            issues.append("RSA certificate KeyUsage does not include keyEncipherment")
-        if isinstance(cert.public_key(), ec.EllipticCurvePublicKey) and not key_usage.key_agreement:
-            issues.append("EC certificate KeyUsage does not include keyAgreement")
-    except x509.ExtensionNotFound:
-        issues.append("KeyUsage extension not found")
+            self._add_issue("KeyUsage does not include digitalSignature", IssueSeverity.ERROR)
 
-    try:
-        ext_key_usage = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-        if x509_oid.ExtendedKeyUsageOID.SERVER_AUTH not in ext_key_usage:
-            issues.append("ExtendedKeyUsage does not include serverAuth")
-    except x509.ExtensionNotFound:
-        issues.append("ExtendedKeyUsage extension not found")
+        public_key = self.certificate.public_key()
+        if isinstance(public_key, rsa.RSAPublicKey):
+            if not key_usage.key_encipherment:
+                self._add_issue("RSA certificate KeyUsage does not include keyEncipherment", IssueSeverity.ERROR)
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            if not key_usage.key_agreement:
+                self._add_issue("ECC certificate KeyUsage does not include keyAgreement", IssueSeverity.ERROR)
 
-    # Check SAN
-    try:
-        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        san = san_ext.value
+    def _check_specific_extended_key_usage(self, ext_key_usage: x509.ExtendedKeyUsage):
+        if ExtendedKeyUsageOID.SERVER_AUTH not in ext_key_usage:
+            self._add_issue("ExtendedKeyUsage does not include serverAuth", IssueSeverity.ERROR)
+
+    def _check_specific_subject_alternative_name(self, san: x509.SubjectAlternativeName):
         if not san:
-            issues.append("SubjectAlternativeName extension is empty")
+            self._add_issue("SubjectAlternativeName extension is empty", IssueSeverity.ERROR)
         else:
             for name in san:
                 if not isinstance(name, (x509.DNSName, x509.IPAddress)):
-                    issues.append(f"Unauthorized SAN type for TLS server cert: {type(name)}")
+                    self._add_issue(f"Unauthorized SAN type for TLS server cert: {type(name)}", IssueSeverity.WARNING)
 
-            # Check for empty Subject DN
-            if cert.subject.rfc4514_string() == "" and not san_ext.critical:
-                issues.append("Empty Subject DN requires SubjectAlternativeName extension to be set critical")
+    def _check_specific_subject_common_name_consistency(self, cn_value: str, san: x509.SubjectAlternativeName):
+        san_dns_names = [name.value for name in san if isinstance(name, x509.DNSName)]
+        if cn_value not in san_dns_names:
+            self._add_issue(f"Subject CN '{cn_value}' not found in SubjectAlternativeName", IssueSeverity.WARNING)
 
-            # 14. Check for Subject Common Name consistency with SAN
-            if common_names := cert.subject.get_attributes_for_oid(x509_oid.NameOID.COMMON_NAME):
-                cn_value = common_names[0].value
-                if cn_value not in [n.value for n in san if isinstance(n, x509.DNSName)]:
-                    issues.append(f"Subject CN not found (also) in SAN: {str(cn_value)}")
-
-    except x509.ExtensionNotFound:
-        issues.append("SubjectAlternativeName extension not found")
-
-    # Check key types and sizes
-    public_key = cert.public_key()
-    if isinstance(public_key, rsa.RSAPublicKey):
-        if public_key.key_size < 2048:
-            issues.append(f"RSA key size ({public_key.key_size}) is less than 2048 bits")
-    elif isinstance(public_key, ec.EllipticCurvePublicKey):
-        if public_key.curve.key_size < 256:
-            issues.append(f"EC key size ({public_key.curve.key_size}) is less than 256 bits")
-    elif isinstance(public_key, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
-        pass
-    else:
-        issues.append(f"Unsupported key type: {type(public_key)}")
-
-    # Check validity period
-    max_validity = timedelta(days=398)
-    if (cert.not_valid_after - cert.not_valid_before) > max_validity:
-        issues.append("Certificate validity period exceeds 398 days - might not be accepted by some clients")
-
-    # Check subject and issuer information
-    if not cert.subject:
-        issues.append("Subject DN is empty")
-    if not cert.issuer:
-        issues.append("Issuer DN is empty")
-
-    # Check Basic Constraints
-    try:
-        basic_constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
-        if basic_constraints.ca:
-            issues.append("BasicConstraints: CA flag is True for a server certificate")
-    except x509.ExtensionNotFound:
-        pass  # It's okay if BasicConstraints is absent for a server cert
-
-    # Check Signature Algorithm
-    if cert.signature_algorithm_oid in (x509.SignatureAlgorithmOID.RSA_WITH_MD5, x509.SignatureAlgorithmOID.RSA_WITH_SHA1):
-        issues.append("Weak signature algorithm used: " + cert.signature_algorithm_oid._name)
-
-    # Check Revocation Information
-    has_crl = False
-    has_ocsp = False
-    try:
-        cert.extensions.get_extension_for_class(x509.CRLDistributionPoints)
-        has_crl = True
-    except x509.ExtensionNotFound:
-        pass
-
-    try:
-        aia = cert.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
-        has_ocsp = any(desc.access_method == x509_oid.AuthorityInformationAccessOID.OCSP for desc in aia)
-    except x509.ExtensionNotFound:
-        pass
-
-    if not (has_crl or has_ocsp):
-        issues.append("Neither CRL nor OCSP revocation information is present")
-
-    # Check for Name Constraints if present (unusual for server certs, but possible for private PKIs)
-    try:
-        nc = cert.extensions.get_extension_for_class(x509.NameConstraints)
-        if not nc.critical:
-            issues.append("Name Constraints extension should be marked critical")
-    except x509.ExtensionNotFound:
-        pass  # Name Constraints are not required for server certs
-
-    return issues
+    def _check_subject_and_issuer(self):
+        super()._check_subject_and_issuer()
+        if self.certificate.subject.rfc4514_string() == "":
+            san_ext = self.certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+            if not san_ext.critical:
+                self._add_issue("Empty Subject DN requires SubjectAlternativeName extension to be set critical", IssueSeverity.ERROR)
