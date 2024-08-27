@@ -559,8 +559,9 @@ piv:
     dc_cert_templates:
       "default":
         validity_days: 1825
-        attribs:
-            common_name: 'Example PIV DC D1'
+        basic_constraints:
+          ca: false         # End-entity certificate
+          path_len: null
         crl_distribution_points:
           urls:
             - "http://crl.example.local/piv.crl"  # Use CRL in LAN for PIV
@@ -578,6 +579,9 @@ piv:
     user_cert_templates:
       "default":
         validity_days: 365
+        basic_constraints:
+          ca: false
+          path_len: null
         attribs:
             common_name: 'Example PIV User U1'
         crl_distribution_points:

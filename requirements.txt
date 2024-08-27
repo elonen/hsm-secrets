@@ -13,6 +13,7 @@ mnemonic
 pyescrypt
 
 pycryptodome
+asn1crypto
 
 yubihsm-ssh-tool @ git+https://github.com/YubicoLabs/yubihsm-ssh-tool@9cec861
 

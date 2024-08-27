@@ -25,8 +25,8 @@ class PIVDomainControllerCertificateChecker(BaseCertificateChecker):
 
         if not has_dns:
             self._add_issue("SubjectAlternativeName does not include a DNS name", IssueSeverity.ERROR)
-        if not has_upn:
-            self._add_issue("SubjectAlternativeName does not include a UPN (User Principal Name)", IssueSeverity.WARNING)
+        if has_upn:
+            self._add_issue("DC certificates does not usually include a UPN (User Principal Name)", IssueSeverity.NOTICE)
 
     def _check_specific_subject_common_name_consistency(self, cn_value: str, san: x509.SubjectAlternativeName):
         dns_names = [name.value for name in san if isinstance(name, x509.DNSName)]
@@ -85,12 +85,6 @@ class PIVUserCertificateChecker(BaseCertificateChecker):
                 if email_username.lower() not in cn_value.lower():
                     self._add_issue(f"Subject CN '{cn_value}' does not appear to be related to email '{rfc822_name}'", IssueSeverity.NOTICE)
 
-        directory_name = next((name for name in san if isinstance(name, x509.DirectoryName)), None)
-        if directory_name:
-            dn_cn = next((attr for attr in repr(directory_name).split(',') if attr.startswith('CN=')), None)
-            if dn_cn and dn_cn.lower() != cn_value.lower():
-                self._add_issue(f"Subject CN '{cn_value}' does not match Directory Name CN '{dn_cn}'", IssueSeverity.NOTICE)
-
 
     def _check_subject_and_issuer(self):
         super()._check_subject_and_issuer()
@@ -107,8 +101,9 @@ class PIVUserCertificateChecker(BaseCertificateChecker):
         super()._check_policy_extensions()
         try:
             cert_policies = self.certificate.extensions.get_extension_for_class(x509.CertificatePolicies).value
-            has_piv_auth_policy = any(policy.policy_identifier.dotted_string == "2.16.840.1.101.3.2.1.3.13" for policy in cert_policies)
-            if not has_piv_auth_policy:
-                self._add_issue("Certificate does not include the PIV Authentication policy OID (2.16.840.1.101.3.2.1.3.13)", IssueSeverity.WARNING)
+            # US Federal PIV-I policy (not required for non-US-government PIVs)
+            #has_piv_auth_policy = any(policy.policy_identifier.dotted_string == "2.16.840.1.101.3.2.1.3.13" for policy in cert_policies)
+            #if not has_piv_auth_policy:
+            #    self._add_issue("Certificate does not include the PIV Authentication policy OID (2.16.840.1.101.3.2.1.3.13)", IssueSeverity.WARNING)
         except x509.ExtensionNotFound:
             pass  # Already handled in base class

@@ -143,6 +143,63 @@ test_tls_certificates() {
     [ -f $TEMPDIR/www-example-com.chain.pem ] || { echo "ERROR: Chain bundle not saved"; return 1; }
 }
 
+
+test_piv_user_certificate() {
+    setup
+
+    local output=$(run_cmd piv user-cert -u test.user@example.com --os-type windows --san "RFC822:test.user@example.com" --san "DIRECTORY:C=US,O=Organization,CN=test.user" --out $TEMPDIR/testuser-piv)
+    assert_success
+    echo "$output"
+    assert_not_grep "Cert errors" "$output"
+    assert_not_grep "Cert warnings" "$output"
+
+    [ -f $TEMPDIR/testuser-piv.key.pem ] || { echo "ERROR: Key not saved"; return 1; }
+    [ -f $TEMPDIR/testuser-piv.csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
+    [ -f $TEMPDIR/testuser-piv.cer.pem ] || { echo "ERROR: Certificate not saved"; return 1; }
+
+    local cert_output=$(openssl x509 -in $TEMPDIR/testuser-piv.cer.pem -text -noout)
+    assert_success
+    echo "$cert_output"
+    assert_grep "Subject:.*CN.*=.*test.user@example.com" "$cert_output"
+    assert_grep "X509v3 Subject Alternative Name:" "$cert_output"
+    assert_grep "test[.]user@example[.]com" "$cert_output"
+    assert_grep "Organization.*test[.]user" "$cert_output"
+    assert_grep "Key Usage: critical" "$cert_output"
+    assert_grep "Extended Key Usage" "$cert_output"
+    assert_grep "Smartcard" "$cert_output"
+    assert_grep "Client Authentication" "$cert_output"
+}
+
+test_piv_dc_certificate() {
+    setup
+
+    # Generate a CSR for the DC certificate
+    openssl ecparam -genkey -name secp384r1 -out $TEMPDIR/dc.key.pem
+    openssl req -new -key $TEMPDIR/dc.key.pem -out $TEMPDIR/dc.csr.pem -subj "/CN=dc01.example.com"
+
+    local output=$(run_cmd piv sign-dc-cert $TEMPDIR/dc.csr.pem --hostname "dc01.example.com" --san "DNS:dc.example.com" --out $TEMPDIR/dc.cer.pem)
+    assert_success
+    echo "$output"
+    assert_not_grep "Cert errors" "$output"
+    assert_not_grep "Cert warnings" "$output"
+
+    [ -f $TEMPDIR/dc.cer.pem ] || { echo "ERROR: Signed certificate not saved"; return 1; }
+
+    local cert_output=$(openssl x509 -in $TEMPDIR/dc.cer.pem -text -noout)
+    assert_success
+    echo "$cert_output"
+    assert_grep "Subject:.*CN.*=.*dc01.example.com" "$cert_output"
+    assert_grep "X509v3 Subject Alternative Name:" "$cert_output"
+    assert_grep "DNS:dc01.example.com" "$cert_output"
+    assert_grep "DNS:dc.example.com" "$cert_output"
+    assert_grep "Key Usage: critical" "$cert_output"
+    assert_grep "Digital Signature, Key Encipherment" "$cert_output"
+    assert_grep "Extended Key Usage:" "$cert_output"
+    assert_grep "Server Authentication" "$cert_output"
+    assert_grep "KDC" "$cert_output"
+}
+
+
 test_crl_commands() {
     setup
 
@@ -366,6 +423,8 @@ run_test test_password_derivation
 run_test test_wrapped_backup
 run_test test_ssh_user_certificates
 run_test test_ssh_host_certificates
+run_test test_piv_user_certificate
+run_test test_piv_dc_certificate
 run_test test_logging_commands
 
 echo "All tests passed successfully!"

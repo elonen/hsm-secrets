@@ -245,8 +245,9 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename, default: deduced from input")
 @click.option('--san', multiple=True, help="Additional (GeneralName) SANs")
+@click.option('--hostname', '-h', required=True, help="Hostname (CommonName) for the DC certificate")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
-def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: List[str], template: str|None):
+def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: List[str], hostname: str, template: str|None):
     """Sign a DC Kerberos PKINIT certificate for PIV"""
     csr_path = Path(csr.name)
     with csr_path.open('rb') as f:
@@ -276,6 +277,8 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
     if validity:
         x509_info.validity_days = validity
 
+    x509_info.attribs.common_name = hostname     # Override CN
+
     # Add explicitly provided SANs
     x509_info.subject_alt_name = x509_info.subject_alt_name or x509_info.SubjectAltName()
     for san_entry in san:
@@ -284,6 +287,10 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
         if san_type_lower not in get_args(X509NameType):
             raise click.ClickException(f"Provided '{san_type.lower()}' is not a supported X509NameType")
         x509_info.subject_alt_name.names.setdefault(san_type_lower, []).append(san_value)  # type: ignore [arg-type]
+
+    # Add hostname to DNS SANs if not already there
+    if hostname not in (x509_info.subject_alt_name.names['dns'] or []):
+        x509_info.subject_alt_name.names['dns'] = [hostname] + list(x509_info.subject_alt_name.names['dns'] or [])
 
     # Create X509CertBuilder
     cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_obj)

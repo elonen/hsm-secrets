@@ -16,7 +16,9 @@ The config file approach simplifies planning, setup and daily use while maintain
   - Fully within one process, does not invoke external CLI tools (except in unit tests)
 - Integrate daily operations under a single tool:
   - OpenSSH certificate creation and signing, including hardware token **sk-ed25519** and **sk-ecdsa** keys
-  - X.509 certificate creationg and signing (TLS, SSH, X.509)
+  - X.509 certificate creationg and signing
+  - TLS server cert creation
+  - Windows login certs for Yubikey with PIV
   - Password derivation for VMs etc.
 - Improved Secret Sharing ceremony vs. YubiHSM setup util (vs. yubihsm-setup)
   - password protected shares (optional)

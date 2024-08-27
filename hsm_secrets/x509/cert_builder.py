@@ -6,6 +6,8 @@ from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKey
 from cryptography.x509.extensions import ExtensionTypeVar
 import cryptography.x509.oid as x509_oid
 
+import asn1crypto.core  # type: ignore [import]
+
 import datetime
 from datetime import timedelta
 import ipaddress
@@ -434,19 +436,28 @@ class X509CertBuilder:
     def _mkext_alt_name(self) -> tuple[x509.SubjectAlternativeName, bool]:
         assert self.cert_def_info.subject_alt_name, "X509Info.subject_alt_name is missing"
         type_to_cls = {
-            "dns": (x509.DNSName, lambda n: n),
-            "ip": (x509.IPAddress, lambda n: ipaddress.ip_address(n)),
-            "rfc822": (x509.RFC822Name, lambda n: n),
-            "uri": (x509.UniformResourceIdentifier, lambda n: n),
-            "directory": (x509.DirectoryName, lambda n: n),
-            "registered_id": (x509.RegisteredID, lambda n: n),
-            "upn": (x509.OtherName, lambda n: x509.OtherName(type_id = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3"), value = n.encode('utf-16-le'))),
-            "oid": (x509.OtherName, lambda n: x509.OtherName(type_id = n.split("=", 1)[0], value = n.split("=", 1)[1].encode('utf-16-le')))
+            "dns": lambda n: x509.DNSName(n),
+            "ip": lambda n: x509.IPAddress(ipaddress.ip_address(n)),
+            "rfc822": lambda n: x509.RFC822Name(n),
+            "uri": lambda n: x509.UniformResourceIdentifier(n),
+            "directory": lambda n: x509.DirectoryName(x509.Name(parse_x500_dn_subject(n))),
+            "registered_id": lambda n: x509.RegisteredID(n),
+                "upn": lambda n: x509.OtherName(
+                    x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3"),
+                    asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n).dump()).dump()
+                ),
+            "oid": lambda n: x509.OtherName(
+                x509.ObjectIdentifier(n.split("=", 1)[0]),
+                asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n.split("=", 1)[1]).dump()).dump()
+            )
         }
         san: List[x509.GeneralName] = []
         for san_type, names in (self.cert_def_info.subject_alt_name.names or {}).items():
-            dst_cls, dst_conv = type_to_cls[san_type]
-            san.extend([dst_cls(dst_conv(name)) for name in names])
+            try:
+                dst_conv = type_to_cls[san_type]
+                san.extend([dst_conv(name) for name in names])
+            except Exception as e:
+                raise ValueError(f"Failed to map SAN type '{san_type}' (names: '{str(names)}') to a class: {e}")
         return x509.SubjectAlternativeName(san), self.cert_def_info.subject_alt_name.critical
 
     def _mkext_key_usage(self) -> tuple[x509.KeyUsage, bool]:

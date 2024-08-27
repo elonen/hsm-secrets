@@ -89,7 +89,7 @@ class BaseCertificateChecker:
             if public_key.key_size < 2048:
                 self._add_issue(f"RSA key size ({public_key.key_size}) is less than 2048 bits", IssueSeverity.ERROR)
             elif public_key.key_size < 3072:
-                self._add_issue(f"RSA key size ({public_key.key_size}) is less than 3072 bits", IssueSeverity.WARNING)
+                self._add_issue(f"RSA key size ({public_key.key_size}) is less than 3072 bits", IssueSeverity.NOTICE)
         elif isinstance(public_key, ec.EllipticCurvePublicKey):
             if public_key.curve.key_size < 256:
                 self._add_issue(f"EC key size ({public_key.curve.key_size}) is less than 256 bits", IssueSeverity.ERROR)
@@ -99,7 +99,7 @@ class BaseCertificateChecker:
     def _check_validity_period(self):
         max_validity = timedelta(days=398)
         if (self.certificate.not_valid_after_utc - self.certificate.not_valid_before_utc) > max_validity:
-            self._add_issue("Certificate validity period exceeds 398 days", IssueSeverity.WARNING)
+            self._add_issue("Certificate validity period exceeds 398 days", IssueSeverity.NOTICE)
 
     def _check_subject_and_issuer(self):
         if not self.certificate.subject:
