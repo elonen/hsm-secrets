@@ -424,13 +424,13 @@ def confirm_and_delete_old_yubihsm_object_if_exists(ses: HSMSession, obj_id: hsc
     :param serial: The serial number of the YubiHSM device
     :param hsm_key_obj: The object to check for
     :param abort: Whether to abort (raise) if the user does not want to delete the object
-    :return: True if the object doesn't exist or was deleted, False if the user chose not to delete it
+    :return: True if the object doesn't exist or was deleted, False if user chose not to delete it
     """
     if info := ses.object_exists_raw(obj_id, object_type):
         cli_ui_msg(f"Object 0x{obj_id:04x} already exists on YubiHSM device:")
         cli_ui_msg(pretty_fmt_yubihsm_object(info))
         cli_info("")
-        if click.confirm("Replace the existing key?", default=False, abort=abort, err=True):
+        if click.confirm("Replace the existing object?", default=False, abort=abort, err=True):
             ses.delete_object_raw(obj_id, object_type)
         else:
             return False

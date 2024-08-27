@@ -1,3 +1,4 @@
+from copy import deepcopy
 import click
 import datetime
 from pathlib import Path
@@ -68,7 +69,7 @@ def create_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, certs: t
     """
     if not all_certs and not certs:
         raise click.ClickException("Error: No certificates specified for creation.")
-    create_certs_impl(ctx, all_certs, dry_run, certs)
+    x509_create_certs(ctx, all_certs, dry_run, certs)
 
 # ---------------
 
@@ -116,7 +117,7 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
 
 # ---------------
 
-def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids: tuple):
+def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_ids: tuple, skip_existing: bool = False):
     """
     Create certificates on a YubiHSM2, based on the configuration file and CLI arguments.
     Performs a topological sort of the certificates to ensure that any dependencies are created first.
@@ -137,14 +138,21 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
 
         creation_order = topological_sort_x509_cert_defs(selected_defs)
         id_to_cert_obj: dict[HSMKeyID, x509.Certificate] = {}
+        existing_cert_ids = set()
+        cert_issues: list[tuple[HSMOpaqueObject, list]] = []
 
         # Create the certificates in topological order
         for cd in creation_order:
+            if skip_existing:
+                if ses and ses.object_exists(cd):
+                    existing_cert_ids.add(cd.id)
+                    continue
+
             x509_info = merge_x509_info_with_defaults(scid_to_x509_def[cd.id].x509_info, ctx.conf)
             issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
             signer = f"signed by: '{issuer.label}'" if issuer else 'self-signed'
 
-            cli_info(f"Creating 0x{cd.id:04x}: '{cd.label}' ({signer})")
+            cli_info(f"\nCreating 0x{cd.id:04x}: '{cd.label}' ({signer})")
             cli_info(indent(pretty_x509_info(x509_info), "    "))
 
             if not dry_run:
@@ -157,13 +165,14 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                     issuer_cert = id_to_cert_obj.get(cd.sign_by)
                     if not issuer_cert:
                         # Issuer cert was not created on this run, try to load it from the HSM
-                        if not ses.object_exists(cd):
-                            raise click.ClickException(f"ERROR: Certificate 0x{cd.sign_by:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
-                        issuer_cert = ses.get_certificate(cd)
+                        issuer_def = scid_to_opq_def[cd.sign_by]
+                        if not ses.object_exists(issuer_def):
+                            raise click.ClickException(f"ERROR: Certificate 0x{cd.sign_by:04x} not found in HSM. Create it first to sign 0x{cd.id:04x}.")
+                        issuer_cert = ses.get_certificate(issuer_def)
 
                     sign_key_def = scid_to_x509_def[cd.sign_by].key
                     if not ses.object_exists(sign_key_def):
-                        raise click.ClickException(f"ERROR: Key 0x{sign_key_def.id:04x} not found in HSM. Create it first, to sign 0x{cd.id:04x}.")
+                        raise click.ClickException(f"ERROR: Key 0x{sign_key_def.id:04x} not found in HSM. Create it first to sign 0x{cd.id:04x}.")
                     issuer_key = ses.get_private_key(sign_key_def)
 
                 # Create and sign the certificate
@@ -174,20 +183,29 @@ def create_certs_impl(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                     assert issuer_key
                     id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key)
                     # NOTE: We'll assume all signed certs on HSM are CA -- fix this if storing leaf certs for some reason
-                    X509IntermediateCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
+                    issues = X509IntermediateCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
+                    cert_issues.append((cd, issues))
                 else:
                     id_to_cert_obj[cd.id] = builder.generate_and_self_sign()
                     cli_info(f"Self-signed certificate created; assuming it's a root CA for checks...")
-                    X509RootCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
-
+                    issues = X509RootCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
+                    cert_issues.append((cd, issues))
 
         # Put the certificates into the HSM
         for cd in creation_order:
+            if skip_existing and cd.id in existing_cert_ids:
+                continue
             if not dry_run:
                 assert isinstance(ses, HSMSession)
                 if confirm_and_delete_old_yubihsm_object_if_exists(ses, cd.id, yubihsm.defs.OBJECT.OPAQUE, abort=False):
                     ses.put_certificate(cd, id_to_cert_obj[cd.id])
-                    cli_info(f"Certificate 0x{cd.id:04x} created and stored in YubiHSM (serial {ctx.hsm_serial}).")
+                    cli_info(f"Certificate 0x{cd.id:04x} stored in YubiHSM {ctx.hsm_serial}.")
+
+        # Show any issues found during certificate creation
+        for cd, issues in cert_issues:
+            if issues:
+                cli_warn(f"\n-- Check results for certificate 0x{cd.id:04x} ({cd.label}) --")
+                X509RootCACertificateChecker.show_issues(issues)
 
     if dry_run:
         cli_warn("DRY RUN. Would create the following certificates:")

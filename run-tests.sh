@@ -52,12 +52,9 @@ assert_not_grep() {
 }
 
 setup() {
-    run_cmd -q hsm compare --create
+    local output=$(run_cmd -q hsm objects create-missing)
     assert_success
-
-    local output=$(run_cmd x509 cert create -a)
-    assert_success
-    echo "$output"
+    #echo "$output"
     assert_not_grep "Cert errors" "$output"
     assert_not_grep "Cert warnings" "$output"
 
@@ -76,14 +73,14 @@ setup() {
 EOF
     assert_success
 
-    run_cmd -q hsm make-wrap-key
+    run_cmd -q hsm backup make-key
     assert_success
 }
 
 # ------------------ test cases -------------------------
 
 test_fresh_device() {
-    local count=$(run_cmd -q hsm list-objects | grep -c '^0x')
+    local count=$(run_cmd -q hsm objects list | grep -c '^0x')
     [ "$count" -eq 1 ] || { echo "Expected 1 object, but found $count"; return 1; }
 }
 
@@ -93,7 +90,7 @@ test_create_all() {
     # Run simplified secret sharing command
     expect << EOF
         $EXPECT_PREAMBLE
-        spawn sh -c "$CMD hsm admin-sharing-ceremony --skip-ceremony -n 3 -t 2 2>&1"
+        spawn sh -c "$CMD hsm admin sharing-ceremony --skip-ceremony -n 3 -t 2 2>&1"
         expect {
             "airgapped" { sleep 0.1; send "y\r"; exp_continue }
             "admin password" { sleep 0.1; send "passw123\r"; exp_continue }
@@ -110,7 +107,7 @@ EOF
     [ "$count" -eq 40 ] || { echo "Expected 40 objects, but found $count"; return 1; }
 
     # Remove default admin key
-    run_cmd hsm default-admin-disable
+    run_cmd hsm admin default-disable
     assert_success
     local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
     assert_success
@@ -143,21 +140,50 @@ test_tls_certificates() {
     [ -f $TEMPDIR/www-example-com.chain.pem ] || { echo "ERROR: Chain bundle not saved"; return 1; }
 }
 
-
-test_piv_user_certificate() {
+test_piv_user_certificate_key_type() {
     setup
 
-    local output=$(run_cmd piv user-cert -u test.user@example.com --os-type windows --san "RFC822:test.user@example.com" --san "DIRECTORY:C=US,O=Organization,CN=test.user" --out $TEMPDIR/testuser-piv)
+    local output=$(run_cmd piv user-cert -u test.user@example.com --os-type windows --key-type RSA2048 --san "RFC822:test.user@example.com" --san "DIRECTORY:C=US,O=Organization,CN=test.user" --out $TEMPDIR/testuser-piv-key)
     assert_success
     echo "$output"
     assert_not_grep "Cert errors" "$output"
     assert_not_grep "Cert warnings" "$output"
 
-    [ -f $TEMPDIR/testuser-piv.key.pem ] || { echo "ERROR: Key not saved"; return 1; }
-    [ -f $TEMPDIR/testuser-piv.csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
-    [ -f $TEMPDIR/testuser-piv.cer.pem ] || { echo "ERROR: Certificate not saved"; return 1; }
+    [ -f $TEMPDIR/testuser-piv-key.key.pem ] || { echo "ERROR: Key not saved"; return 1; }
+    [ -f $TEMPDIR/testuser-piv-key.csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
+    [ -f $TEMPDIR/testuser-piv-key.cer.pem ] || { echo "ERROR: Certificate not saved"; return 1; }
 
-    local cert_output=$(openssl x509 -in $TEMPDIR/testuser-piv.cer.pem -text -noout)
+    local cert_output=$(openssl x509 -in $TEMPDIR/testuser-piv-key.cer.pem -text -noout)
+    assert_success
+    echo "$cert_output"
+    assert_grep "Subject:.*CN.*=.*test.user@example.com" "$cert_output"
+    assert_grep "X509v3 Subject Alternative Name:" "$cert_output"
+    assert_grep "test[.]user@example[.]com" "$cert_output"
+    assert_grep "Organization.*test[.]user" "$cert_output"
+    assert_grep "Key Usage: critical" "$cert_output"
+    assert_grep "Extended Key Usage" "$cert_output"
+    assert_grep "Smartcard" "$cert_output"
+    assert_grep "Client Authentication" "$cert_output"
+}
+
+test_piv_user_certificate_csr() {
+    setup
+
+    # Generate a CSR
+    openssl ecparam -genkey -name secp384r1 -out $TEMPDIR/testuser-csr.key.pem
+    openssl req -new -key $TEMPDIR/testuser-csr.key.pem -nodes -keyout $TEMPDIR/testuser-csr.key.pem -out $TEMPDIR/testuser-csr.csr.pem -subj "/CN=test.user@example.com"
+
+    local output=$(run_cmd piv user-cert -u test.user@example.com --os-type windows --csr $TEMPDIR/testuser-csr.csr.pem --san "RFC822:test.user@example.com" --san "DIRECTORY:C=US,O=Organization,CN=test.user" --out $TEMPDIR/testuser-piv-csr)
+    assert_success
+    echo "$output"
+    assert_not_grep "Cert errors" "$output"
+    assert_not_grep "Cert warnings" "$output"
+
+    [ ! -f $TEMPDIR/testuser-piv-csr.key.pem ] || { echo "ERROR: Key should not be saved when using CSR"; return 1; }
+    [ ! -f $TEMPDIR/testuser-piv-csr.csr.pem ] || { echo "ERROR: CSR should not be saved when using existing CSR"; return 1; }
+    [ -f $TEMPDIR/testuser-piv-csr.cer.pem ] || { echo "ERROR: Certificate not saved"; return 1; }
+
+    local cert_output=$(openssl x509 -in $TEMPDIR/testuser-piv-csr.cer.pem -text -noout)
     assert_success
     echo "$cert_output"
     assert_grep "Subject:.*CN.*=.*test.user@example.com" "$cert_output"
@@ -268,18 +294,18 @@ test_password_derivation() {
 
 test_wrapped_backup() {
     setup
-    run_cmd -q hsm backup --out $TEMPDIR/backup.tgz
+    run_cmd -q hsm backup export --out $TEMPDIR/backup.tgz
     assert_success
 
     tar tvfz $TEMPDIR/backup.tgz | grep -q 'ASYMMETRIC_KEY' || { echo "ERROR: No asymmetric keys found in backup"; return 1; }
     tar tvfz $TEMPDIR/backup.tgz | grep -q 'OPAQUE' || { echo "ERROR: No certificates found in backup"; return 1; }
 
-    run_cmd -q hsm delete --force 0x0210
+    run_cmd -q hsm objects delete --force 0x0210
     assert_success
     run_cmd -q hsm compare | grep -q '[ ].*ca-root-key-rsa' || { echo "ERROR: Key not deleted"; return 1; }
     assert_success
 
-    run_cmd -q hsm restore --force $TEMPDIR/backup.tgz
+    run_cmd -q hsm backup import --force $TEMPDIR/backup.tgz
     assert_success
     run_cmd -q hsm compare | grep -q '[x].*ca-root-key-rsa' || { echo "ERROR: Key not restored"; return 1; }
     assert_success
@@ -423,7 +449,8 @@ run_test test_password_derivation
 run_test test_wrapped_backup
 run_test test_ssh_user_certificates
 run_test test_ssh_host_certificates
-run_test test_piv_user_certificate
+run_test test_piv_user_certificate_key_type
+run_test test_piv_user_certificate_csr
 run_test test_piv_dc_certificate
 run_test test_logging_commands
 

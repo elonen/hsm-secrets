@@ -126,15 +126,17 @@ def import_to_yubikey_piv(
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
 @click.option('--subject', '-s', required=False, help="Cert subject (DN), default: from config")
 @click.option('--validity', '-v', type=int, help="Validity period in days, default: from config")
-@click.option('--key-type', '-k', type=click.Choice(['RSA2048', 'ECP256', 'ECP384']), default='RSA2048', help="Key type, default: same as CA")
+@click.option('--key-type', '-k', type=click.Choice(['RSA2048', 'ECP256', 'ECP384']), help="Key type, default: same as CA")
+@click.option('--csr', type=click.Path(exists=True, dir_okay=False, resolve_path=True), help="Path to existing CSR file")
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename stem, default: ./<user>-piv[.key/.cer]")
 @click.option('--os-type', type=click.Choice(['windows', 'other']), default='windows', help="Target operating system")
 @click.option('--san', multiple=True, help="AdditionalSANs, e.g., 'DNS:example.com', 'IP:10.0.0.2', etc.")
-def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: str, validity: int, key_type: str, ca: str, out: str, os_type: Literal["windows", "other"], san: List[str]):
-    """Create a PIV user certificate
+def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: str, validity: int, key_type: Literal['RSA2048', 'ECP256', 'ECP384']|None, csr: str|None, ca: str, out: str, os_type: Literal["windows", "other"], san: List[str]):
+    """Create or sign a PIV user certificate
 
-    This command generates a new PIV user certificate and key pair, and signs it with a CA certificate.
+    If a CSR is provided, this command signs the CSR with a CA certificate.
+    Otherwise it generates a new key pair (key type required) and signs a certificate for it.
 
     Example SAN types:
     - RFC822:alice@example.com
@@ -181,9 +183,18 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
                 if v:
                     subject += f",{k}={v}"
 
-    # Generate key pair
-    key_type_enum = PivKeyType[key_type]
-    _public_key, private_key = _generate_piv_key_pair(key_type_enum)
+    # Handle CSR or key generation
+    if csr:
+        with open(csr, 'rb') as f:
+            csr_obj = x509.load_pem_x509_csr(f.read())
+        private_key = None
+    elif key_type:
+        key_type_enum = PivKeyType[key_type]
+        _, private_key = _generate_piv_key_pair(key_type_enum)
+        csr_obj = None
+    else:
+        raise click.ClickException("Either --csr or --key-type must be provided")
+
 
     # Add explicitly provided SANs
     x509_info.subject_alt_name = x509_info.subject_alt_name or x509_info.SubjectAltName()
@@ -205,7 +216,7 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
         x509_info.subject_alt_name.names.setdefault('rfc822', []).append(user)
 
     # Create X509CertBuilder
-    cert_builder = X509CertBuilder(ctx.conf, x509_info, private_key, dn_subject_override=subject)
+    cert_builder = X509CertBuilder(ctx.conf, x509_info, private_key or csr_obj, dn_subject_override=subject)
 
     # Sign the certificate with CA
     ca_id = ca or ctx.conf.piv.default_ca_id
@@ -220,20 +231,22 @@ def create_piv_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: 
 
     PIVUserCertificateChecker(signed_cert, os_type).check_and_show_issues()
 
-    # Save files
-    key_file.write_bytes(private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    ))
+   # Save files
+    if private_key:
+        key_file.write_bytes(private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        ))
+        cli_info(f"Private key saved to: {key_file}")
 
-    csr = cert_builder.generate_csr()
-    csr_file.write_bytes(csr.public_bytes(serialization.Encoding.PEM))
+        csr_obj = cert_builder.generate_csr()
+        csr_file.write_bytes(csr_obj.public_bytes(serialization.Encoding.PEM))
+        cli_info(f"CSR saved to: {csr_file}")
+    elif csr:
+        cli_info(f"Using provided CSR: {csr}")
 
     _save_pem_certificate(signed_cert, cer_file.open('wb'))
-
-    cli_info(f"Private key saved to: {key_file}")
-    cli_info(f"CSR saved to: {csr_file}")
     cli_info(f"Certificate saved to: {cer_file}")
 
 

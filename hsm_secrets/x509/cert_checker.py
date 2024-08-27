@@ -1,3 +1,4 @@
+from typing import Any, Callable
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, ed25519, ed448
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -88,8 +89,6 @@ class BaseCertificateChecker:
         if isinstance(public_key, rsa.RSAPublicKey):
             if public_key.key_size < 2048:
                 self._add_issue(f"RSA key size ({public_key.key_size}) is less than 2048 bits", IssueSeverity.ERROR)
-            elif public_key.key_size < 3072:
-                self._add_issue(f"RSA key size ({public_key.key_size}) is less than 3072 bits", IssueSeverity.NOTICE)
         elif isinstance(public_key, ec.EllipticCurvePublicKey):
             if public_key.curve.key_size < 256:
                 self._add_issue(f"EC key size ({public_key.curve.key_size}) is less than 256 bits", IssueSeverity.ERROR)
@@ -188,16 +187,17 @@ class BaseCertificateChecker:
         # To be implemented by subclasses
         pass
 
-    def show_issues(self):
-        notices = [message for severity, message in self.issues if severity == IssueSeverity.NOTICE]
-        warnings = [message for severity, message in self.issues if severity == IssueSeverity.WARNING]
-        errors = [message for severity, message in self.issues if severity == IssueSeverity.ERROR]
+    @staticmethod
+    def show_issues(issues: list[tuple[IssueSeverity, str]]):
+        notices = [message for severity, message in issues if severity == IssueSeverity.NOTICE]
+        warnings = [message for severity, message in issues if severity == IssueSeverity.WARNING]
+        errors = [message for severity, message in issues if severity == IssueSeverity.ERROR]
 
         if not (notices or warnings or errors):
             return
 
-        prn = cli_error if errors else (cli_warn if warnings else cli_info)
-        prn("\nDetected issues:")
+        prn: Any = cli_error if errors else (cli_warn if warnings else cli_info)
+        prn("Detected issues:")
 
         if notices:
             cli_info(" - ℹ️ Cert notices:")
@@ -215,9 +215,10 @@ class BaseCertificateChecker:
                 cli_error(f"   - {msg}")
 
 
-    def check_and_show_issues(self):
+    def check_and_show_issues(self) -> list[tuple[IssueSeverity, str]]:
         self.check()
-        self.show_issues()
+        self.show_issues(self.issues)
+        return self.issues
 
 
 # ------
@@ -251,12 +252,13 @@ class X509CACertificateChecker(BaseCertificateChecker):
             self._add_issue("KeyUsage includes keyEncipherment, which is not typically needed for CA certificates", IssueSeverity.WARNING)
 
     def _check_name_constraints(self):
-        try:
-            nc = self.certificate.extensions.get_extension_for_class(x509.NameConstraints)
-            if not nc.critical:
-                self._add_issue("NameConstraints extension should be marked critical", IssueSeverity.WARNING)
-        except x509.ExtensionNotFound:
-            self._add_issue("NameConstraints extension not found", IssueSeverity.NOTICE)
+        #try:
+        #    nc = self.certificate.extensions.get_extension_for_class(x509.NameConstraints)
+        #    if not nc.critical:
+        #        self._add_issue("NameConstraints extension should be marked critical", IssueSeverity.WARNING)
+        #except x509.ExtensionNotFound:
+        #    self._add_issue("NameConstraints extension not found", IssueSeverity.NOTICE)
+        pass
 
     def _check_policy_extensions(self):
         try:
@@ -283,8 +285,6 @@ class X509CACertificateChecker(BaseCertificateChecker):
         if isinstance(public_key, rsa.RSAPublicKey):
             if public_key.key_size < 2048:
                 self._add_issue(f"RSA key size ({public_key.key_size}) is less than 2048 bits", IssueSeverity.ERROR)
-            elif public_key.key_size < 3072:
-                self._add_issue(f"RSA key size ({public_key.key_size}) is less than 3072 bits", IssueSeverity.NOTICE)
         elif isinstance(public_key, ec.EllipticCurvePublicKey):
             if public_key.curve.key_size < 256:
                 self._add_issue(f"EC key size ({public_key.curve.key_size}) is less than 256 bits", IssueSeverity.ERROR)
@@ -354,4 +354,4 @@ class X509IntermediateCACertificateChecker(X509CACertificateChecker):
         if path_length is None:
             self._add_issue("No path length constraint set.", IssueSeverity.NOTICE)
         elif path_length > 0:
-            self._add_issue(f"Path length constraint is set to {path_length}. Ensure this aligns with your intended PKI structure.", IssueSeverity.NOTICE)
+            self._add_issue(f"Path length constraint is set to {path_length}. Ensure you need this intermediate CA to sign more intermediates.", IssueSeverity.NOTICE)

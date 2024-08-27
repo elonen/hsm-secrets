@@ -139,12 +139,14 @@ You can always force a different authentication type, though:
 
 2. Perform initial setup on an airgapped system. In summary:
    - Connect all HSMs and reset to factory defaults
-   - Distribute a common wrap key with `hsm-secrets hsm make-wrap-key`
-   - Create a Shamir's Shared Secret admin key with `hsm-secrets hsm admin-sharing-ceremony`
+   - Distribute a common wrap key with `hsm-secrets hsm backup make-key`
+   - Create a Shamir's Shared Secret admin key with `hsm-secrets hsm admin sharing-ceremony`
      - shares can be optionally password-protected
    - Add user YubiKeys with `hsm-secrets user add-yubikey`
-   - Generate keys and certificates with `hsm-secrets hsm compare --create` and `hsm-secrets x509 create --all`
-   - Clone master HSM to other devices using `hsm backup` and `hsm restore`
+   - Generate keys and certificates with `hsm-secrets hsm objects create-missing`
+   - Apply your logging settings from config to the device with `hsm log apply-settings`
+   - Check that everything's been created with `hsm compare`
+   - Clone master HSM to other devices using `hsm backup export` and `hsm backup import`
 
    See [Setup Workflow](doc/setup-workflow.md) for the full process.
 
@@ -155,10 +157,10 @@ You can always force a different authentication type, though:
    - `hsm-secrets pass rotate` to rotate derived password(s)
 
 4. Rarely, for admin changes, on an airgapped computer:
-   - Temporarily enable default admin key with `hsm-secrets hsm default-admin-enable` (asks key custodians for SSSS shared secret)
+   - Temporarily enable default admin key with `hsm-secrets hsm admin default-enable` (asks key custodians for SSSS shared secret)
    - Make changes on one of the devices (master)
-   - Re-clone HSMs with `hsm backup` and `hsm restore`
-   - Disable the default admin again with `hsm-secrets hsm default-admin-disable`
+   - Re-clone HSMs with `hsm backup export` and `hsm backup import`
+   - Disable the default admin again with `hsm-secrets hsm admin default-disable`
 
 YubiHSM2 devices are easy to reset, so you might want to do a test-run or two before an actual production deployment.
 
