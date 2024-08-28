@@ -4,26 +4,40 @@
 
 Higher level interactive CLI tool for YubiHSM2 operations, based on a YAML configuration file (see [hsm-conf.yml](hsm-conf.yml)).
 
-The config file approach simplifies planning, setup and daily use while maintaining high security standards.
+The config file approach simplifies planning, setup, validity checking and daily use while maintaining high security standards.
+
+Built mostly on top of Yubico's Python APIs and the Cryptography library.
 
 ## Highlights
 
 - Centralized configuration in a single YAML file
   - Automatic key/cert generation based on the config file
-- Authenticate HSM operators by YubiKey 5 hardware tokens to avoid credential theft by malware
-  - Integrated Yubikey HSM auth (yubihsm-auth) slot setup for operators
-- Discourage leaking secrets in process listing, local disk or terminal scrollback
-  - Fully within one process, does not invoke external CLI tools (except in unit tests)
+  - Sensible default config with comments
+- Authenticate HSM operators by YubiKey 5 hardware tokens
+  - Integrated Yubikey HSM auth (yubihsm-auth) slot management for operators
 - Integrate daily operations under a single tool:
   - OpenSSH certificate creation and signing, including hardware token **sk-ed25519** and **sk-ecdsa** keys
   - X.509 certificate creationg and signing
+    - Sanity checks / lint for generated certificates by usage
   - TLS server cert creation
-  - Windows login certs for Yubikey with PIV
+  - PIV cert generation (e.g. Windows login with YubiKey)
+    - Store in YubiKey or save to disk
   - Password derivation for VMs etc.
+- HSM audit logging
+  - Specify HSM audit policy in config file
+  - Incrementally fetch and parse log entries from YubiHSM
+    - from multiple devices (for HA / load balancing)
+    - store into SQlite database
+    - convenient "forced logging mode" support (with `log fetch --clear`)
+  - Show log entries in human-readable
+  - Verify audit chain integrity
+  - Export new logs to JSONL, for log server submission
 - Improved Secret Sharing ceremony vs. YubiHSM setup util (vs. yubihsm-setup)
   - password protected shares (optional)
   - better display hygiene
   - detailed interactive guiding
+- Discourage leaking secrets in process listing, local disk or terminal scrollback
+  - Fully within one process, does not invoke external CLI tools (except in unit tests)
 
 ## Practical Examples
 
@@ -77,12 +91,22 @@ openssl crl2pkcs7 -nocrl -certfile ./certs/wiki-server.cer.pem | openssl  pkcs7 
 ```
 
 In this example, the HTTPS server key was generated and written on local disk, for convenience.
-
 For added separation of concerns, it could also have been created on the web server by a webmaster (perhaps with openssl), and the HSM operator would only have signed the CSR (Certificate Signing Request) with `hsm-secrets tls sign wiki-server.csr.pem`.
 
-## Development status
+## Development
 
-Work-in-progress, but usable and useful.
+**Work in progress**, but usable and useful.
+
+This rather niche software is being developed to scratch some particular sysops itches, not as a "product".
+Even if you don't actually use the tool, I hope this repository shares some knowledge and technical details.
+Corrections, improvements and observations are welcome.
+
+## Unit tests
+
+Run `make test` to install requirements and run a test suite.
+
+The tests **do not** use an actual YubiHSM device, but rather a mock
+implementation (using `--mock` option) to test the commands with `openssl`, `ssh-keygen` etc.
 
 ## Installation and upgrade
 
@@ -174,6 +198,12 @@ YubiHSM2 devices are easy to reset, so you might want to do a test-run or two be
 
 Airgapped setup is necessary to prevent supply chain attacks from exfiltrating any generated secrets.
 You might want to use something like Tails Linux on USB stick, and wipe/destroy the media after setup.
+
+## License
+
+Released under the MIT license
+
+Copyright 2024 by Jarno Elonen
 
 ## Disclaimer
 

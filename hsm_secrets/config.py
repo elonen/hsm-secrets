@@ -84,6 +84,7 @@ class HSMConfig(NoExtraBaseModel):
 
     class PIV(NoExtraBaseModel):
         default_ca_id: HSMKeyID
+        default_piv_domain: str
         intermediate_certs: List['X509Cert']
         dc_cert_templates: Dict[str, 'X509Info']  # Overrides global defaults
         user_cert_templates: Dict[str, 'X509Info']

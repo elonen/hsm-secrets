@@ -1,13 +1,11 @@
 from dataclasses import dataclass
 from enum import Enum
 import os
-from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, Optional, Sequence
 from contextlib import contextmanager
 
-import click
-
+# YubiHSM 2
 from yubihsm import YubiHsm     # type: ignore [import]
 from yubihsm.core import AuthSession     # type: ignore [import]
 from yubihsm.defs import CAPABILITY, ALGORITHM, ERROR, OBJECT     # type: ignore [import]
@@ -15,7 +13,10 @@ from yubihsm.objects import ObjectInfo, AsymmetricKey, HmacKey, SymmetricKey, Wr
 from yubikit.hsmauth import HsmAuthSession     # type: ignore [import]
 from yubihsm.exceptions import YubiHsmDeviceError     # type: ignore [import]
 
-from ykman import scripting
+# YubiKey
+import ykman.device
+import ykman.scripting
+import ykman
 import yubikit.core
 import yubikit.hsmauth as hsmauth
 
@@ -195,15 +196,6 @@ def group_by_4(s: str) -> str:
     return res
 
 
-def _list_yubikey_hsm_creds() -> Sequence[hsmauth.Credential]:
-    """
-    List the labels of all YubiKey HSM auth credentials.
-    """
-    yubikey = scripting.single()    # Connect to the first YubiKey found
-    auth_ses = hsmauth.HsmAuthSession(connection=yubikey.smart_card())
-    return list(auth_ses.list_credentials())
-
-
 def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_label: str|None, device_serial: str|None, yubikey_password: Optional[str] = None) -> AuthSession:
     """
     Connects to a YubHSM and authenticates a session using the first YubiKey found.
@@ -224,7 +216,8 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         if not connector_url:
             raise ValueError(f"Device serial '{device_serial}' not found in config file.")
 
-        yubikey = scripting.single()    # Connect to the first YubiKey found
+        yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True)
+        assert yubikey
         hsmauth = HsmAuthSession(yubikey.smart_card())
 
         # Get first Yubikey HSM auth key label from device if not specified
@@ -271,6 +264,59 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         exit(1)
 
 
+def scan_local_yubikeys(require_one_hsmauth = True, require_one_other = False) -> tuple[Optional[ykman.scripting.ScriptingDevice], Optional[ykman.scripting.ScriptingDevice]]:
+    """
+    Scan for YubiKeys for a) HSM auth and b) other uses (e.g., PIV).
+    This allows modifying other YubiKeys while authenticating on the HSM with a different YubiKey.
+
+    If there's only one YubiKey, it will be returned for both uses.
+
+    :param require_hsm: Require exactly one YubiKey with HSM credentials
+    :param require_other: Require exactly one YubiKey for other uses
+    :return: Tuple of (YubiKey with HSM credentials, YubiKey for other uses)
+    :raises click.ClickException: If requirements are not met, or if multiple YubiKeys are found for a single use
+    """
+    n_devices = len(ykman.device.list_all_devices())
+    if n_devices == 0:
+        if require_one_hsmauth or require_one_other:
+            raise click.ClickException("No local YubiKey(s) found")
+    elif n_devices == 1:
+        # Only one YubiKey => return it for both HSM and other uses
+        yk_dev, yk_info = ykman.device.list_all_devices()[0]
+        yk = ykman.scripting.ScriptingDevice(yk_dev, yk_info)
+        return yk, yk
+
+    # Multiple YubiKeys found, decide which one to use for which purpose
+    hsm_yubikey, piv_yubikey = None, None
+    for yk_dev, yk_info in ykman.device.list_all_devices():
+        yk = ykman.scripting.ScriptingDevice(yk_dev, yk_info)
+        sc = yk.smart_card()
+        try:
+            if HsmAuthSession(connection=sc).list_credentials():
+                if not hsm_yubikey:
+                    hsm_yubikey = yk
+                    sc.close()
+                    continue
+                elif require_one_hsmauth:
+                    raise click.ClickException("ERROR: Multiple YubiKeys found with HSM credentials. Can't decide which one to use for HSM auth.")
+        except yubikit.core.NotSupportedError:
+            pass
+
+        sc.close()
+        if not piv_yubikey:
+            piv_yubikey = yk
+            continue
+        elif require_one_other:
+            raise click.ClickException("ERROR: Multiple YubiKeys found for other uses. Can't decide which one to return.")
+
+    if not (hsm_yubikey and piv_yubikey):
+        raise click.ClickException("ERROR: Initial scan found multiple YubiKeys, but failed to pick one for each use. Bug or unexpected device state change.")
+
+    return hsm_yubikey, piv_yubikey
+
+
+
+
 def verify_hsm_device_info(device_serial, hsm):
     info = hsm.get_device_info()
     if int(device_serial) != int(info.serial):
@@ -293,7 +339,8 @@ def open_hsm_session(
         cli_warn("~🤡~ !! SIMULATED (mock) HSM session !! Authentication skipped. ~🤡~")
         auth_key_id = ctx.conf.admin.default_admin_key.id
         if auth_method == HSMAuthMethod.PASSWORD:
-            assert ctx.auth_password_id
+            if not ctx.auth_password_id:
+                raise click.UsageError("Auth key ID (user login as) not specified for password auth method.")
             auth_key_id = ctx.auth_password_id
         elif auth_method == HSMAuthMethod.YUBIKEY:
             auth_key_id = ctx.conf.user_keys[0].id  # Mock YubiKey auth key with first user key from config

@@ -2,10 +2,11 @@ import re
 import secrets
 import click
 from hsm_secrets.config import HSMAuthKey, HSMConfig, click_hsm_obj_auto_complete
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, secure_display_secret
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, scan_local_yubikeys, secure_display_secret
 
 import yubikit.hsmauth
 import ykman.scripting
+import ykman.device
 import yubihsm.defs, yubihsm.objects    # type: ignore [import]
 
 
@@ -28,7 +29,8 @@ def change_yubikey_mgt(ctx: HsmSecretsCtx):
     This can also be done with the `yubihsm-auth -a change-mgmkey -k <oldkey>` command.
     It's included here for convenience.
     """
-    yubikey = ykman.scripting.single()    # Connect to the first Yubikey found, prompt user to insert one if not found
+    yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True)
+    assert yubikey
     auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
     _, old_mgt_key_bin = _ask_yubikey_hsm_mgt_key("Enter the old Management Key", default=True)
     _change_yubikey_hsm_mgt_key(auth_ses, old_mgt_key_bin, ask_before_change=False)
@@ -56,7 +58,11 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
     user_key_conf = user_key_configs[0]
 
-    yubikey = ykman.scripting.single()    # Connect to the first Yubikey found, prompt user to insert one if not found
+
+    n_yubikeys = len(ykman.device.list_all_devices())
+    if n_yubikeys > 1:
+        raise click.ClickException(f"Found {n_yubikeys} Yubikeys. Can't decide which one to set HSM auth on.")
+    yubikey = ykman.scripting.single(prompt = True)    # Connect to the first Yubikey found, prompt user to insert one if not found
     yk_auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
     existing_slots = list(yk_auth_ses.list_credentials())
 

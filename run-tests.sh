@@ -143,7 +143,7 @@ test_tls_certificates() {
 test_piv_user_certificate_key_type() {
     setup
 
-    local output=$(run_cmd piv user-cert -u test.user@example.com --os-type windows --key-type RSA2048 --san "RFC822:test.user@example.com" --san "DIRECTORY:C=US,O=Organization,CN=test.user" --out $TEMPDIR/testuser-piv-key)
+    local output=$(run_cmd piv user-cert -u test.user@example.com --os-type windows --key-type rsa2048 --san "RFC822:test.user@example.com" --san "DIRECTORY:C=US,O=Organization,CN=test.user" --out $TEMPDIR/testuser-piv-key)
     assert_success
     echo "$output"
     assert_not_grep "Cert errors" "$output"

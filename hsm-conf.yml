@@ -1,5 +1,5 @@
 # This is a configuration file for the 'hsm-secrets' tool.
-# It is used to generate keys and certificates for the YubiHSM 2.
+# It is used to generate keys and certificates for YubiHSM 2 devices.
 #
 # Most keys are provided in RSA, Ed25519 and NIST EC formats.
 # Ed25519 is recommended whenever possible, RSA (super slow on YubiHSM) is for compatibility with older systems.
@@ -14,8 +14,8 @@ general:
     }
 
     domains:
-        # These domain numbers separate different types of objects in the YubiHSM 2.
-        # The names are used by the hsm-secrets tool for clarity, not by the device itself.
+        # Domain numbers (1-16) separate different types of objects in the YubiHSM 2.
+        # These text names are used by the hsm-secrets tool for clarity, not by the device itself.
         x509: 1
         tls: 2
         nac: 3
@@ -26,6 +26,8 @@ general:
         password_derivation: 8
         encryption: 9
 
+    # Default settings for X.509 certificates.
+    # These are used for all generated certificates when a specific setting is not provided (i.e. is null).
     x509_defaults:
         validity_days: 3650
         basic_constraints:
@@ -61,7 +63,8 @@ general:
             - "http://crl2.example.com/all.crl"
         authority_info_access: null     # OCSP is increasingly deprecated due to security issues, in favor of CRLs again
 
-# Subsystem for YubiHSM 2 device admin auth keys.
+
+# YubiHSM 2 device admin keys and settings
 admin:
     default_admin_password: 'password'
 
@@ -131,7 +134,7 @@ admin:
         get-log-entries: 'off'        # This seems to change after fetch (firmware bug?), so don't log it to avoid digest mismatch
         create-session: 'off'         # Not much point, as auth session key is included in every other log entry
         close-session: 'off'          # (--||--)
-        authenticate-session: 'off' # (--||--)
+        authenticate-session: 'off'   # (--||--)
         session-message: 'off'        # This is a low-level command, spams the log, not very useful to log
 
 
@@ -211,7 +214,7 @@ service_keys:
 
 
 # Subsystem/domain for root CAs.
-# Intermediate CAs in other subsystems (TLS, X.509, ..) are signed by these.
+# Intermediate CAs in other subsystems are signed by these.
 #
 # usages: Generate a root CA with OpenSSL using these as private keys.
 # Generate attestation certificates for the root CAs when creating them, and store them
@@ -434,7 +437,8 @@ tls:
               sign_by: 0x0131   # ECP384 Root CA
 
 
-# NAC (Network Access Control) intermediate keys for 802.1X
+# NAC (Network Access Control) intermediate keys for 802.1X EAP-TLS.
+# NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 nac:
     intermediate_certs:
         -
@@ -497,9 +501,11 @@ nac:
               algorithm: opaque-x509-certificate
               sign_by: 0x0131
 
+# PIV (Personal Identity Verification) keys for smartcard login
 piv:
-    # PIV (Personal Identity Verification) keys for smartcard login
     default_ca_id: 0x0431
+    default_piv_domain: '@example.directory'  # AD UPN suffix for Windows, rfc822 suffix for Linux/macOS
+
     intermediate_certs:
         -
           key:
@@ -636,7 +642,9 @@ ssh:
 
 
 # GPG/OpenPGP keys
-# for future use, PKCS#11 support in GPG is not very good atm
+# NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
+#
+# Note: PKCS#11 support in GPG is not very good atm
 #
 # RSA keys can be used for both SCA (Sign, Certify, Authenticate) and E (Encrypt) operations in GnuPG, but
 # it is recommended to use separate keys for these purposes, so make two keys here. Allow both sign & crypt
@@ -689,6 +697,7 @@ gpg:
 
 
 # Code signing keys for signing software, firmware, etc.
+# NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 codesign:
     intermediate_certs:
     -
@@ -747,6 +756,7 @@ codesign:
           algorithm: opaque-x509-certificate
           sign_by: 0x0131
 
+
 # For deriving unique passwords from usernames, hostnames, etc.
 password_derivation:
     keys:
@@ -776,7 +786,8 @@ password_derivation:
 
 
 # For generic encryption of secrets, passwords, etc.
-# (For limited and infrequent use, YubiHSM is not very fast)
+# Limited and infrequent use, YubiHSM is not very fast
+# NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 encryption:
     keys:
     - label: enc-1
