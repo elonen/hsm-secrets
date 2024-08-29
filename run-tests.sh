@@ -79,6 +79,11 @@ EOF
 
 # ------------------ test cases -------------------------
 
+test_pytest() {
+    ./_venv/bin/pip install pytest
+    ./_venv/bin/pytest -v hsm_secrets
+}
+
 test_fresh_device() {
     local count=$(run_cmd -q hsm objects list | grep -c '^0x')
     [ "$count" -eq 1 ] || { echo "Expected 1 object, but found $count"; return 1; }
@@ -441,6 +446,7 @@ run_test() {
 }
 
 echo "Running tests:"
+run_test test_pytest
 run_test test_fresh_device
 run_test test_create_all
 run_test test_tls_certificates

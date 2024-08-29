@@ -6,7 +6,7 @@ from typing import cast
 import click
 
 from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, click_hsm_obj_auto_complete, find_all_config_items_per_type, parse_keyid
-from hsm_secrets.hsm.secret_sharing_ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
+from hsm_secrets.secret_sharing.ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
 from hsm_secrets.log import _check_and_format_audit_conf_differences
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
 
@@ -420,18 +420,23 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, w
     """
     swear_you_are_on_airgapped_computer(ctx.quiet)
 
-    def apply_password_fn(new_password: str):
+    def apply_password_fn(new_password: bytes):
+        assert isinstance(new_password, bytes)
+        pw_str = new_password.decode('ASCII')
+        assert pw_str.encode('ASCII') == new_password
+
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             confirm_and_delete_old_yubihsm_object_if_exists(ses, ctx.conf.admin.shared_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
-            info = ses.auth_key_put_derived(ctx.conf.admin.shared_admin_key, new_password)
+            info = ses.auth_key_put_derived(ctx.conf.admin.shared_admin_key, pw_str)
             cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
 
     if skip_ceremony:
-        apply_password_fn(prompt_for_secret("Enter the (new) shared admin password to store", confirm=True))
+        pw = prompt_for_secret("Enter the (new) shared admin password to store", confirm=True)
+        apply_password_fn(pw.encode('ASCII'))
     else:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             secret = ses.get_pseudo_random(256//8)
-        cli_splitting_ceremony(threshold, num_shares, apply_password_fn, with_backup_key=with_backup, pre_secret=secret)
+        cli_splitting_ceremony(threshold, num_shares, apply_password_fn, with_backup_key=with_backup, rnd=secret)
 
     cli_info("OK. Shared admin key added successfully.")
 

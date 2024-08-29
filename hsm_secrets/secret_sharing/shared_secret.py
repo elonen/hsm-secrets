@@ -211,15 +211,9 @@ def _derive_key(password: str, salt: str = '') -> bytes:
     return key
 
 
-def encrypt_share(share: SecretShare, password: str|None) -> SecretShare:
-    """
-    Encrypt share, or return the share as-is if no password is provided.
-    """
-    if not password:
-        return share
-    elif share.encrypted:
-        raise ValueError("Share is already encrypted")
-
+def encrypt_share(share: SecretShare, password: str) -> SecretShare:
+    assert password, "Password must be provided"
+    assert not share.encrypted, "Share is already encrypted"
     cipher = AES.new(_derive_key(password), AES.MODE_ECB)
     return SecretShare(
         num = share.num,
@@ -243,7 +237,7 @@ def decrypt_share(share: SecretShare, password: str) -> SecretShare:
         encrypted = False).validate()
 
 
-def verify_shares(secret: bytes, threshold: int, share_strings: List[str]) -> int:
+def verify_shares_strings(secret: bytes, threshold: int, share_strings: List[str]) -> int:
     """
     Verify that all combinations of 'threshold' number of shares can reconstruct the secret.
     Return the number of combinations tested.
@@ -286,7 +280,7 @@ def test_create_and_recombine_shares():
 
     # Test combinations of shares
     decrypted_shares = [str(decrypt_share(es, pw)) for es, pw in zip(encrypted_shares, passwords)]
-    combs_tested = verify_shares(secret, threshold, decrypted_shares)
+    combs_tested = verify_shares_strings(secret, threshold, decrypted_shares)
     assert combs_tested > 0, "No combinations tested"
     print(f"Tested {combs_tested} combinations of {threshold} shares out of {len(decrypted_shares)} total shares.")
 
