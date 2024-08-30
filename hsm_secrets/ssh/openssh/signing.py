@@ -73,12 +73,12 @@ def sign_ssh_cert(cert: OpenSSHCertificate, private_key: PrivateKey) -> None:
 
 # ----------
 
+'''
 def verify_ssh_cert(cert: OpenSSHCertificate) -> bool:
     """
     Verify an SSH certificate with a public key.
 
     :param cert: The SSH certificate to verify
-    :param encoded_public_key: The public key to verify the certificate with (in OpenSSH format: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB...")
     :return: True if the certificate is verified, False otherwise
     """
     try:
@@ -147,3 +147,4 @@ def verify_ssh_cert(cert: OpenSSHCertificate) -> bool:
     except cryptography.exceptions.InvalidSignature as e:
         return False
 
+'''

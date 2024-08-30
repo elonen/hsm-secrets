@@ -1,3 +1,6 @@
+# Functions for OpenSSH certificates and templates for YubiHSM2
+# Not used in the current version of the project, but kept for reference
+'''
 from __future__ import absolute_import, division
 
 from math import floor
@@ -8,7 +11,6 @@ from typing import Sequence
 from cryptography.utils import int_to_bytes
 
 from cryptography.hazmat.primitives.asymmetric import (ed25519, rsa)
-
 
 def create_template(ts_public_key: rsa.RSAPublicKey | ed25519.Ed25519PublicKey,
                     key_whitelist: Sequence[int],
@@ -175,3 +177,4 @@ def create_request(
     req += pack_bytes(packed_type_and_key)
 
     return req
+'''

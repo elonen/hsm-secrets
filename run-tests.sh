@@ -7,7 +7,8 @@ trap "rm -rf $TEMPDIR" EXIT
 
 cp hsm-conf.yml $TEMPDIR/
 MOCKDB="$TEMPDIR/mock.pickle"
-CMD="./_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
+#CMD="./_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
+CMD="./_venv/bin/coverage run --parallel-mode --source=hsm_secrets ./_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
 
 
 # Helpers for `expect` calls:
@@ -81,7 +82,7 @@ EOF
 
 test_pytest() {
     ./_venv/bin/pip install pytest
-    ./_venv/bin/pytest -v hsm_secrets
+    ./_venv/bin/pytest --cov=hsm_secrets --cov-append --cov-report='' -v hsm_secrets
 }
 
 test_fresh_device() {
@@ -445,6 +446,10 @@ run_test() {
     rm -f $MOCKDB
 }
 
+# Reset previous coverage files before accumulating new data
+./_venv/bin/pip install coverage pytest-cov
+rm -f .coverage .coverage.*
+
 echo "Running tests:"
 run_test test_pytest
 run_test test_fresh_device
@@ -460,4 +465,13 @@ run_test test_piv_user_certificate_csr
 run_test test_piv_dc_certificate
 run_test test_logging_commands
 
-echo "All tests passed successfully!"
+echo "---"
+
+echo "Running coverage report:"
+./_venv/bin/coverage combine --append
+./_venv/bin/coverage report
+./_venv/bin/coverage html
+./_venv/bin/coverage xml
+
+echo "---"
+echo "OK. All tests passed successfully!"

@@ -4,6 +4,10 @@ dist/
 dist_deb
 build/
 
+.coverage
+coverage.xml
+htmlcov
+
 .DS_Store
 
 *.pickle
