@@ -71,9 +71,10 @@ def sign_ssh_cert(cert: OpenSSHCertificate, private_key: PrivateKey) -> None:
 
     cert.signature = encoded_signature
 
+    assert verify_ssh_cert(cert), "Failed to verify the signature on newly signed certificate"
+
 # ----------
 
-'''
 def verify_ssh_cert(cert: OpenSSHCertificate) -> bool:
     """
     Verify an SSH certificate with a public key.
@@ -146,5 +147,3 @@ def verify_ssh_cert(cert: OpenSSHCertificate) -> bool:
 
     except cryptography.exceptions.InvalidSignature as e:
         return False
-
-'''

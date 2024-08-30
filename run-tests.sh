@@ -118,6 +118,29 @@ EOF
     local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
     assert_success
     [ "$count" -eq 39 ] || { echo "Expected 39 objects, but found $count"; return 1; }
+
+    # Try to add it back (with HSM, this would actually require shared secret reconstruction ceremony, but mocking doesn't really auth)
+    expect << EOF
+        $EXPECT_PREAMBLE
+        spawn sh -c "$CMD -q hsm admin default-enable --use-backup-secret 2>&1"
+        expect {
+            "Is the backup secret hex" { sleep 0.1; send "n\r"; exp_continue }
+            "Backup secret:" { sleep 0.1; send "passw123\r"; exp_continue }
+            timeout { handle_timeout }
+            eof {}
+        }
+        $EXPECT_POSTAMBLE
+EOF
+    assert_success
+}
+
+
+test_attest() {
+    setup
+    local output=$(run_cmd hsm attest 0x0110)
+    assert_success
+    echo "$output"
+    assert_grep "BEGIN CERTIFICATE" "$output"
 }
 
 test_tls_certificates() {
@@ -125,25 +148,53 @@ test_tls_certificates() {
     run_cmd -q x509 cert get --all | openssl x509 -text -noout
     assert_success
 
-    local output=$(run_cmd tls server-cert --out $TEMPDIR/www-example-com.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt rsa4096)
+    for KEYTYPE in ed25519 ecp256 ecp384 rsa4096; do
+        KEYBITS=$(echo $KEYTYPE | sed -E 's/[^0-9]//g')
+
+        local output=$(run_cmd tls server-cert --out $TEMPDIR/www-example-com_$KEYTYPE.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt $KEYTYPE)
+        assert_success
+        echo "$output"
+        assert_not_grep "Cert errors" "$output"
+        assert_not_grep "Cert warnings" "$output"
+
+        local output=$(openssl crl2pkcs7 -nocrl -certfile $TEMPDIR/www-example-com_$KEYTYPE.cer.pem | openssl pkcs7 -print_certs | openssl x509 -text -noout)
+        assert_success
+        echo "$output"
+        assert_grep 'Subject.*CN.*=.*www.example.com.*L.*=.*Duckburg.*ST.*=.*Calisota.*C.*=.*US' "$output"
+        assert_grep 'DNS.*www.example.org' "$output"
+        assert_grep 'IP Address.*192.168.0.1' "$output"
+        assert_grep 'IP Address.*FD12:123' "$output"
+        assert_grep "Public.*$KEYBITS" "$output"
+        assert_grep 'Signature.*ecdsa' "$output"
+
+        [ -f $TEMPDIR/www-example-com_$KEYTYPE.key.pem ] || { echo "ERROR: Key not saved"; return 1; }
+        [ -f $TEMPDIR/www-example-com_$KEYTYPE.csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
+        [ -f $TEMPDIR/www-example-com_$KEYTYPE.chain.pem ] || { echo "ERROR: Chain bundle not saved"; return 1; }
+    done
+}
+
+test_tls_sign_command() {
+    setup
+
+    # Generate a CSR
+    openssl req -new -newkey rsa:2048 -nodes -keyout $TEMPDIR/test.key -out $TEMPDIR/test.csr -subj "/CN=csrtest.example.com"
+
+    # Sign the CSR using the TLS 'sign' command
+    local output=$(run_cmd tls sign $TEMPDIR/test.csr --ca 0x0211 --out $TEMPDIR/test.crt)
     assert_success
     echo "$output"
-    assert_not_grep "Cert errors" "$output"
-    assert_not_grep "Cert warnings" "$output"
 
-    local output=$(openssl crl2pkcs7 -nocrl -certfile $TEMPDIR/www-example-com.cer.pem | openssl pkcs7 -print_certs | openssl x509 -text -noout)
+    # Verify the signed certificate
+    local cert_output=$(openssl x509 -in $TEMPDIR/test.crt -text -noout)
     assert_success
-    echo "$output"
-    assert_grep 'Subject.*CN.*=.*www.example.com.*L.*=.*Duckburg.*ST.*=.*Calisota.*C.*=.*US' "$output"
-    assert_grep 'DNS.*www.example.org' "$output"
-    assert_grep 'IP Address.*192.168.0.1' "$output"
-    assert_grep 'IP Address.*FD12:123' "$output"
-    assert_grep 'Public.*4096' "$output"
-    assert_grep 'Signature.*ecdsa' "$output"
-
-    [ -f $TEMPDIR/www-example-com.key.pem ] || { echo "ERROR: Key not saved"; return 1; }
-    [ -f $TEMPDIR/www-example-com.csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
-    [ -f $TEMPDIR/www-example-com.chain.pem ] || { echo "ERROR: Chain bundle not saved"; return 1; }
+    echo "$cert_output"
+    assert_grep "Subject:.*CN.*=.*csrtest.example.com" "$cert_output"
+    assert_grep "Issuer:.*Duckburg" "$cert_output"
+    assert_grep "CA.*FALSE" "$cert_output"
+    assert_grep "X509v3 Key Usage: critical" "$cert_output"
+    assert_grep "Digital Signature, Key Encipherment" "$cert_output"
+    assert_grep "X509v3 Extended Key Usage:" "$cert_output"
+    assert_grep "TLS Web Server Authentication" "$cert_output"
 }
 
 test_piv_user_certificate_key_type() {
@@ -322,6 +373,17 @@ test_ssh_user_certificates() {
     run_cmd ssh get-ca --all | ssh-keygen -l -f /dev/stdin
     assert_success
 
+    # RSA key
+    ssh-keygen -t rsa -b 2048 -f $TEMPDIR/testkey_rsa -N '' -C 'testkey'
+    run_cmd ssh sign-user -u test.user --ca ssh-rsa-ca-root-key -p users,admins $TEMPDIR/testkey_rsa.pub
+    assert_success
+
+    # ECDSA 256 key
+    ssh-keygen -t ecdsa -b 256 -f $TEMPDIR/testkey_ecdsa -N '' -C 'testkey'
+    run_cmd ssh sign-user -u test.user --ca ssh-ecp384-ca-root-key -p users,admins $TEMPDIR/testkey_ecdsa.pub
+    assert_success
+
+    # ED25519 key
     ssh-keygen -t ed25519 -f $TEMPDIR/testkey -N '' -C 'testkey'
     run_cmd ssh sign-user -u test.user -p users,admins $TEMPDIR/testkey.pub
     assert_success
@@ -436,7 +498,9 @@ function run_test_quiet() {
 }
 
 run_test() {
-    echo -n "  $1 ... "
+    echo ""
+    echo "🚧 ------------ run_test $1 ------------ 🚧"
+    echo ""
     if $1; then
         echo "OK"
     else
@@ -451,10 +515,13 @@ run_test() {
 rm -f .coverage .coverage.*
 
 echo "Running tests:"
+
 run_test test_pytest
+run_test test_attest
 run_test test_fresh_device
 run_test test_create_all
 run_test test_tls_certificates
+run_test test_tls_sign_command
 run_test test_crl_commands
 run_test test_password_derivation
 run_test test_wrapped_backup

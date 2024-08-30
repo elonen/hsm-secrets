@@ -143,9 +143,14 @@ class BaseCertificateChecker:
             pass
 
     def _check_key_identifiers(self):
-        if not self.certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier):
+        try:
+            self.certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+        except x509.ExtensionNotFound:
             self._add_issue("SubjectKeyIdentifier extension not found", IssueSeverity.WARNING)
-        if not self.certificate.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier):
+
+        try:
+            self.certificate.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
+        except x509.ExtensionNotFound:
             self._add_issue("AuthorityKeyIdentifier extension not found", IssueSeverity.WARNING)
 
     def _check_policy_extensions(self):

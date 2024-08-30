@@ -13,7 +13,7 @@ from datetime import timedelta
 import ipaddress
 from typing import Callable, Dict, TypeVar, Union, List, Optional
 
-from hsm_secrets.config import HSMConfig, X509Info
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Info
 
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 from cryptography.hazmat.primitives import hashes
@@ -21,7 +21,8 @@ from cryptography.hazmat.primitives import hashes
 import yubihsm.objects      # type: ignore [import]
 import yubihsm.defs         # type: ignore [import]
 
-from hsm_secrets.x509.def_utils import merge_x509_info_with_defaults
+from hsm_secrets.utils import HsmSecretsCtx
+from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 from hsm_secrets.key_adapters import RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter, PrivateKeyOrAdapter
 
 
@@ -169,7 +170,7 @@ class X509CertBuilder:
             new_ext_src: Optional[T],
             fn_mk_new_ext: Callable[[T], tuple[ExtensionTypeVar, bool]],
             fn_add: None | Callable[[ExtensionTypeVar, ExtensionTypeVar, bool, bool], tuple[ExtensionTypeVar, bool]]
-        ):
+        ) -> x509.CertificateBuilder:
             """
             Helper function to amend an extension in a CSR.
             Compares the existing extension in the CSR with a template from X509Info,
@@ -197,7 +198,7 @@ class X509CertBuilder:
                 assert isinstance(new_ext, extclass), f"Bug: fn_mk_new_ext() result is {type(new_ext)}, expected {extclass}"
 
             if old_ext is None and new_ext is None:
-                return
+                return builder
 
             if amend_mode == CsrAmendMode.KEEP:
                 ext = old_ext
@@ -221,9 +222,11 @@ class X509CertBuilder:
             if ext is not None:
                 builder = builder.add_extension(ext, critical=crit or False)
 
+            return builder
+
 
         # Subject Alternative Names (SANs)
-        _amend(self, builder, x509.SubjectAlternativeName,
+        builder = _amend(self, builder, x509.SubjectAlternativeName,
             amend_mode = amend_sans,
             new_ext_src = self.cert_def_info.subject_alt_name,
             fn_mk_new_ext = lambda _nes: self._mkext_alt_name(),
@@ -231,7 +234,7 @@ class X509CertBuilder:
         )
 
         # Key Usage
-        _amend(self, builder, x509.KeyUsage,
+        builder = _amend(self, builder, x509.KeyUsage,
             amend_mode = amend_key_usage,
             new_ext_src = self.cert_def_info.key_usage,
             fn_mk_new_ext = lambda _nes: self._mkext_key_usage(),
@@ -249,7 +252,7 @@ class X509CertBuilder:
         )
 
         # Extended Key Usage
-        _amend(self, builder, x509.ExtendedKeyUsage,
+        builder = _amend(self, builder, x509.ExtendedKeyUsage,
             amend_mode = amend_extended_key_usage,
             new_ext_src = self.cert_def_info.extended_key_usage,
             fn_mk_new_ext = lambda _nes: self._mkext_extended_key_usage(),
@@ -257,7 +260,7 @@ class X509CertBuilder:
         )
 
         # Name Constraints
-        _amend(self, builder, x509.NameConstraints,
+        builder = _amend(self, builder, x509.NameConstraints,
             amend_mode = amend_name_constraints,
             new_ext_src = self.cert_def_info.name_constraints,
             fn_mk_new_ext = lambda _nes: self._mkext_name_constraints(),
@@ -265,7 +268,7 @@ class X509CertBuilder:
         )
 
         # Basic Constraints
-        _amend(self, builder, x509.BasicConstraints,
+        builder = _amend(self, builder, x509.BasicConstraints,
             amend_mode = amend_basic_constraints,
             new_ext_src = self.cert_def_info.basic_constraints,
             fn_mk_new_ext = lambda nes: (x509.BasicConstraints(nes.ca, nes.path_len), True),
@@ -273,7 +276,7 @@ class X509CertBuilder:
         )
 
         # CRL Distribution Points
-        _amend(self, builder, x509.CRLDistributionPoints,
+        builder = _amend(self, builder, x509.CRLDistributionPoints,
             amend_mode = amend_crl_urls,
             new_ext_src = self.cert_def_info.crl_distribution_points,
             fn_mk_new_ext = lambda nes: (x509.CRLDistributionPoints([x509.DistributionPoint(full_name=[x509.UniformResourceIdentifier(url)], relative_name=None, reasons=None, crl_issuer=None) for url in nes.urls]), False),
@@ -281,7 +284,7 @@ class X509CertBuilder:
         )
 
         # Authority Information Access (OCSP URLs)
-        _amend(self, builder, x509.AuthorityInformationAccess,
+        builder = _amend(self, builder, x509.AuthorityInformationAccess,
             amend_mode = amend_ocsp_urls,
             new_ext_src = self.cert_def_info.authority_info_access,
             fn_mk_new_ext = lambda nes: (x509.AuthorityInformationAccess([x509.AccessDescription(
@@ -290,6 +293,9 @@ class X509CertBuilder:
             fn_add = lambda o,n,oc,nc: (x509.AuthorityInformationAccess(list(set(o) | set(n))), oc or nc)
         )
 
+        # Add Subject Key Identifier (SKI) and Authority Key Identifier (AKI)
+        for ext in self._mk_ski_and_aki(issuer_cert):
+            builder = builder.add_extension(ext, critical=False)
 
         # Sign the amended CSR
         ed = isinstance(issuer_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
@@ -346,18 +352,9 @@ class X509CertBuilder:
         if self.cert_def_info.inhibit_any_policy:
             builder = builder.add_extension(*self._mk_inhibit_any_policy())
 
-        # Always add Subject Key Identifier (SKI)
-        subject_key_identifier = x509.SubjectKeyIdentifier.from_public_key(self.public_key)
-        builder = builder.add_extension(subject_key_identifier, critical=False)
-
-        # Add Authority Key Identifier AKI (based on SKI for self-signed, or issuer's public key for cross-signed)
-        if issuer:
-            issuer_pubkey: CertificatePublicKeyTypes = issuer.public_key()
-            assert isinstance(issuer_pubkey, (rsa.RSAPublicKey, ed25519.Ed25519PublicKey, ec.EllipticCurvePublicKey)), f"Unsupported public key type: {type(issuer_pubkey)}"
-            authority_key_identifier = x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_pubkey)
-        else:
-            authority_key_identifier = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(subject_key_identifier)
-        builder = builder.add_extension(authority_key_identifier, critical=False)
+        # Add Subject Key Identifier (SKI) and Authority Key Identifier (AKI)
+        for ext in self._mk_ski_and_aki(issuer):
+            builder = builder.add_extension(ext, critical=False)
 
         return builder
 
@@ -410,6 +407,21 @@ class X509CertBuilder:
             access_location=x509.UniformResourceIdentifier(url))
             for url in self.cert_def_info.authority_info_access.ocsp]
         return x509.AuthorityInformationAccess(aia_ocsp), self.cert_def_info.authority_info_access.critical
+
+    def _mk_ski_and_aki(self, issuer: x509.Certificate|None) -> tuple[x509.SubjectKeyIdentifier, x509.AuthorityKeyIdentifier]:
+        """
+        Create Subject Key Identifier (SKI) and Authority Key Identifier (AKI) extensions.
+        """
+        subject_key_identifier = x509.SubjectKeyIdentifier.from_public_key(self.public_key)
+
+        if issuer:
+            issuer_pubkey: CertificatePublicKeyTypes = issuer.public_key()
+            assert isinstance(issuer_pubkey, (rsa.RSAPublicKey, ed25519.Ed25519PublicKey, ec.EllipticCurvePublicKey)), f"Unsupported public key type: {type(issuer_pubkey)}"
+            authority_key_identifier = x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_pubkey)
+        else:
+            authority_key_identifier = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(subject_key_identifier)
+
+        return subject_key_identifier, authority_key_identifier
 
     def _mk_name_attribs(self) -> x509.Name:
         """
@@ -587,3 +599,10 @@ def parse_x500_dn_subject(subject_string: str) -> List[x509.NameAttribute]:
         subject_attrs.append(x509.NameAttribute(oid, value))
 
     return subject_attrs
+
+
+def get_issuer_cert_and_key(ctx: HsmSecretsCtx, ses, ca_id: str|HSMKeyID) -> tuple[x509.Certificate, PrivateKeyOrAdapter]:
+    issuer_cert_def = ctx.conf.find_def(ca_id, HSMOpaqueObject)
+    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
+    assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
+    return ses.get_certificate(issuer_cert_def), ses.get_private_key(issuer_x509_def.key)

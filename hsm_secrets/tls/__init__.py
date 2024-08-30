@@ -15,11 +15,10 @@ import yubihsm.defs     # type: ignore [import]
 import yubihsm.objects  # type: ignore [import]
 
 from hsm_secrets.config import HSMOpaqueObject, X509Info, X509KeyUsageName
-from hsm_secrets.key_adapters import PrivateKeyOrAdapter, make_private_key_adapter
+from hsm_secrets.key_adapters import PrivateKeyOrAdapter
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_warn, open_hsm_session, pass_common_args
-from hsm_secrets.x509.cert_builder import X509CertBuilder
+from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder, get_issuer_cert_and_key
 from hsm_secrets.x509.cert_checker import BaseCertificateChecker, IssueSeverity
-from hsm_secrets.x509.csr_utils import load_csr, sign_csr_with_ca
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 
 @click.group()
@@ -120,7 +119,7 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
 
     TLSServerCertificateChecker(signed_cert).check_and_show_issues()
 
-    key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption())
+    key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
     csr_pem = builder.generate_csr().public_bytes(encoding=serialization.Encoding.PEM)
     crt_pem = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
     chain_pem = (crt_pem.strip() + b'\n' + issuer_cert.public_bytes(encoding=serialization.Encoding.PEM)) if issuer_cert else None
@@ -154,21 +153,47 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     Sign a Certificate Signing Request (CSR) with a CA key from the HSM.
     The output is a signed certificate in PEM format.
     """
-    csr_obj = load_csr(csr)
-    ca_id = ca or ctx.conf.tls.default_ca_id
-    signed_cert = sign_csr_with_ca(ctx, csr_obj, ca_id, validity)
+    csr_data = click.get_text_stream('stdin').read().encode() if (csr == '-') else Path(str(csr)).read_bytes()
+    csr_obj = x509.load_pem_x509_csr(csr_data)
+
+    # Make fields to amend the CSR with
+    template = X509Info(
+        basic_constraints = X509Info.BasicConstraints(ca=False, path_len=None, critical=False), # end-entity cert
+        key_usage = X509Info.KeyUsage(usages = {'digitalSignature', 'keyEncipherment', 'keyAgreement'}, critical = True),
+        extended_key_usage = X509Info.ExtendedKeyUsage(usages = {'serverAuth'}, critical = False),
+        validity_days = validity
+    )
+
+    # Add DNS SAN from CN
+    if cn := csr_obj.subject.get_attributes_for_oid(x509_oid.NameOID.COMMON_NAME):
+        template.subject_alt_name = X509Info.SubjectAltName(names = {'dns': [str(cn[0].value)]}, critical = False)
+    else:
+        cli_warn("WARNING: CSR does not contain a Common Name (CN) field. SubjectAltName will be empty")
+
+
+    # Sign the CSR with HSM-backed CA
+    with open_hsm_session(ctx) as ses:
+        issuer_cert, issuer_key = get_issuer_cert_and_key(ctx, ses, ca or ctx.conf.tls.default_ca_id)
+        builder = X509CertBuilder(ctx.conf, template, csr_obj)
+        signed_cert = builder.amend_and_sign_csr(
+            issuer_cert, issuer_key,
+            validity_days = validity,
+            amend_sans = CsrAmendMode.ADD,
+            amend_extended_key_usage = CsrAmendMode.ADD,
+            amend_key_usage = CsrAmendMode.REPLACE
+        )
+
     TLSServerCertificateChecker(signed_cert).check_and_show_issues()
 
-    if out:
-        out_path = Path(str(out))
-    else:
-        out_path = Path(str(csr)).with_suffix('.cer.pem')
+    # Save the signed certificate
+    out_path = Path(str(out)) if out else Path(str(csr)).with_suffix('.cer.pem')
     if out_path.exists():
         click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True, err=True)
-
     out_path.write_bytes(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
+
     cli_info(f"Signed certificate saved to: {out_path}")
     cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {out_path} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
+
 
 # ----- Helpers -----
 from cryptography.x509.oid import ExtendedKeyUsageOID

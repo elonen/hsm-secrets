@@ -169,6 +169,7 @@ def topological_sort_x509_cert_defs(cert_defs: List[HSMOpaqueObject]) -> list[HS
     return sorted_certs
 
 
+
 def find_cert_def(conf: HSMConfig, opaque_id: HSMKeyID|int) -> Optional[X509Cert]:
     """
     Find a certificate definition by its opaque ID.

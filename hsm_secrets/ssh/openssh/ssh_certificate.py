@@ -38,6 +38,7 @@ class OpenSSHCertificate(ABC):
         self.priv_key: Optional[Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey, ed25519.Ed25519PrivateKey]] = None
 
 
+    '''
     @staticmethod
     def from_string_fmt(data: str) -> 'OpenSSHCertificate':
         """
@@ -58,6 +59,7 @@ class OpenSSHCertificate(ABC):
 
         assert cert.cert_cipher_string() == cert_type, "Certificate type mismatch"
         return cert
+    '''
 
 
     def to_string_fmt(self) -> str:
@@ -105,6 +107,7 @@ class OpenSSHCertificate(ABC):
         return encoded
 
 
+    '''
     @staticmethod
     def decode(data: bytes) -> Tuple['OpenSSHCertificate', bytes]:
         """
@@ -144,7 +147,7 @@ class OpenSSHCertificate(ABC):
                 return cert, data
 
         raise ValueError(f"Unsupported cipher: {cipher_type}")
-
+    '''
 
     @staticmethod
     def cipher_match(cipher_name: str) -> bool:
