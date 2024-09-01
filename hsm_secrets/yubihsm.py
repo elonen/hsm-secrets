@@ -496,7 +496,8 @@ class RealHSMSession(HSMSession):
     def get_certificate(self, keydef: HSMOpaqueObject) -> haz_x509.Certificate:
         obj = self.backend.get_object(keydef.id, OBJECT.OPAQUE)
         assert isinstance(obj, Opaque)
-        return obj.get_certificate()
+        res = obj.get_certificate()
+        return res
 
     def put_certificate(self, keydef: HSMOpaqueObject, certificate: haz_x509.Certificate) -> ObjectInfo:
         obj = self.backend.get_object(keydef.id, OBJECT.OPAQUE)

@@ -84,9 +84,7 @@ class X509CertBuilder:
         """
         assert self.private_key, "No private key available for self-signing"
         builder = self._build_fresh_cert_base()
-
-        ed = isinstance(self.private_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
-        return builder.sign(self.private_key, None if ed else hashes.SHA256())
+        return builder.sign(self.private_key, sign_hash_algo_for_key(self.private_key))
 
 
     def build_and_sign(self, issuer_cert: x509.Certificate, issuer_key: PrivateKeyOrAdapter) -> x509.Certificate:
@@ -94,9 +92,7 @@ class X509CertBuilder:
         Build and sign an intermediate X.509 certificate with one or more issuer certificates.
         """
         builder = self._build_fresh_cert_base(issuer=issuer_cert)
-
-        ed = isinstance(issuer_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
-        return builder.sign(issuer_key, None if ed else hashes.SHA256())
+        return builder.sign(issuer_key, sign_hash_algo_for_key(issuer_key))
 
 
     def generate_csr(self) -> x509.CertificateSigningRequest:
@@ -122,8 +118,7 @@ class X509CertBuilder:
         if self.cert_def_info.name_constraints and (self.cert_def_info.name_constraints.permitted or self.cert_def_info.name_constraints.excluded):
             builder = builder.add_extension(*self._mkext_name_constraints())
 
-        ed = isinstance(self.private_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
-        return builder.sign(self.private_key, None if ed else hashes.SHA256())
+        return builder.sign(self.private_key, sign_hash_algo_for_key(self.private_key))
 
 
     # ----- CSR amendment -----
@@ -246,8 +241,9 @@ class X509CertBuilder:
                     key_agreement = o.key_agreement or n.key_agreement,
                     key_cert_sign = o.key_cert_sign or n.key_cert_sign,
                     crl_sign = o.crl_sign or n.crl_sign,
-                    encipher_only = o.encipher_only or n.encipher_only,
-                    decipher_only = o.decipher_only or n.decipher_only
+                    # Special handling for these -- encipher_only and decipher_only are undefined unless key_agreement is true:
+                    encipher_only = (o.encipher_only if o.key_agreement else False) or (n.encipher_only if n.key_agreement else False),
+                    decipher_only = (o.decipher_only if o.key_agreement else False) or (n.decipher_only if n.key_agreement else False)
                 ), oc or nc)
         )
 
@@ -298,8 +294,7 @@ class X509CertBuilder:
             builder = builder.add_extension(ext, critical=False)
 
         # Sign the amended CSR
-        ed = isinstance(issuer_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
-        return builder.sign(issuer_key, None if ed else hashes.SHA256())
+        return builder.sign(issuer_key, sign_hash_algo_for_key(issuer_key))
 
 
     # ----- Internal helpers -----
@@ -322,8 +317,13 @@ class X509CertBuilder:
         builder = builder.serial_number(x509.random_serial_number())
         builder = builder.public_key(self.public_key)
 
+        def _add_ext_if_len_nonzero(ext: x509.ExtensionType, critical: bool):
+            nonlocal builder
+            if getattr(ext, '__len__', lambda: 0)() > 0:
+                builder = builder.add_extension(ext, critical=critical)
+
         if self.cert_def_info.attribs and self.cert_def_info.subject_alt_name:
-            builder = builder.add_extension(*self._mkext_alt_name())
+            _add_ext_if_len_nonzero(*self._mkext_alt_name())
 
         if self.cert_def_info.key_usage and self.cert_def_info.key_usage.usages:
             builder = builder.add_extension(*self._mkext_key_usage())
@@ -447,27 +447,10 @@ class X509CertBuilder:
 
     def _mkext_alt_name(self) -> tuple[x509.SubjectAlternativeName, bool]:
         assert self.cert_def_info.subject_alt_name, "X509Info.subject_alt_name is missing"
-        type_to_cls = {
-            "dns": lambda n: x509.DNSName(n),
-            "ip": lambda n: x509.IPAddress(ipaddress.ip_address(n)),
-            "rfc822": lambda n: x509.RFC822Name(n),
-            "uri": lambda n: x509.UniformResourceIdentifier(n),
-            "directory": lambda n: x509.DirectoryName(x509.Name(parse_x500_dn_subject(n))),
-            "registered_id": lambda n: x509.RegisteredID(n),
-                "upn": lambda n: x509.OtherName(
-                    x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3"),
-                    asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n).dump()).dump()
-                ),
-            "oid": lambda n: x509.OtherName(
-                x509.ObjectIdentifier(n.split("=", 1)[0]),
-                asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n.split("=", 1)[1]).dump()).dump()
-            )
-        }
         san: List[x509.GeneralName] = []
         for san_type, names in (self.cert_def_info.subject_alt_name.names or {}).items():
             try:
-                dst_conv = type_to_cls[san_type]
-                san.extend([dst_conv(name) for name in names])
+                san.extend([x509_str_to_general_name(san_type, name) for name in names])
             except Exception as e:
                 raise ValueError(f"Failed to map SAN type '{san_type}' (names: '{str(names)}') to a class: {e}")
         return x509.SubjectAlternativeName(san), self.cert_def_info.subject_alt_name.critical
@@ -508,37 +491,22 @@ class X509CertBuilder:
 
     def _mkext_name_constraints(self) -> tuple[x509.NameConstraints, bool]:
         assert self.cert_def_info.name_constraints, "X509Info.name_constraints is missing"
-        type_str_map = {
-            "dns": x509.DNSName,
-            "ip": x509.IPAddress,
-            "rfc822": x509.RFC822Name,
-            "uri": x509.UniformResourceIdentifier,
-            "directory": x509.DirectoryName,
-            "registered_id": x509.RegisteredID,
-            "other": x509.OtherName
-        }
 
         permitted = []
         if name_dict := self.cert_def_info.name_constraints.permitted:
-            for (name_type, names) in name_dict.items():
-                dst_cls = type_str_map[name_type]
-
-                if dst_cls == x509.IPAddress:
-                    def ip_or_network(n: str) -> Union[ipaddress.IPv4Address, ipaddress.IPv6Address, ipaddress.IPv4Network, ipaddress.IPv6Network]:
-                        try:
-                            return ipaddress.ip_address(n)
-                        except ValueError:
-                            return ipaddress.ip_network(n, strict=False)
-                    vals = [dst_cls(ip_or_network(name)) for name in names]
-                else:
-                    vals = [dst_cls(name) for name in names]
-
-                permitted.extend(vals)
+            for name_type, names in name_dict.items():
+                try:
+                    permitted.extend([x509_str_to_general_name(name_type, name) for name in names])
+                except Exception as e:
+                    raise ValueError(f"Failed to map permitted name constraint type '{name_type}' (names: '{str(names)}') to a class: {e}")
 
         excluded = []
         if name_dict := self.cert_def_info.name_constraints.excluded:
-            for (name_type, names) in name_dict.items():
-                excluded.extend([type_str_map[name_type](name) for name in names])
+            for name_type, names in name_dict.items():
+                try:
+                    excluded.extend([x509_str_to_general_name(name_type, name) for name in names])
+                except Exception as e:
+                    raise ValueError(f"Failed to map excluded name constraint type '{name_type}' (names: '{str(names)}') to a class: {e}")
 
         if len(set(permitted)) != len(permitted):
             raise ValueError("Duplicate permitted name constraints")
@@ -548,9 +516,38 @@ class X509CertBuilder:
             raise ValueError("Permitted and excluded name constraints overlap")
 
         res = x509.NameConstraints(
-            permitted_subtrees = None if not permitted else permitted,
-            excluded_subtrees = None if not excluded else excluded)
+            permitted_subtrees=None if not permitted else permitted,
+            excluded_subtrees=None if not excluded else excluded
+        )
         return res, self.cert_def_info.name_constraints.critical
+
+
+def x509_str_to_general_name(gn_type: str, data: str) -> x509.GeneralName:
+    def _ip_or_network(n: str) -> Union[ipaddress.IPv4Address, ipaddress.IPv6Address, ipaddress.IPv4Network, ipaddress.IPv6Network]:
+        try:
+            return ipaddress.ip_address(n)
+        except ValueError:
+            return ipaddress.ip_network(n, strict=False)
+
+    type_to_cls = {
+        "dns": lambda n: x509.DNSName(n),
+        "ip": lambda n: x509.IPAddress(_ip_or_network(n)),
+        "rfc822": lambda n: x509.RFC822Name(n),
+        "uri": lambda n: x509.UniformResourceIdentifier(n),
+        "directory": lambda n: x509.DirectoryName(x509.Name(parse_x500_dn_subject(n))),
+        "registered_id": lambda n: x509.RegisteredID(n),
+        "upn": lambda n: x509.OtherName(
+            x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3"),
+            asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n).dump()).dump()
+        ),
+        "oid": lambda n: x509.OtherName(
+            x509.ObjectIdentifier(n.split("=", 1)[0]),
+            asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n.split("=", 1)[1]).dump()).dump()
+        )
+    }
+    if gn_type not in type_to_cls:
+        raise ValueError(f"Unsupported general name type: {gn_type}")
+    return type_to_cls[gn_type](data)
 
 
 def parse_x500_dn_subject(subject_string: str) -> List[x509.NameAttribute]:
@@ -606,3 +603,17 @@ def get_issuer_cert_and_key(ctx: HsmSecretsCtx, ses, ca_id: str|HSMKeyID) -> tup
     issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
     assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
     return ses.get_certificate(issuer_cert_def), ses.get_private_key(issuer_x509_def.key)
+
+
+def sign_hash_algo_for_key(key: PrivateKeyOrAdapter) -> hashes.SHA256|hashes.SHA384|hashes.SHA512|None:
+    if isinstance(key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey)):
+        return None
+    elif isinstance(key, (RSAPrivateKeyHSMAdapter, rsa.RSAPrivateKey)):
+        return hashes.SHA256()
+    elif isinstance(key, (ECPrivateKeyHSMAdapter, ec.EllipticCurvePrivateKey)):
+        if key.key_size <= 256:
+            return hashes.SHA256()
+        elif key.key_size <= 384:
+            return hashes.SHA384()
+        else:
+            return hashes.SHA512()

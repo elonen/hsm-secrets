@@ -76,8 +76,8 @@ def make_signed_piv_user_cert(
     return private_key, csr_obj or cert_builder.generate_csr(), signed_cert
 
 
-def _make_dn_subject(user: str, attribs: Optional[X509Info.CertAttribs]) -> str:
-    subject = f"CN={user}"
+def _make_dn_subject(cn: str, attribs: Optional[X509Info.CertAttribs]) -> str:
+    subject = f"CN={cn}"
     if attribs:
         for k, v in {'O': attribs.organization, 'L': attribs.locality, 'ST': attribs.state, 'C': attribs.country}.items():
             if v:

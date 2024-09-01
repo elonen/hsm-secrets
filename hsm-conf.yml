@@ -147,7 +147,7 @@ admin:
 user_keys:
     - label: user_john.doe
       id: 0xE001
-      domains: ['tls', 'nac', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
+      domains: ['tls', 'nac', 'piv', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
       capabilities:
         - sign-ssh-certificate          # For SSH certificate creation
         - sign-hmac                     # For password derivation
@@ -528,6 +528,14 @@ piv:
                 - keyAgreement
                 - keyCertSign
                 - cRLSign
+            name_constraints:
+              permitted:
+                  dns:
+                      - .hsm.local
+                      - .example.directory
+                  directory:
+                      - 'DC=hsm,DC=local'
+                      - 'DC=example,DC=directory'
           signed_certs:
             - id: 0x0411
               label: piv-rsa-intermediate-cert
@@ -553,6 +561,14 @@ piv:
                 - keyAgreement
                 - keyCertSign
                 - cRLSign
+            name_constraints:
+              permitted:
+                  dns:
+                      - .hsm.local
+                      - .example.directory
+                  directory:
+                      - 'DC=hsm,DC=local'
+                      - 'DC=example,DC=directory'
           signed_certs:
             - id: 0x0431
               label: piv-ecp384-intermediate-cert

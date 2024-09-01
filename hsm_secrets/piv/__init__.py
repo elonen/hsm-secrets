@@ -13,12 +13,12 @@ from asn1crypto.core import OctetString     # type: ignore [import]
 
 import yubikit.piv
 
-from hsm_secrets.config import HSMOpaqueObject, X509NameType
+from hsm_secrets.config import HSMOpaqueObject, X509Info, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
 from hsm_secrets.piv.yubikey_piv import import_to_yubikey_piv
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, open_hsm_session, pass_common_args
-from hsm_secrets.x509.cert_builder import X509CertBuilder
+from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
 
 
@@ -41,7 +41,7 @@ def cmd_piv_yubikey():
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename, default: deduced from input")
 @click.option('--san', multiple=True, help="Additional (GeneralName) SANs")
-@click.option('--hostname', '-h', required=True, help="Hostname (CommonName) for the DC certificate")
+@click.option('--hostname', '-n', required=True, help="Hostname (CommonName) for the DC certificate")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
 def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: list[str], hostname: str, template: str|None):
     """Sign a DC Kerberos PKINIT certificate for PIV"""
@@ -85,8 +85,9 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
         x509_info.subject_alt_name.names.setdefault(san_type_lower, []).append(san_value)  # type: ignore [arg-type]
 
     # Add hostname to DNS SANs if not already there
-    if hostname not in (x509_info.subject_alt_name.names['dns'] or []):
-        x509_info.subject_alt_name.names['dns'] = [hostname] + list(x509_info.subject_alt_name.names['dns'] or [])
+    if hostname not in (x509_info.subject_alt_name.names.get('dns') or []):
+
+        x509_info.subject_alt_name.names['dns'] = [hostname] + list(x509_info.subject_alt_name.names.get('dns') or [])
 
     # Create X509CertBuilder
     cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_obj)
@@ -95,7 +96,15 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
     with open_hsm_session(ctx) as ses:
         issuer_cert = ses.get_certificate(issuer_cert_def)
         issuer_key = ses.get_private_key(issuer_x509_def.key)
-        signed_cert = cert_builder.build_and_sign(issuer_cert, issuer_key)
+        signed_cert = cert_builder.amend_and_sign_csr(
+            issuer_cert,
+            issuer_key,
+            validity_days=x509_info.validity_days,
+            amend_subject=CsrAmendMode.REPLACE,
+            amend_sans=CsrAmendMode.ADD,
+            amend_extended_key_usage=CsrAmendMode.ADD,
+            amend_key_usage=CsrAmendMode.ADD,
+        )
 
     PIVDomainControllerCertificateChecker(signed_cert).check_and_show_issues()
 
@@ -103,7 +112,7 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
     with open(out_path, 'wb') as f:
         f.write(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
     cli_info(f"Signed certificate saved to: {out_path}")
-
+    cli_code_info(f"View it with: `openssl x509 -in {out_path} -text`")
 
 @cmd_piv.command('user-cert')
 @pass_common_args

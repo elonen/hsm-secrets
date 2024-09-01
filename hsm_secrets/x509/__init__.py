@@ -16,7 +16,7 @@ from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, c
 
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
-from hsm_secrets.x509.cert_builder import X509CertBuilder
+from hsm_secrets.x509.cert_builder import X509CertBuilder, sign_hash_algo_for_key
 from hsm_secrets.x509.cert_checker import X509IntermediateCACertificateChecker, X509RootCACertificateChecker
 from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
 from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, click_hsm_obj_auto_complete
@@ -99,6 +99,7 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
     cli_info("")
 
     with open_hsm_session(ctx) as ses:
+        pem_file = None
         for cd in selected_certs:
             pem = ses.get_certificate(cd).public_bytes(encoding=serialization.Encoding.PEM).decode()
             if outdir:
@@ -113,7 +114,8 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
             else:
                 cli_result(pem.strip())
 
-        cli_code_info("To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile <CERT_FILE.pem> | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
+        if pem_file:
+            cli_code_info(f"To view certificate, use:\n`openssl crl2pkcs7 -nocrl -certfile '{pem_file}' | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
 # ---------------
 
@@ -353,8 +355,7 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
         builder = builder.next_update(next_update)
 
         # Sign the CRL
-        ed = isinstance(ca_key, (Ed25519PrivateKeyHSMAdapter, ed25519.Ed25519PrivateKey))
-        crl = builder.sign(private_key=ca_key, algorithm=None if ed else hashes.SHA256())
+        crl = builder.sign(ca_key, sign_hash_algo_for_key(ca_key))
 
         # Write the updated CRL
         out_file = out or crl_file

@@ -102,7 +102,11 @@ class ECPrivateKeyHSMAdapter(ec.EllipticCurvePrivateKey):
 
     def sign(self, data: bytes, signature_algorithm: ec.EllipticCurveSignatureAlgorithm) -> bytes:
         if isinstance(signature_algorithm, ec.ECDSA):
-            return self.hsm_obj.sign_ecdsa(data)
+            hash_algos = { 256: hashes.SHA256(), 384: hashes.SHA384(), 512: hashes.SHA512() }
+            if hasha := hash_algos.get(signature_algorithm.algorithm.digest_size*8):
+                return self.hsm_obj.sign_ecdsa(data, hasha)
+            else:
+                raise ValueError(f"No hash algorithm for ECDSA digest size: {signature_algorithm.algorithm.digest_size*8}")
         else:
             raise ValueError(f"Unsupported signature algorithm: {signature_algorithm}")
 
