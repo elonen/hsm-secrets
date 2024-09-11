@@ -51,11 +51,19 @@ class BaseCertificateChecker:
         pass
 
     def _check_extended_key_usage(self):
+        is_ca = False
         try:
-            ext_key_usage = self.certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-            self._check_specific_extended_key_usage(ext_key_usage)
+            bc = self.certificate.extensions.get_extension_for_class(x509.BasicConstraints).value
+            is_ca = bc.ca
         except x509.ExtensionNotFound:
-            self._add_issue("ExtendedKeyUsage extension not found", IssueSeverity.ERROR)
+            pass
+
+        if not is_ca:
+            try:
+                ext_key_usage = self.certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+                self._check_specific_extended_key_usage(ext_key_usage)
+            except x509.ExtensionNotFound:
+                self._add_issue("ExtendedKeyUsage extension not found for a non-CA certificate", IssueSeverity.ERROR)
 
     def _check_specific_extended_key_usage(self, ext_key_usage: x509.ExtendedKeyUsage):
         # To be implemented by subclasses

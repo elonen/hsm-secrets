@@ -1,141 +1,137 @@
+
+
+# Start of the main configuration
+---
+
 # This is a configuration file for the 'hsm-secrets' tool.
 # It is used to generate keys and certificates for YubiHSM 2 devices.
 #
-# Most keys are provided in RSA, Ed25519 and NIST EC formats.
-# Ed25519 is recommended whenever possible, RSA (super slow on YubiHSM) is for compatibility with older systems.
-# NIST EC is fast but has suffered from past implementation weaknesses, backdoor suspicions, etc.
+# Many keys are in different formats:
+# - Ed25519 is recommended whenever possible
+# - RSA is very slow on YubiHSM
+# - ECC is fast but has suffered from past implementation weaknesses, backdoor suspicions, etc.
 
 general:
-    master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
-    all_devices: {
-        "27600137": "yhusb://serial=27600137",  # For `yubihsm-connector`: http://localhost:12345
-        "27600136": "yhusb://serial=27600136",
-        "27600135": "yhusb://serial=27600135",
-    }
+  master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
+  all_devices:
+    "27600137" : "yhusb://serial=27600137"   # For `yubihsm-connector`: http://localhost:12345
+    "27600136" : "yhusb://serial=27600136"
+    "27600135" : "yhusb://serial=27600135"
 
-    domains:
-        # Domain numbers (1-16) separate different types of objects in the YubiHSM 2.
-        # These text names are used by the hsm-secrets tool for clarity, not by the device itself.
-        x509: 1
-        tls: 2
-        nac: 3
-        piv: 4
-        ssh: 5
-        gpg: 6
-        codesign: 7
-        password_derivation: 8
-        encryption: 9
+  domains:
+    # Domain numbers (1-16) separate different types of objects in the YubiHSM 2.
+    # These text names are used by the hsm-secrets tool for clarity, not by the device itself.
+    x509: 1
+    tls: 2
+    nac: 3
+    piv: 4
+    ssh: 5
+    gpg: 6
+    codesign: 7
+    password_derivation: 8
+    encryption: 9
 
-    # Default settings for X.509 certificates.
-    # These are used for all generated certificates when a specific setting is not provided (i.e. is null).
-    x509_defaults:
-        validity_days: 3650
-        basic_constraints:
-          ca: true
-          path_len: 0             # Allow end-entity certificate signing only, by default
-        attribs:
-            country: US
-            state: Calisota
-            locality: Duckburg
-            organization: Example Inc.
-            common_name: ''
-        key_usage:
-          critical: true
-          usages:
-            - keyCertSign
-            - digitalSignature
-            - cRLSign
-        extended_key_usage:
-          usages:
-            - serverAuth
-            - clientAuth
-            - timeStamping
-        certificate_policies:
-          critical: false
-          policies:
-            - policy_identifier: "2.5.29.32.0"  # AnyPolicy OID
-              policy_qualifiers:
-                - type: user_notice
-                  explicit_text: "Issued for proprietary corporate use only. Not for public trust."
-        crl_distribution_points:
-          urls:
-            - "http://crl.example.com/all.crl"
-            - "http://crl2.example.com/all.crl"
-        authority_info_access: null     # OCSP is increasingly deprecated due to security issues, in favor of CRLs again
+  # Default settings for X.509 certificates.
+  # These are used for all generated certificates when a specific setting is not provided (i.e. is null).
+  x509_defaults:
+    validity_days: 3650
+    basic_constraints:
+      ca: true
+      path_len: 0             # Allow end-entity certificate signing only, by default
+    attribs:
+      country: US
+      state: Calisota
+      locality: Duckburg
+      organization: Example Inc.
+      common_name: ''
+    key_usage:
+      critical: true
+      usages:                 # Generic CA key usages
+        - keyCertSign
+        - digitalSignature
+        - cRLSign
+    extended_key_usage: {}    # No EKU for CAs by default
+    certificate_policies:
+      critical: false
+      policies:
+        - policy_identifier: "2.5.29.32.0"  # AnyPolicy OID
+          policy_qualifiers:
+            - type: user_notice
+              explicit_text: "Issued for proprietary corporate use only. Not for public trust."
 
 
 # YubiHSM 2 device admin keys and settings
 admin:
-    default_admin_password: 'password'
+  default_admin_password: 'password'
 
-    # Default admin key ('password') for the YubiHSM 2.
-    # This is used during intial setup and temporarily restored using the shared key
-    # during subsequent key management operations.
-    default_admin_key:
-        label: "DEFAULT AUTHKEY CHANGE THIS ASAP"   # original label for the default key
-        id: 0x0001
-        domains: ['all']
-        capabilities: ['all']
-        delegated_capabilities: ['all']
+  # Default admin key ('password') for the YubiHSM 2.
+  # This is used during intial setup and temporarily restored using the shared key
+  # during subsequent key management operations.
+  default_admin_key:
+    label: "DEFAULT AUTHKEY CHANGE THIS ASAP"   # original label for the default key
+    id: 0x0001
+    domains: ['all']
+    capabilities: ['all']
+    delegated_capabilities: ['all']
 
-    # K-of-N split shared secret for super-admin access.
-    # This is a 128 bit password-derived key, split into
-    # custodian shares during setup.
-    #
-    # Sharing and recombining is done in software, not in the HSM,
-    # so it should be done on an air-gapped machine like the initial setup.
-    shared_admin_key:
-        label: shared-admin
-        id: 0x0002
-        domains: ['all']
-        capabilities: ['all']
-        delegated_capabilities: ['all']
+  # K-of-N split shared secret for super-admin access.
+  # This is a 128 bit password-derived key, split into
+  # custodian shares during setup.
+  #
+  # Sharing and recombining is done in software, not in the HSM,
+  # so it should be done on an air-gapped machine like the initial setup.
+  shared_admin_key:
+    label: auth_shared-admin
+    id: 0x0002
+    domains: ['all']
+    capabilities: ['all']
+    delegated_capabilities: ['all']
 
-    # Wrap key for exporting/importing keys securely between YubiHSM 2 devices.
-    # Used for cloning devices.
-    wrap_key:
-        label: wrap-key
-        id: 0x000F
-        algorithm: aes256-ccm-wrap
-        domains: ['all']
-        capabilities: ["wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
-        delegated_capabilities: ['all']
+  # Wrap key for exporting/importing keys securely between YubiHSM 2 devices.
+  # Used for cloning devices.
+  wrap_key:
+    label: key_wrap
+    id: 0x000F
+    algorithm: aes256-ccm-wrap
+    domains: ['all']
+    capabilities: ["wrap-data", "unwrap-data", "export-wrapped", "import-wrapped", "exportable-under-wrap"]
+    delegated_capabilities: ['all']
 
-    audit:
-      # Specify logging/audit policies for the devices.
-      # 'fixed' is like 'on', but cannot be turned off again except by a factory reset
-      forced_audit: 'off'             # If on/fixed, HSM refuses further commands until log is audited when it fills up
-      default_command_logging: 'on'   # Default for commands not listed below
-      command_logging:                # Overrides for specific commands
-        reset-device: 'fixed'
-        put-opaque: 'fixed'
-        put-authentication-key: 'fixed'
-        put-asymmetric-key: 'fixed'
-        generate-asymmetric-key: 'fixed'
-        export-wrapped: 'fixed'
-        import-wrapped: 'fixed'
-        put-wrap-key: 'fixed'
-        set-option: 'fixed'
-        put-hmac-key: 'fixed'
-        delete-object: 'fixed'
-        generate-hmac-key: 'fixed'
-        generate-wrap-key: 'fixed'
-        put-template: 'fixed'
-        change-authentication-key: 'fixed'
-        put-symmetric-key: 'fixed'
-        generate-symmetric-key: 'fixed'
-        echo: 'off'
-        device-info: 'off'
-        get-storage-info: 'off'
-        get-object-info: 'off'
-        get-option: 'off'
-        get-pseudo-random: 'off'
-        blink-device: 'off'
-        get-log-entries: 'off'        # This seems to change after fetch (firmware bug?), so don't log it to avoid digest mismatch
-        create-session: 'off'         # Not much point, as auth session key is included in every other log entry
-        close-session: 'off'          # (--||--)
-        authenticate-session: 'off'   # (--||--)
-        session-message: 'off'        # This is a low-level command, spams the log, not very useful to log
+  audit:
+    # Specify logging/audit policies for the devices.
+    # 'fixed' is like 'on', but cannot be turned off again except by a factory reset
+    forced_audit: 'off'             # If on/fixed, HSM refuses further commands until log is audited when it fills up
+    default_command_logging: 'on'   # Default for commands not listed below
+    command_logging:                # Overrides for specific commands
+      reset-device: 'fixed'
+      put-opaque: 'fixed'
+      put-authentication-key: 'fixed'
+      put-asymmetric-key: 'fixed'
+      generate-asymmetric-key: 'fixed'
+      export-wrapped: 'fixed'
+      import-wrapped: 'fixed'
+      put-wrap-key: 'fixed'
+      set-option: 'fixed'
+      put-hmac-key: 'fixed'
+      delete-object: 'fixed'
+      generate-hmac-key: 'fixed'
+      generate-wrap-key: 'fixed'
+      put-template: 'fixed'
+      change-authentication-key: 'fixed'
+      put-symmetric-key: 'fixed'
+      generate-symmetric-key: 'fixed'
+      echo: 'off'
+      device-info: 'off'
+      get-storage-info: 'off'
+      get-object-info: 'off'
+      get-option: 'off'
+      get-pseudo-random: 'off'
+      blink-device: 'off'
+      get-log-entries: 'off'        # This seems to change after fetch (firmware bug?), so don't log it to avoid digest mismatch
+      create-session: 'off'         # Not much point, as auth session key is included in every other log entry
+      close-session: 'off'          # (--||--)
+      authenticate-session: 'off'   # (--||--)
+      session-message: 'off'        # This is a low-level command, spams the log, not very useful to log
 
 
 # User keys are for general use by human operators.
@@ -145,72 +141,77 @@ admin:
 #
 # They aren't supposed to be able to export or create other keys, only use them.
 user_keys:
-    - label: user_john.doe
-      id: 0xE001
-      domains: ['tls', 'nac', 'piv', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
-      capabilities:
-        - sign-ssh-certificate          # For SSH certificate creation
-        - sign-hmac                     # For password derivation
-        - verify-hmac                   # For verifying message authenticity
-        - sign-pss                      # X.509 signing in RSA
-        - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
-        - sign-eddsa                    # X.509 signing in Ed25519
-        - sign-ecdsa                    # X.509 signing in EC
-        - encrypt-cbc                   # General AES symmetric data encryption
-        - decrypt-cbc
-        - encrypt-ecb                   # (non-chained AES, not recommended for general use)
-        - decrypt-ecb
-        - get-pseudo-random             # Generating random numbrs
-        - sign-attestation-certificate  # Prove some other key is protected by an HSM
-        - exportable-under-wrap         # Allow backing up of this key
-        - get-opaque                    # For getting certificates stored in the HSM
-        - change-authentication-key     # Change this key's credentials
-        - delete-authentication-key     # Delete this or any other auth key
-        - put-authentication-key        # Create new auth keys (allow operators to re-create keys for each other)
-      delegated_capabilities: ['same']  # (copy from 'capabilities' above)
+
+  - &USER_COMMON_INFO
+    label: user_john.doe
+    id: 0xE001
+    domains: ['tls', 'nac', 'piv', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
+    capabilities:
+      - sign-ssh-certificate          # For SSH certificate creation
+      - sign-hmac                     # For password derivation
+      - verify-hmac                   # For verifying message authenticity
+      - sign-pss                      # X.509 signing in RSA
+      - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
+      - sign-eddsa                    # X.509 signing in Ed25519
+      - sign-ecdsa                    # X.509 signing in EC
+      - derive-ecdh
+      - encrypt-cbc                   # General AES symmetric data encryption
+      - decrypt-cbc
+      - encrypt-ecb                   # (non-chained AES, not recommended for general use)
+      - decrypt-ecb
+      - get-pseudo-random             # Generating random numbrs
+      - sign-attestation-certificate  # Prove some other key is protected by an HSM
+      - exportable-under-wrap         # Allow backing up of this key
+      - get-opaque                    # For getting certificates stored in the HSM
+      - change-authentication-key     # Change this key's credentials
+      - delete-authentication-key     # Delete this or any other auth key
+      - put-authentication-key        # Create new auth keys (allow operators to re-create keys for each other)
+    delegated_capabilities: ['same']  # ('same' = copy from `capabilities` above)
+
+  - <<: *USER_COMMON_INFO             # (YAML anchor -- copy fields from the previous entry)
+    label: user_alice.smith
+    id: 0xE002
 
 
 # Service keys are for automated use by services, probably less well authenticated than user keys.
 # These should be strictly domain-limited, and have limited capabilities.
 service_keys:
 
-    # Dedicated audit key for reviewing logs.
-    # The log listings form a continuous blockchain and the `get-log-entries` wipes the log.
-    # => Each call must be made consciously and must store the results to uphold the chain of evidence.
-    # This is why the user keys are not allowed to call this capability wantonly.
-    -
-        label: log-audit
-        id: 0x0008
-        domains: ['all']
-        capabilities: ['get-log-entries', 'exportable-under-wrap']
-        delegated_capabilities: []
+  # Dedicated audit key for reviewing logs.
+  # The log listings form a continuous blockchain and the `get-log-entries` wipes the log.
+  # => Each call must be made consciously and must store the results to uphold the chain of evidence.
+  # This is why the user keys are not allowed to call this capability wantonly.
+  - label: svc_log-audit
+    id: 0x0008
+    domains: ['all']
+    capabilities: ['get-log-entries', 'exportable-under-wrap']
+    delegated_capabilities: []
 
-    # For backup / restore only. This is necessary because HSM operator user keys above are not
-    # members of the 'x509' domain, to disallow them from using root CA keys directly.
-    # This user, however, can only export and import keys, not use them.
-    -
-        label: backup-restore
-        id: 0x0009
-        domains: ['all']
-        capabilities: ['export-wrapped', 'import-wrapped', 'exportable-under-wrap']
-        delegated_capabilities: []
+  # For backup / restore only. This is necessary because HSM operator user keys above are not
+  # members of the 'x509' domain, to disallow them from using root CA keys directly.
+  # This user, however, can only export and import keys, not use them.
+  - label: svc_backup-restore
+    id: 0x0009
+    domains: ['all']
+    capabilities: ['export-wrapped', 'import-wrapped', 'exportable-under-wrap']
+    delegated_capabilities: []
 
-    # Service key for NAC (Network Access Control) for
-    # signing 802.1X EAP-TLS certificates.
-    -
-        label: service_nac
-        id: 0xD010
-        domains: ['nac']
-        capabilities:
-                - sign-pss
-                - sign-pkcs
-                - sign-ecdsa
-                - sign-eddsa
-                - sign-hmac
-                - get-pseudo-random
-                - exportable-under-wrap
-                - change-authentication-key  # Could allow DoS on the key, but lesser evil than not being able to rotate it
-        delegated_capabilities: []
+  # Service key for NAC (Network Access Control) for
+  # signing 802.1X EAP-TLS certificates.
+  - label: svc_nac
+    id: 0xD010
+    domains: ['nac']
+    capabilities:
+      - sign-pss
+      - sign-pkcs
+      - sign-ecdsa
+      - derive-ecdh
+      - sign-eddsa
+      - sign-hmac
+      - get-pseudo-random
+      - exportable-under-wrap
+      - change-authentication-key  # Could allow DoS on the key, but lesser evil than not being able to rotate it
+    delegated_capabilities: []
 
 
 # Subsystem/domain for root CAs.
@@ -221,440 +222,379 @@ service_keys:
 # separately (they are not sensitive, but cannot be easily recreated),
 # as user keys cannot access the root CA keys directly.
 x509:
-    root_certs:
-        -
-          key:
-            label: ca-root-key-rsa
-            id: 0x0110
-            domains: ['x509']
-            algorithm: rsa4096
-            capabilities:
-                - sign-pss  # prefer this for RSA
-                - sign-pkcs
-                - exportable-under-wrap
-          x509_info:
-            basic_constraints:
-              path_len: null  # No limit for root CAs
-            attribs:
-                common_name: 'Example Root A1'
-            extended_key_usage: {}       # No EKU for root CAs
-            crl_distribution_points: {}  # No CRL (or OCSPs) for root CAs
-            authority_info_access: {}
+  root_certs:
+    -
+      key:
+        label: key_ca-root-a1-rsa4096
+        id: 0x0110
+        domains: ['x509']
+        algorithm: rsa4096
+        capabilities:
+          - sign-pss  # prefer this for RSA
+          - sign-pkcs
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/root-a1-rsa4096.crl"
+      x509_info:    &ROOT_COMMON_CERT_INFO
+        validity_days: 7300  # 20 years
+        basic_constraints:
+          path_len: null  # No limit for root CAs
+        attribs:
+          common_name: 'Example Root A1 RSA4096'
+      signed_certs:   # Certificates to create (and store in HSM) for this key
+        - id: 0x0111
+          label: cert_ca-root-a1-rsa4096
+          domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']   # Allow the root cert (though not the key) to be read by all services
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0111   # Root CA signs its own certificate
 
-          signed_certs:   # Certificates to create (and store in HSM) for this key
-            - id: 0x0111
-              label: ca-root-cert-rsa
-              domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']   # Allow the signed root cert to be read by all services
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0111   # Root CA signs its own certificate
-        -
-          key:
-            label: ca-root-key-ed25519
-            id: 0x0120
-            domains: ['x509']
-            algorithm: ed25519
-            capabilities:
-                - sign-eddsa
-                - exportable-under-wrap
-          x509_info:
-            basic_constraints:
-              path_len: null
-            attribs:
-                common_name: 'Example Root A1'
-            extended_key_usage: {}
-            crl_distribution_points: {}
-            authority_info_access: {}
-          signed_certs:
-            - id: 0x0121
-              label: ca-root-cert-ed25519
-              domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0121
-        -
-          key:
-              label: ca-root-key-ecp384
-              id: 0x0130
-              domains: ['x509']
-              algorithm: ecp384
-              capabilities:
-                  - sign-ecdsa
-                  - exportable-under-wrap
-          x509_info:
-              basic_constraints:
-                path_len: null
-              attribs:
-                  common_name: 'Example Root A1'
-              extended_key_usage: {}
-              crl_distribution_points: {}
-              authority_info_access: {}
-          signed_certs:
-              - id: 0x0131
-                label: ca-root-cert-ecp384
-                domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']
-                algorithm: opaque-x509-certificate
-                sign_by: 0x0131
+    -
+      key:
+        label: key_ca-root-a1-ed25519
+        id: 0x0120
+        domains: ['x509']
+        algorithm: ed25519
+        capabilities:
+          - sign-eddsa
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/root-a1-ed25519.crl"
+      x509_info:
+        <<: *ROOT_COMMON_CERT_INFO
+        attribs:
+          common_name: 'Example Root A1 Ed25519'
+      signed_certs:
+        - id: 0x0121
+          label: cert_ca-root-a1-ed25519
+          domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0121
 
-# TLS (HTTPS, TCP, ...) intermediate keys.
+    -
+      key:
+        label: key_ca-root-a1-ecp384
+        id: 0x0130
+        domains: ['x509']
+        algorithm: ecp384
+        capabilities:
+          - sign-ecdsa
+          - derive-ecdh
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/root-a1-ecp384.crl"
+      x509_info:
+        <<: *ROOT_COMMON_CERT_INFO
+        attribs:
+          common_name: 'Example Root A1 ECP384'
+      signed_certs:
+        - id: 0x0131
+          label: cert_ca-root-a1-ecp384
+          domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0131
+
+
+# TLS (HTTPS, TCP, ...)
 tls:
-    default_ca_id: 0x0233
-    intermediate_certs:
-        -
-          key:
-            label: tls-rsa-intermediate-key
-            id: 0x0210
-            domains: ['tls']
-            algorithm: rsa4096
-            capabilities:
-                - sign-pss
-                - sign-pkcs
-                - exportable-under-wrap
-          x509_info:
-            attribs:
-                common_name: 'Example TLS Intermediate I1'
-            basic_constraints:
-              path_len: 0 # Allow end-entity certificate signing only
-            name_constraints:
-                critical: true
-                permitted:
-                    dns:
-                        - .hsm.biz
-                        - .hsm.ext
-                        - .hsm.local
-                        - .hsm.service
-                        - .example.directory
-                        - .example.com
-                        - .example.biz
-                    ip:
-                        - 10.123.0.0/21
-                        - fd12:3456:78::/48
-                        - 2a01:2345:6::/48
-            extended_key_usage:
-              usages:
-                - serverAuth
-                - clientAuth
-                - timeStamping
-          signed_certs:
-            - id: 0x0211
-              label: tls-rsa-intermediate-cert
-              domains: ['tls']    # Only allow TLS services to read this cert
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0111   # RSA Root CA
-        -
-          key:
-            label: tls-ed25519-intermediate-key
-            id: 0x0220
-            domains: ['tls']
-            algorithm: ed25519
-            capabilities:
-                - sign-eddsa
-                - exportable-under-wrap
-          x509_info:
-            attribs:
-                common_name: 'Example TLS Intermediate I1'
-            basic_constraints:
-              path_len: 0
-            name_constraints:
-                critical: true
-                permitted:
-                    dns:
-                        - .hsm.biz
-                        - .hsm.ext
-                        - .hsm.local
-                        - .hsm.service
-                        - .example.directory
-                        - .example.com
-                        - .example.biz
-                    ip:
-                        - 10.123.0.0/21
-                        - fd12:3456:78::/48
-                        - 2a01:2345:6::/48
-            extended_key_usage:
-              usages:
-                - serverAuth
-                - clientAuth
-                - timeStamping
-          signed_certs:
-            - id: 0x0221
-              label: tls-ed25519-intermediate-cert-rsaroot
-              domains: ['tls']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0111   # RSA Root CA
-            - id: 0x0222
-              label: tls-ed25519-intermediate-cert-edroot
-              domains: ['tls']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0121   # Ed25519 Root CA
-            - id: 0x0223
-              label: tls-ed25519-intermediate-cert-ecroot
-              domains: ['tls']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0131   # ECP384 Root CA
+  default_ca_id: 0x0233
+  intermediate_cas:
+    -
+      key:
+        label: key_tls-i1-rsa4096
+        id: 0x0210
+        domains: ['tls']
+        algorithm: rsa4096
+        capabilities:
+          - sign-pss
+          - sign-pkcs
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/tls-i1-rsa4096.crl"
+      x509_info:  &TLS_COMMON_CERT_INFO
+        basic_constraints:
+          path_len: 0 # Allow end-entity certificate signing only
+        name_constraints:
+          critical: false
+          permitted:
+            dns:
+              - hsm.local
+              - .hsm.local
+              - example.com
+              - .example.com
+            ip:
+              - 10.123.0.0/16
+              - fd12:3456:78::/48
+              - 2a01:2345:6::/48
+        extended_key_usage:
+          usages:
+            - serverAuth
+            - clientAuth
+            - timeStamping
+        attribs:
+          common_name: 'Example TLS Intermediate I1 RSA4096'
+      signed_certs:
+        - id: 0x0211
+          label: cert_tls-i1-rsa4096
+          domains: ['tls']    # Only allow TLS services to read this cert
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0111   # RSA4096 Root CA
 
-        -
-          key:
-            label: tls-ecp384-intermediate-key
-            id: 0x0230
-            domains: ['tls']
-            algorithm: ecp384
-            capabilities:
-                - sign-ecdsa
-                - exportable-under-wrap
-          x509_info:
-            attribs:
-                common_name: 'Example TLS Intermediate I1'
-            basic_constraints:
-              path_len: 0
-            name_constraints:
-                critical: true
-                permitted:
-                    dns:
-                        - .hsm.biz
-                        - .hsm.ext
-                        - .hsm.local
-                        - .hsm.service
-                        - .example.directory
-                        - .example.com
-                        - .example.biz
-                    ip:
-                        - 10.123.0.0/21
-                        - fd12:3456:78::/48
-                        - 2a01:2345:6::/48
-            extended_key_usage:
-              usages:
-                - serverAuth
-                - clientAuth
-                - timeStamping
-          signed_certs:
-            - id: 0x0231
-              label: tls-ecp384-intermediate-cert-rsaroot
-              domains: ['tls']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0111   # RSA Root CA
-            - id: 0x0233
-              label: tls-ecp384-intermediate-cert-ecroot
-              domains: ['tls']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0131   # ECP384 Root CA
+    -
+      key:
+        label: key_tls-i1-ed25519
+        id: 0x0220
+        domains: ['tls']
+        algorithm: ed25519
+        capabilities:
+          - sign-eddsa
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/tls-i1-ed25519.crl"
+      x509_info:
+        <<: *TLS_COMMON_CERT_INFO
+        attribs:
+          common_name: 'Example TLS Intermediate I1 Ed25519'
+      signed_certs:        # Cross-sign with legacy certs for compatibility
+        - id: 0x0221
+          label: cert_tls-i1-ed25519_rsa4096-root
+          domains: ['tls']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0111  # RSA4096 Root CA
+        - id: 0x0222
+          label: cert_tls-i1-ed25519_ed25519-root
+          domains: ['tls']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0121  # Ed25519 Root CA
+        - id: 0x0223
+          label: cert_tls-i1-ed25519_ecp384-root
+          domains: ['tls']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0131  # ECP384 Root CA
+
+    -
+      key:
+        label: key_tls-i1-ecp384
+        id: 0x0230
+        domains: ['tls']
+        algorithm: ecp384
+        capabilities:
+          - sign-ecdsa
+          - derive-ecdh
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/tls-i1-ecp384.crl"
+      x509_info:
+        <<: *TLS_COMMON_CERT_INFO
+        attribs:
+          common_name: 'Example TLS Intermediate I1 ECP384'
+      signed_certs:
+        - id: 0x0231
+          label: cert_tls-i1-ecp384_rsa4096-root
+          domains: ['tls']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0111   # RSA Root CA
+        - id: 0x0233
+          label: cert_tls-i1-ecp384_ecp384-root
+          domains: ['tls']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0131   # ECP384 Root CA
 
 
 # NAC (Network Access Control) intermediate keys for 802.1X EAP-TLS.
 # NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 nac:
-    intermediate_certs:
-        -
-          key:
-            label: nac-rsa-intermediate-key
-            id: 0x0310
-            domains: ['nac']
-            algorithm: rsa4096
-            capabilities:
-                - sign-pss  # preferred
-                - sign-pkcs
-                - exportable-under-wrap
-          x509_info:
-            basic_constraints:
-              path_len: 1  # NAC servers may need their own CAs, so allow one level of intermediates
-            attribs:
-                common_name: 'Example NAC Intermediate N1'
-            subject_alt_name:
-                dns:
-                  - 'nac.hsm.biz'
-                  - 'nac.example.directory'
-            extended_key_usage:
-              usages:
-                - serverAuth
-                - clientAuth
-                - timeStamping
-          signed_certs:
-            - id: 0x0311
-              label: nac-rsa-intermediate-cert
-              domains: ['nac']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0111
-        -
-          key:
-            label: nac-ecp384-intermediate-key
-            id: 0x0330
-            domains: ['nac']
-            algorithm: ecp384
-            capabilities:
-                - sign-ecdsa
-                - exportable-under-wrap
-          x509_info:
-            basic_constraints:
-              path_len: 1
-            attribs:
-                common_name: 'Example NAC Intermediate N1'
-            subject_alt_name:
-                dns:
-                  - 'nac.hsm.biz'
-                  - 'nac.example.directory'
-            extended_key_usage:
-              usages:
-                - serverAuth
-                - clientAuth
-                - timeStamping
-          signed_certs:
-            - id: 0x0333
-              label: nac-ecp384-intermediate-cert
-              domains: ['nac']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0131
-
-# PIV (Personal Identity Verification) keys for smartcard login
-piv:
-    default_ca_id: 0x0431
-    default_piv_domain: '@example.directory'  # AD UPN suffix for Windows, rfc822 suffix for Linux/macOS
-
-    intermediate_certs:
-        -
-          key:
-            label: piv-rsa-intermediate-key
-            id: 0x0410
-            domains: ['piv']
-            algorithm: rsa2048  # RSA2048 is the maximum for PIV. Included here, but use ECC if possible.
-            capabilities:
-                - sign-pss
-                - sign-pkcs
-                - exportable-under-wrap
-          x509_info:
-            validity_days: 3650
-            attribs:
-                common_name: 'Example PIV Intermediate P1'
-            key_usage:
-              critical: true
-              usages:
-                - digitalSignature
-                - keyAgreement
-                - keyCertSign
-                - cRLSign
-            name_constraints:
-              permitted:
-                  dns:
-                      - .hsm.local
-                      - .example.directory
-                  directory:
-                      - 'DC=hsm,DC=local'
-                      - 'DC=example,DC=directory'
-          signed_certs:
-            - id: 0x0411
-              label: piv-rsa-intermediate-cert
-              domains: ['piv']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0111
-        -
-          key:
-            label: piv-ecp384-intermediate-key
-            id: 0x0430
-            domains: ['piv']
-            algorithm: ecp384
-            capabilities:
-                - sign-ecdsa
-                - exportable-under-wrap
-          x509_info:
-            attribs:
-                common_name: 'Example PIV Intermediate P1'
-            key_usage:
-              critical: true
-              usages:
-                - digitalSignature
-                - keyAgreement
-                - keyCertSign
-                - cRLSign
-            name_constraints:
-              permitted:
-                  dns:
-                      - .hsm.local
-                      - .example.directory
-                  directory:
-                      - 'DC=hsm,DC=local'
-                      - 'DC=example,DC=directory'
-          signed_certs:
-            - id: 0x0431
-              label: piv-ecp384-intermediate-cert
-              domains: ['piv']
-              algorithm: opaque-x509-certificate
-              sign_by: 0x0131
-
-    # Domain Controller Kerberos PIV certificate template(s)
-    # (KDC = Key Distribution Center, i.e. Active Directory)
-    dc_cert_templates:
-      "default":
-        validity_days: 1825
+  intermediate_cas:
+    -
+      key:
+        label: key_nac-n1-rsa2048
+        id: 0x0310
+        domains: ['nac']
+        algorithm: rsa2048
+        capabilities:
+          - sign-pss  # preferred
+          - sign-pkcs
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/nac-n1-rsa2048.crl"
+      x509_info:      &NAC_COMMON_CERT_INFO
         basic_constraints:
-          ca: false         # End-entity certificate
-          path_len: null
-        crl_distribution_points:
-          urls:
-            - "http://crl.example.local/piv.crl"  # Use CRL in LAN for PIV
-        key_usage:
-          critical: true
-          usages:
-            - digitalSignature
-            - keyEncipherment
+          path_len: 1  # NAC servers may need their own CAs, so allow one level of intermediates
+        attribs:
+          common_name: 'Example NAC Intermediate N1 RSA2048'
+        subject_alt_name:
+          dns:
+            - 'nac.hsm.biz'
+            - 'nac.example.directory'
         extended_key_usage:
           usages:
             - serverAuth
-            - kerberosPKINITKDC
-
-    # User certificate templates for PIV cards
-    user_cert_templates:
-      "default":
-        validity_days: 365
-        basic_constraints:
-          ca: false
-          path_len: null
-        attribs:
-            common_name: 'Example PIV User U1'
-        crl_distribution_points:
-          urls:
-            - "http://crl.example.local/piv.crl"
-        key_usage:
-          critical: true
-          usages:
-            - nonRepudiation
-            - digitalSignature
-            - keyEncipherment
-        extended_key_usage:
-          usages:
             - clientAuth
-            - smartcardLogon
+            - timeStamping
+      signed_certs:
+        - id: 0x0311
+          label: cert_nac-n1-rsa2048
+          domains: ['nac']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0111
+
+    -
+      key:
+        label: key_nac-n1-ecp256
+        id: 0x0330
+        domains: ['nac']
+        algorithm: ecp256
+        capabilities:
+          - sign-ecdsa
+          - derive-ecdh
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "http://crl.example.com/nac-n1-ecp256.crl"
+      x509_info:
+        <<: *NAC_COMMON_CERT_INFO
+        attribs:
+          common_name: 'Example NAC Intermediate N1 ECP256'
+      signed_certs:
+        - id: 0x0333
+          label: cert_nac-n1-ecp256
+          domains: ['nac']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0131
+
+
+# PIV (Personal Identity Verification) keys for smartcard login
+piv:
+  default_ca_id: 0x0431
+  default_piv_domain: '@example.directory'  # AD UPN suffix for Windows, rfc822 suffix for Linux/macOS
+
+  intermediate_cas:
+      -
+        key:
+          label: key_piv-p1-rsa2048
+          id: 0x0410
+          domains: ['piv']
+          algorithm: rsa2048  # 2048 is the maximum for RSA in PIV. Use ECC if possible.
+          capabilities:
+            - sign-pss
+            - sign-pkcs
+            - exportable-under-wrap
+        crl_distribution_points:
+          - "http://crl.example.com/piv-p1-rsa2048.crl"
+        x509_info:    &PIV_COMMON_CERT_INFO
+          attribs:
+            common_name: 'Example PIV Intermediate P1 RSA2048'
+          validity_days: 3650
+          key_usage:
+            critical: true
+            usages:
+              - digitalSignature
+              - keyAgreement
+              - keyCertSign
+              - cRLSign
+        signed_certs:
+          - id: 0x0411
+            label: cert_piv-p1-rsa2048
+            domains: ['piv']
+            algorithm: opaque-x509-certificate
+            sign_by: 0x0111
+      -
+        key:
+          label: key_piv-p1-ecp384
+          id: 0x0430
+          domains: ['piv']
+          algorithm: ecp384
+          capabilities:
+            - sign-ecdsa
+            - derive-ecdh
+            - exportable-under-wrap
+        crl_distribution_points:
+          - "http://crl.example.com/piv-p1-ecp384.crl"
+        x509_info:
+          <<: *PIV_COMMON_CERT_INFO
+          attribs:
+              common_name: 'Example PIV Intermediate P1 ECP384'
+        signed_certs:
+          - id: 0x0431
+            label: cert_piv-p1-ecp384
+            domains: ['piv']
+            algorithm: opaque-x509-certificate
+            sign_by: 0x0131
+
+  # Domain Controller Kerberos PKINIT KDC certificate template
+  dc_cert_templates:
+    "default":
+      validity_days: 1825 # 5 years
+      basic_constraints:
+        ca: false         # End-entity certificate
+        path_len: null
+      key_usage:
+        critical: true
+        usages:
+          - digitalSignature
+          - keyEncipherment
+          - keyAgreement
+          - nonRepudiation
+      extended_key_usage:
+        usages:
+          - clientAuth
+          - serverAuth
+          - smartcardLogon
+          - kerberosPKINITKDC
+
+  # User certificate templates for PIV cards
+  user_cert_templates:
+    "default":
+      validity_days: 730  # 2 years
+      basic_constraints:
+        ca: false
+        path_len: null
+      key_usage:
+        critical: true
+        usages:
+          - nonRepudiation
+          - digitalSignature
+          - keyEncipherment     # For RSA key exchange
+          - keyAgreement        # For ECDH, required for offline logon with ECC certificates
+      extended_key_usage:
+        usages:
+          - clientAuth
+          - smartcardLogon
 
 
 # Certificate-based SSH authentication keys.
 # OpenSSH certificates are in proprietary format, so these are not signed by the X.509 root CAs.
 ssh:
-    default_user_ca: 0x0520
-    default_host_ca: 0x0520   # You could separate these, but given the HSM, having to change one but not the other is unlikely
-    root_ca_keys:
-        -
-            label: ssh-rsa-ca-root-key
-            id: 0x0510
-            domains: ['ssh']
-            algorithm: rsa4096
-            capabilities:
-                - sign-ssh-certificate
-                - sign-pss
-                - sign-pkcs
-                - exportable-under-wrap
-        -
-            label: ssh-ed25519-ca-root-key
-            id: 0x0520
-            domains: ['ssh']
-            algorithm: ed25519
-            capabilities:
-                - sign-ssh-certificate
-                - sign-eddsa
-                - exportable-under-wrap
-        -
-            label: ssh-ecp384-ca-root-key
-            id: 0x0530
-            domains: ['ssh']
-            algorithm: ecp384
-            capabilities:
-                - sign-ssh-certificate
-                - sign-ecdsa
-                - exportable-under-wrap
+  default_user_ca: 0x0520
+  default_host_ca: 0x0520   # You could separate these, but given the HSM, having to change one but not the other is unlikely
+  root_ca_keys:
+
+    - label: key_ssh-root-ca-rsa4096
+      id: 0x0510
+      domains: ['ssh']
+      algorithm: rsa4096
+      capabilities:
+        - sign-ssh-certificate
+        - sign-pss
+        - sign-pkcs
+        - exportable-under-wrap
+
+    - label: key_ssh-root-ca-ed25519
+      id: 0x0520
+      domains: ['ssh']
+      algorithm: ed25519
+      capabilities:
+        - sign-ssh-certificate
+        - sign-eddsa
+        - exportable-under-wrap
+
+    - label: key_ssh-root-ca-ecp384
+      id: 0x0530
+      domains: ['ssh']
+      algorithm: ecp384
+      capabilities:
+        - sign-ssh-certificate
+        - sign-ecdsa
+        - derive-ecdh
+        - exportable-under-wrap
 
 
 # GPG/OpenPGP keys
@@ -669,150 +609,148 @@ ssh:
 # Ed25519 keys are only for SCA operations. There's an x25519 (aka cv25519) key type for E operations in GnuPG,
 # but the operation is apparently not supported by YubiHSM 2.
 gpg:
-    keys:
-    -
-        label: gpg-main-rsa-sca
-        id: 0x0610
-        domains: ['gpg']
-        algorithm: rsa4096
-        capabilities:
-            - sign-pss  # preferred
-            - sign-pkcs
-            - decrypt-oaep
-            - decrypt-pkcs
-            - exportable-under-wrap
-    -
-        label: gpg-main-rsa-e
-        id: 0x0611
-        domains: ['gpg']
-        algorithm: rsa4096
-        capabilities:
-            - sign-pss  # preferred
-            - sign-pkcs
-            - decrypt-oaep  # preferred
-            - decrypt-pkcs
-            - exportable-under-wrap
-    -
-        label: gpg-main-ed25519
-        id: 0x0620
-        domains: ['gpg']
-        algorithm: ed25519
-        capabilities:
-            - sign-eddsa
-            - exportable-under-wrap
-    -
-        label: gpg-main-ecp384
-        id: 0x0630
-        domains: ['gpg']
-        algorithm: ecp384
-        capabilities:
-            - sign-ecdsa
-            - derive-ecdh           # derive AES keys for symmetric encryption
-            - exportable-under-wrap
+  keys:
+
+  - label: key_gpg-g1-rsa4096-sca
+    id: 0x0610
+    domains: ['gpg']
+    algorithm: rsa4096
+    capabilities:
+      - sign-pss  # preferred
+      - sign-pkcs
+      - decrypt-oaep
+      - decrypt-pkcs
+      - exportable-under-wrap
+
+  - label: key_gpg-g1-rsa4096-e
+    id: 0x0611
+    domains: ['gpg']
+    algorithm: rsa4096
+    capabilities:
+      - sign-pss  # preferred
+      - sign-pkcs
+      - decrypt-oaep  # preferred
+      - decrypt-pkcs
+      - exportable-under-wrap
+
+  - label: key_gpg-g1-ed25519
+    id: 0x0620
+    domains: ['gpg']
+    algorithm: ed25519
+    capabilities:
+      - sign-eddsa
+      - exportable-under-wrap
+
+  - label: key_gpg-g1-ecp384
+    id: 0x0630
+    domains: ['gpg']
+    algorithm: ecp384
+    capabilities:
+      - sign-ecdsa
+      - derive-ecdh
+      - exportable-under-wrap
 
 
 
 # Code signing keys for signing software, firmware, etc.
 # NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 codesign:
-    intermediate_certs:
-    -
-      key:
-        label: codesign-rsa-intermediate-key
-        id: 0x0710
+  certs:
+  -
+    key:
+      label: key_codesign-cs1-rsa4096
+      id: 0x0710
+      domains: ['codesign']
+      algorithm: rsa4096
+      capabilities:
+        - sign-pss
+        - sign-pkcs
+        - exportable-under-wrap
+    crl_distribution_points:
+      - "http://crl.example.com/codesign-cs1-rsa4096.crl"
+    x509_info:    &CODESIGN_COMMON_CERT_INFO
+      attribs:
+        common_name: 'Example Code Signing CS1 RSA4096'
+      key_usage:
+        usages:
+          - digitalSignature
+          - keyCertSign
+          - cRLSign
+      extended_key_usage:
+        usages:
+          - codeSigning
+          - timeStamping
+    signed_certs:
+      - id: 0x0711
+        label: cert_codesign-cs1-rsa4096
         domains: ['codesign']
-        algorithm: rsa4096
-        capabilities:
-            - sign-pss
-            - sign-pkcs
-            - exportable-under-wrap
-      x509_info:
-        attribs:
-            common_name: 'Example Code Signing Intermediate S1'
-        key_usage:
-          usages:
-            - digitalSignature
-            - keyCertSign
-            - cRLSign
-        extended_key_usage:
-          usages:
-            - codeSigning
-            - timeStamping
-      signed_certs:
-        - id: 0x0711
-          label: codesign-rsa-intermediate-cert
-          domains: ['codesign']
-          algorithm: opaque-x509-certificate
-          sign_by: 0x0111
-    -
-      key:
-        label: codesign-ecp384-intermediate-key
-        id: 0x0720
+        algorithm: opaque-x509-certificate
+        sign_by: 0x0111
+
+  -
+    key:
+      label: key_codesign-cs1-ecp384
+      id: 0x0720
+      domains: ['codesign']
+      algorithm: ecp384
+      capabilities:
+        - sign-ecdsa
+        - derive-ecdh
+        - exportable-under-wrap
+    crl_distribution_points:
+      - "http://crl.example.com/codesign-cs1-ecp384.crl"
+    x509_info:
+      <<: *CODESIGN_COMMON_CERT_INFO
+      attribs:
+        common_name: 'Example Code Signing CS1 ECP384'
+    signed_certs:
+      - id: 0x0733
+        label: cert_codesign-cs1-ecp384
         domains: ['codesign']
-        algorithm: ecp384
-        capabilities:
-            - sign-eddsa
-            - exportable-under-wrap
-      x509_info:
-        attribs:
-            common_name: 'Example Code Signing Intermediate S1'
-        key_usage:
-          usages:
-            - digitalSignature
-            - keyCertSign
-            - cRLSign
-        extended_key_usage:
-          usages:
-            - codeSigning
-            - timeStamping
-      signed_certs:
-        - id: 0x0733
-          label: codesign-ecp384-intermediate-cert
-          domains: ['codesign']
-          algorithm: opaque-x509-certificate
-          sign_by: 0x0131
+        algorithm: opaque-x509-certificate
+        sign_by: 0x0131
 
 
 # For deriving unique passwords from usernames, hostnames, etc.
 password_derivation:
-    keys:
-      - label: pw-derivation-1
-        id: 0x0810
-        domains: ['password_derivation']
-        algorithm: hmac-sha256    # 60x faster than hmac-sha512 on YubiHSM 2
-        capabilities:
-          - sign-hmac
-          - verify-hmac
-          - exportable-under-wrap
+  keys:
+    - label: key_pw-derivation-1
+      id: 0x0810
+      domains: ['password_derivation']
+      algorithm: hmac-sha256    # 60x faster than hmac-sha512 on YubiHSM 2
+      capabilities:
+        - sign-hmac
+        - verify-hmac
+        - exportable-under-wrap
 
-    default_rule: host-root-passwords
+  default_rule: host-root-passwords
 
-    rules:
-      - id: host-root-passwords
-        key: 0x0810
-        format: bip39
-        separator: '.'      # Separate password parts with a '.' instead of '-' (or space) to avoid keyboard layout issues
-        bits: 64            # 64 should be fine for yescrypt / bcrypt etc, Use 128 if the password is hashed with a weak scheme like NTLM
-        rotation_tokens:
-          # List of tool-generated tokens that rotate password for a specific host (or all if name_hmac is None).
-          # - `name_hmac` is the HMAC of the name, so each name can be rotated independently. If missing, the rule applies to all passwords.
-          # - Nonce prevents current HSM operators from pre-generating rotated passwords before they leave the team.
-          # - Timestamp is used to order the rotations, so that displayng previous passwords (e.g. in case of a rollback) is possible.
-          - {name_hmac: 0x4b2d9547f720ec540a9edda5d33f3aa68719cc5891a9b08df3382229cfc90670, nonce: 0x379cb049d15b37ab, ts: 1721727172}
+  rules:
+    - id: host-root-passwords
+      key: 0x0810
+      format: bip39
+      separator: '.'      # Separate password parts with a '.' instead of '-' (or space) to avoid keyboard layout issues
+      bits: 64            # 64 should be fine for yescrypt / bcrypt etc, Use 128 if the password is hashed with a weak scheme like NTLM
+      rotation_tokens:
+        # List of tool-generated tokens that rotate password for a specific host (or all if name_hmac is None).
+        # - `name_hmac` is the HMAC of the name, so each name can be rotated independently. If missing, the rule applies to all passwords.
+        # - Nonce prevents current HSM operators from pre-generating rotated passwords before they leave the team.
+        # - Timestamp is used to order the rotations, so that displayng previous passwords (e.g. in case of a rollback) is possible.
+        - {name_hmac: 0x4b2d9547f720ec540a9edda5d33f3aa68719cc5891a9b08df3382229cfc90670, nonce: 0x379cb049d15b37ab, ts: 1721727172}
 
 
 # For generic encryption of secrets, passwords, etc.
 # Limited and infrequent use, YubiHSM is not very fast
 # NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 encryption:
-    keys:
-    - label: enc-1
-      id: 0x0910
-      domains: ['encryption']
-      algorithm: aes256
-      capabilities:
-        - encrypt-cbc   # prefer CBC over ECB unless you have a good reason
-        - decrypt-cbc
-        - encrypt-ecb
-        - decrypt-ecb
-        - exportable-under-wrap
+  keys:
+  - label: key_enc-1
+    id: 0x0910
+    domains: ['encryption']
+    algorithm: aes256
+    capabilities:
+      - encrypt-cbc   # prefer CBC over ECB unless you have a very good reason
+      - decrypt-cbc
+      - encrypt-ecb
+      - decrypt-ecb
+      - exportable-under-wrap

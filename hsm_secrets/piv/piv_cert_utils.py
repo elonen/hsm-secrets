@@ -6,12 +6,12 @@ from typing import Union, Optional, cast, get_args
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography import x509
 
-from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, X509Info, X509NameType
+from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, X509CertInfo, X509NameType
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter
 from hsm_secrets.piv.piv_cert_checks import PIVUserCertificateChecker
 from hsm_secrets.utils import HsmSecretsCtx, open_hsm_session
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder, get_issuer_cert_and_key
-from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
+from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
 
 PivKeyTypeName = Literal['rsa2048', 'ecp256', 'ecp384']
@@ -56,12 +56,19 @@ def make_signed_piv_user_cert(
     assert csr_or_key
     cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_or_key, dn_subject_override=subject)
 
+    # Find issuer def
+    ca_cert_id = cast(HSMKeyID, ca or ctx.conf.piv.default_ca_id)
+    ca_def = find_ca_def(ctx.conf, ca_cert_id)
+    if not ca_def:
+        raise click.ClickException(f"CA '{ca_cert_id}' not found in config")
+
     with open_hsm_session(ctx) as ses:
-        issuer_cert, issuer_key = get_issuer_cert_and_key(ctx, ses, ca or ctx.conf.piv.default_ca_id)
+        issuer_cert, issuer_key = get_issuer_cert_and_key(ctx, ses, ca_cert_id)
         if csr_obj:
             signed_cert = cert_builder.amend_and_sign_csr(
                 issuer_cert=issuer_cert,
                 issuer_key=issuer_key,
+                crl_urls=ca_def.crl_distribution_points,
                 amend_subject=CsrAmendMode.REPLACE,
                 amend_sans=CsrAmendMode.ADD,
                 amend_key_usage=CsrAmendMode.REPLACE,
@@ -70,13 +77,13 @@ def make_signed_piv_user_cert(
                 validity_days=x509_info.validity_days
             )
         else:
-            signed_cert = cert_builder.build_and_sign(issuer_cert, issuer_key)
+            signed_cert = cert_builder.build_and_sign(issuer_cert, issuer_key, ca_def.crl_distribution_points)
 
     PIVUserCertificateChecker(signed_cert, os_type).check_and_show_issues()
     return private_key, csr_obj or cert_builder.generate_csr(), signed_cert
 
 
-def _make_dn_subject(cn: str, attribs: Optional[X509Info.CertAttribs]) -> str:
+def _make_dn_subject(cn: str, attribs: Optional[X509CertInfo.CertAttribs]) -> str:
     subject = f"CN={cn}"
     if attribs:
         for k, v in {'O': attribs.organization, 'L': attribs.locality, 'ST': attribs.state, 'C': attribs.country}.items():
@@ -85,7 +92,7 @@ def _make_dn_subject(cn: str, attribs: Optional[X509Info.CertAttribs]) -> str:
     return subject
 
 
-def _parse_and_add_explicit_sans(x509_info: X509Info, san_strings: list[str]):
+def _parse_and_add_explicit_sans(x509_info: X509CertInfo, san_strings: list[str]):
     x509_info.subject_alt_name = x509_info.subject_alt_name or x509_info.SubjectAltName()
 
     # Add explicitly provided SANs
@@ -101,7 +108,7 @@ def _parse_and_add_explicit_sans(x509_info: X509Info, san_strings: list[str]):
         x509_info.subject_alt_name.names.setdefault(san_type_lower, []).append(san_value)    # type: ignore [arg-type]
 
 
-def _add_upn_or_email_to_sans(x509_info: X509Info, user: str, os_type: str, default_domain: str|None):
+def _add_upn_or_email_to_sans(x509_info: X509CertInfo, user: str, os_type: str, default_domain: str|None):
     # Add UPN or email to SANs based on OS type
     if '@' in user:
         username = user

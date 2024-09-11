@@ -12,7 +12,7 @@ import yubihsm.defs    # type: ignore [import]
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization, hashes
-from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, click_hsm_obj_auto_complete, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509CA, click_hsm_obj_auto_complete, find_config_items_of_class
 
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
@@ -21,7 +21,7 @@ from hsm_secrets.x509.cert_checker import X509IntermediateCACertificateChecker, 
 from hsm_secrets.x509.def_utils import pretty_x509_info, merge_x509_info_with_defaults, topological_sort_x509_cert_defs
 from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, click_hsm_obj_auto_complete
 from hsm_secrets.utils import HsmSecretsCtx, cli_info, cli_warn, open_hsm_session, pass_common_args
-from hsm_secrets.x509.def_utils import find_cert_def
+from hsm_secrets.x509.def_utils import find_ca_def
 from hsm_secrets.key_adapters import Ed25519PrivateKeyHSMAdapter
 from hsm_secrets.yubihsm import HSMSession
 
@@ -126,13 +126,13 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
     """
     # Enumerate all certificate definitions in the config
     scid_to_opq_def: dict[HSMKeyID, HSMOpaqueObject] = {}
-    scid_to_x509_def: dict[HSMKeyID, X509Cert] = {}
+    scid_to_ca: dict[HSMKeyID, X509CA] = {}
 
-    for x in find_config_items_of_class(ctx.conf, X509Cert):
-        assert isinstance(x, X509Cert)
+    for x in find_config_items_of_class(ctx.conf, X509CA):
+        assert isinstance(x, X509CA)
         for opq in x.signed_certs:
             scid_to_opq_def[opq.id] = opq
-            scid_to_x509_def[opq.id] = x
+            scid_to_ca[opq.id] = x
 
     def _do_it(ses: HSMSession|None):
         selected_defs = list(scid_to_opq_def.values()) if all_certs \
@@ -150,7 +150,7 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                     existing_cert_ids.add(cd.id)
                     continue
 
-            x509_info = merge_x509_info_with_defaults(scid_to_x509_def[cd.id].x509_info, ctx.conf)
+            x509_info = merge_x509_info_with_defaults(scid_to_ca[cd.id].x509_info, ctx.conf)
             issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
             signer = f"signed by: '{issuer.label}'" if issuer else 'self-signed'
 
@@ -159,7 +159,7 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
 
             if not dry_run:
                 assert ses
-                x509_def = scid_to_x509_def[cd.id]
+                x509_ca = scid_to_ca[cd.id]
 
                 # If the certificate is signed by another certificate, get the issuer cert and key
                 issuer_cert, issuer_key = None, None
@@ -172,18 +172,18 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                             raise click.ClickException(f"ERROR: Certificate 0x{cd.sign_by:04x} not found in HSM. Create it first to sign 0x{cd.id:04x}.")
                         issuer_cert = ses.get_certificate(issuer_def)
 
-                    sign_key_def = scid_to_x509_def[cd.sign_by].key
+                    sign_key_def = scid_to_ca[cd.sign_by].key
                     if not ses.object_exists(sign_key_def):
                         raise click.ClickException(f"ERROR: Key 0x{sign_key_def.id:04x} not found in HSM. Create it first to sign 0x{cd.id:04x}.")
                     issuer_key = ses.get_private_key(sign_key_def)
 
                 # Create and sign the certificate
-                assert x509_def.x509_info, "X.509 certificate definition is missing x509_info"
-                priv_key = ses.get_private_key(x509_def.key)
-                builder = X509CertBuilder(ctx.conf, x509_def.x509_info, priv_key)
+                assert x509_ca.x509_info, "X.509 certificate definition is missing x509_info"
+                priv_key = ses.get_private_key(x509_ca.key)
+                builder = X509CertBuilder(ctx.conf, x509_ca.x509_info, priv_key)
                 if issuer_cert:
                     assert issuer_key
-                    id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key)
+                    id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key, x509_ca.crl_distribution_points)
                     # NOTE: We'll assume all signed certs on HSM are CA -- fix this if storing leaf certs for some reason
                     issues = X509IntermediateCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
                     cert_issues.append((cd, issues))
@@ -231,7 +231,7 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
              next_update: Optional[datetime.datetime], crl_number: int):
     """Create empty CRL signed by a CA"""
     ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
-    ca_x509_def = find_cert_def(ctx.conf, ca_cert_def.id)
+    ca_x509_def = find_ca_def(ctx.conf, ca_cert_def.id)
     assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
 
     print(f"CA cert: {ca_cert_def.label} (0x{ca_cert_def.id:04x})")
@@ -282,7 +282,7 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
     Remove and add commands can be specified multiple times.
     """
     ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
-    ca_x509_def = find_cert_def(ctx.conf, ca_cert_def.id)
+    ca_x509_def = find_ca_def(ctx.conf, ca_cert_def.id)
     assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
 
     with open_hsm_session(ctx) as ses:

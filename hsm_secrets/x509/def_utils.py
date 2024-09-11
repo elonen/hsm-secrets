@@ -2,14 +2,14 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, List, Optional
 
-from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Cert, X509Info, find_config_items_of_class
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509CA, X509CertInfo, find_config_items_of_class
 
 """
 Utility functions for working with certificate definitions from the HSMConfig object.
 """
 
 
-def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSMConfig) -> X509Info:
+def merge_x509_info_with_defaults(x509_info: Optional[X509CertInfo], hsm_config: HSMConfig) -> X509CertInfo:
     """
     Merge an X509Info object with the default values from the HSMConfig object.
 
@@ -38,8 +38,6 @@ def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSM
         'subject_alt_name',
         'issuer_alt_name',
         'name_constraints',
-        'crl_distribution_points',
-        'authority_info_access',
         'certificate_policies',
         'policy_constraints',
         'inhibit_any_policy'
@@ -58,7 +56,7 @@ def merge_x509_info_with_defaults(x509_info: Optional[X509Info], hsm_config: HSM
     return merged
 
 
-def pretty_x509_info(x509_info: X509Info) -> str:
+def pretty_x509_info(x509_info: X509CertInfo) -> str:
     """
     Pretty-print an X509Info object.
     """
@@ -102,6 +100,9 @@ def pretty_x509_info(x509_info: X509Info) -> str:
         for (k,v) in sorted(x509_info.issuer_alt_name.names.items(), key=lambda x: x[0]):
             res += f"    - {k}: {v}\n"
 
+    '''
+    # These have been moved to issuer CA definitions:
+
     if x509_info.crl_distribution_points:
         res += f"crl_distribution_points:  (critical: {x509_info.crl_distribution_points.critical})\n"
         for url in x509_info.crl_distribution_points.urls:
@@ -113,6 +114,7 @@ def pretty_x509_info(x509_info: X509Info) -> str:
             res += f"    - OCSP: {url}\n"
         for url in x509_info.authority_info_access.ca_issuers:
             res += f"    - CA Issuers: {url}\n"
+    '''
 
     if x509_info.certificate_policies:
         res += f"certificate_policies:  (critical: {x509_info.certificate_policies.critical})\n"
@@ -170,12 +172,12 @@ def topological_sort_x509_cert_defs(cert_defs: List[HSMOpaqueObject]) -> list[HS
 
 
 
-def find_cert_def(conf: HSMConfig, opaque_id: HSMKeyID|int) -> Optional[X509Cert]:
+def find_ca_def(conf: HSMConfig, opaque_id: HSMKeyID|int) -> Optional[X509CA]:
     """
     Find a certificate definition by its opaque ID.
     """
-    for cd in find_config_items_of_class(conf, X509Cert):
-        assert isinstance(cd, X509Cert)
+    for cd in find_config_items_of_class(conf, X509CA):
+        assert isinstance(cd, X509CA)
         for cs in cd.signed_certs:
             if cs.id == opaque_id:
                 return cd

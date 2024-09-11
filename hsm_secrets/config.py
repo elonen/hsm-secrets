@@ -55,7 +55,7 @@ class HSMConfig(NoExtraBaseModel):
         all_devices: dict[str, str]     # serial number -> connection URL
 
         domains: 'HSMDomains'
-        x509_defaults: 'X509Info'
+        x509_defaults: 'X509CertInfo'
 
         class HSMDomains(NoExtraBaseModel):
             x509: HSMDomainNum
@@ -76,27 +76,27 @@ class HSMConfig(NoExtraBaseModel):
         audit: 'HSMAuditSettings'
 
     class X509(NoExtraBaseModel):
-        root_certs: List['X509Cert']
+        root_certs: List['X509CA']
 
     class TLS(NoExtraBaseModel):
         default_ca_id: HSMKeyID
-        intermediate_certs: List['X509Cert']
+        intermediate_cas: List['X509CA']
 
     class PIV(NoExtraBaseModel):
         default_ca_id: HSMKeyID
         default_piv_domain: str
-        intermediate_certs: List['X509Cert']
-        dc_cert_templates: Dict[str, 'X509Info']  # Overrides global defaults
-        user_cert_templates: Dict[str, 'X509Info']
+        intermediate_cas: List['X509CA']
+        dc_cert_templates: Dict[str, 'X509CertInfo']  # Overrides global defaults
+        user_cert_templates: Dict[str, 'X509CertInfo']
 
     class NAC(NoExtraBaseModel):
-        intermediate_certs: List['X509Cert']
+        intermediate_cas: List['X509CA']
 
     class GPG(NoExtraBaseModel):
         keys: List['HSMAsymmetricKey']
 
     class CodeSign(NoExtraBaseModel):
-        intermediate_certs: List['X509Cert']
+        certs: List['X509CA']
 
     class SSHTemplateSlots(NoExtraBaseModel):
         min: int
@@ -337,22 +337,20 @@ X509NameType = Literal["dns", "ip", "rfc822", "uri", "upn", "directory", "regist
 class X509Extension(BaseModel):
     critical: bool = False
 
-class X509Info(NoExtraBaseModel):
+class X509CertInfo(NoExtraBaseModel):
     validity_days: Optional[int] = None
-    attribs: Optional['X509Info.CertAttribs'] = None
-    basic_constraints: Optional['X509Info.BasicConstraints'] = None
-    key_usage: Optional['X509Info.KeyUsage'] = None
-    extended_key_usage: Optional['X509Info.ExtendedKeyUsage'] = None
-    subject_alt_name: Optional['X509Info.SubjectAltName'] = None
-    issuer_alt_name: Optional['X509Info.IssuerAltName'] = None
-    subject_key_identifier: Optional['X509Info.SubjectKeyIdentifier'] = None
-    authority_key_identifier: Optional['X509Info.AuthorityKeyIdentifier'] = None
-    name_constraints: Optional['X509Info.NameConstraints'] = None
-    crl_distribution_points: Optional['X509Info.CRLDistributionPoints'] = None
-    authority_info_access: Optional['X509Info.AuthorityInfoAccess'] = None
-    certificate_policies: Optional['X509Info.CertificatePolicies'] = None
-    policy_constraints: Optional['X509Info.PolicyConstraints'] = None
-    inhibit_any_policy: Optional['X509Info.InhibitAnyPolicy'] = None
+    attribs: Optional['X509CertInfo.CertAttribs'] = None
+    basic_constraints: Optional['X509CertInfo.BasicConstraints'] = None
+    key_usage: Optional['X509CertInfo.KeyUsage'] = None
+    extended_key_usage: Optional['X509CertInfo.ExtendedKeyUsage'] = None
+    subject_alt_name: Optional['X509CertInfo.SubjectAltName'] = None
+    issuer_alt_name: Optional['X509CertInfo.IssuerAltName'] = None
+    subject_key_identifier: Optional['X509CertInfo.SubjectKeyIdentifier'] = None
+    authority_key_identifier: Optional['X509CertInfo.AuthorityKeyIdentifier'] = None
+    name_constraints: Optional['X509CertInfo.NameConstraints'] = None
+    certificate_policies: Optional['X509CertInfo.CertificatePolicies'] = None
+    policy_constraints: Optional['X509CertInfo.PolicyConstraints'] = None
+    inhibit_any_policy: Optional['X509CertInfo.InhibitAnyPolicy'] = None
 
     # Nested models (x509 extensions)
 
@@ -390,12 +388,9 @@ class X509Info(NoExtraBaseModel):
         permitted: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=dict)
         excluded: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=dict)
 
-    class CRLDistributionPoints(X509Extension):
-        urls: List[str] = Field(default_factory=list)
-
-    class AuthorityInfoAccess(X509Extension):
-        ocsp: List[str] = Field(default_factory=list)
-        ca_issuers: List[str] = Field(default_factory=list)
+    #class AuthorityInfoAccess(X509Extension):
+    #    ocsp: List[str] = Field(default_factory=list)
+    #    ca_issuers: List[str] = Field(default_factory=list)
 
     class SubjectKeyIdentifier(X509Extension):
         method: Literal["hash", "160-bit"] = "hash"
@@ -406,14 +401,14 @@ class X509Info(NoExtraBaseModel):
         authority_cert_serial_number: Optional[str] = None
 
     class CertificatePolicies(X509Extension):
-        policies: List['X509Info.CertificatePolicies.PolicyInformation'] = Field(default_factory=list)
+        policies: List['X509CertInfo.CertificatePolicies.PolicyInformation'] = Field(default_factory=list)
 
         class PolicyInformation(BaseModel):
             policy_identifier: str
-            policy_qualifiers: Optional[List[Union[str, 'X509Info.CertificatePolicies.PolicyInformation.UserNotice']]] = None
+            policy_qualifiers: Optional[List[Union[str, 'X509CertInfo.CertificatePolicies.PolicyInformation.UserNotice']]] = None
 
             class UserNotice(BaseModel):
-                notice_ref: Optional['X509Info.CertificatePolicies.PolicyInformation.NoticeReference'] = None
+                notice_ref: Optional['X509CertInfo.CertificatePolicies.PolicyInformation.NoticeReference'] = None
                 explicit_text: Optional[str] = None
 
             class NoticeReference(BaseModel):
@@ -428,9 +423,10 @@ class X509Info(NoExtraBaseModel):
         skip_certs: int
 
 
-class X509Cert(NoExtraBaseModel):
+class X509CA(NoExtraBaseModel):
     key: HSMAsymmetricKey
-    x509_info: Optional[X509Info] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
+    x509_info: Optional[X509CertInfo] = Field(default=None) # If None, use the default values from the global configuration (applies to sub-fields, too)
+    crl_distribution_points: list[str] = Field(default_factory=list)   # CRL URLs to include in certificates signed by this key
     signed_certs: List[HSMOpaqueObject] = Field(default_factory=list)  # Storage for signed certificates
 
 

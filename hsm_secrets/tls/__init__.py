@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
 import click
 
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec, ed448
@@ -14,12 +15,12 @@ import yubihsm          # type: ignore [import]
 import yubihsm.defs     # type: ignore [import]
 import yubihsm.objects  # type: ignore [import]
 
-from hsm_secrets.config import HSMOpaqueObject, X509Info, X509KeyUsageName
+from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, X509CertInfo, X509KeyUsageName
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_warn, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder, get_issuer_cert_and_key
 from hsm_secrets.x509.cert_checker import BaseCertificateChecker, IssueSeverity
-from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
+from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
 @click.group()
 @click.pass_context
@@ -53,33 +54,33 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     written with the extensions '.key.pem', '.csr.pem', and '.cer.pem' respectively.
     """
     # Find the issuer CA definition
-    issuer_x509_def = None
+    issuer_ca_def = None
     issuer_cert_def = None
     if (sign_ca or '').strip().lower() != 'self':
         issuer_cert_def = ctx.conf.find_def(sign_ca or ctx.conf.tls.default_ca_id, HSMOpaqueObject)
-        issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
-        assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
+        issuer_ca_def = find_ca_def(ctx.conf, issuer_cert_def.id)
+        assert issuer_ca_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
 
-    info = X509Info()
-    info.attribs = X509Info.CertAttribs(common_name = common_name)
+    info = X509CertInfo()
+    info.attribs = X509CertInfo.CertAttribs(common_name = common_name)
     info.attribs.common_name = common_name
 
     ku: set[X509KeyUsageName] = set(['digitalSignature', 'keyEncipherment', 'keyAgreement'])
-    info.key_usage = X509Info.KeyUsage(usages = ku, critical = True)
+    info.key_usage = X509CertInfo.KeyUsage(usages = ku, critical = True)
 
-    info.extended_key_usage = X509Info.ExtendedKeyUsage(usages = set(['serverAuth']), critical = False)
+    info.extended_key_usage = X509CertInfo.ExtendedKeyUsage(usages = set(['serverAuth']), critical = False)
     info.validity_days = validity
     if common_name not in (san_dns or []):
         san_dns = [common_name] + list(san_dns or [])   # Add CN to DNS SANs if not already there
     if san_dns or san_ip:
-        info.subject_alt_name = X509Info.SubjectAltName(names = {'dns': [], 'ip': []}, critical = False)
+        info.subject_alt_name = X509CertInfo.SubjectAltName(names = {'dns': [], 'ip': []}, critical = False)
         for n in san_dns or []:
             info.subject_alt_name.names['dns'].append(n)
         for n in san_ip or []:
             info.subject_alt_name.names['ip'].append(n)
 
     merged_info = merge_x509_info_with_defaults(info, ctx.conf)
-    merged_info.basic_constraints = X509Info.BasicConstraints(ca=False, path_len=None, critical=False) # end-entity cert
+    merged_info.basic_constraints = X509CertInfo.BasicConstraints(ca=False, path_len=None, critical=False) # end-entity cert
 
     priv_key: PrivateKeyOrAdapter
     if keyfmt == 'rsa4096':
@@ -105,12 +106,12 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
 
     builder = X509CertBuilder(ctx.conf, merged_info, priv_key)
     issuer_cert = None
-    if issuer_x509_def:
+    if issuer_ca_def:
          assert issuer_cert_def
          with open_hsm_session(ctx) as ses:
             issuer_cert = ses.get_certificate(issuer_cert_def)
-            issuer_key = ses.get_private_key(issuer_x509_def.key)
-            signed_cert = builder.build_and_sign(issuer_cert, issuer_key)
+            issuer_key = ses.get_private_key(issuer_ca_def.key)
+            signed_cert = builder.build_and_sign(issuer_cert, issuer_key, issuer_ca_def.crl_distribution_points)
             cli_info(f"Signed with CA cert 0x{issuer_cert_def.id:04x}: {issuer_cert.subject}")
     else:
         signed_cert = builder.generate_and_self_sign()
@@ -157,27 +158,33 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     csr_obj = x509.load_pem_x509_csr(csr_data)
 
     # Make fields to amend the CSR with
-    template = X509Info(
-        basic_constraints = X509Info.BasicConstraints(ca=False, path_len=None, critical=False), # end-entity cert
-        key_usage = X509Info.KeyUsage(usages = {'digitalSignature', 'keyEncipherment', 'keyAgreement'}, critical = True),
-        extended_key_usage = X509Info.ExtendedKeyUsage(usages = {'serverAuth'}, critical = False),
+    template = X509CertInfo(
+        basic_constraints = X509CertInfo.BasicConstraints(ca=False, path_len=None, critical=False), # end-entity cert
+        key_usage = X509CertInfo.KeyUsage(usages = {'digitalSignature', 'keyEncipherment', 'keyAgreement'}, critical = True),
+        extended_key_usage = X509CertInfo.ExtendedKeyUsage(usages = {'serverAuth'}, critical = False),
         validity_days = validity
     )
 
     # Add DNS SAN from CN
     if cn := csr_obj.subject.get_attributes_for_oid(x509_oid.NameOID.COMMON_NAME):
-        template.subject_alt_name = X509Info.SubjectAltName(names = {'dns': [str(cn[0].value)]}, critical = False)
+        template.subject_alt_name = X509CertInfo.SubjectAltName(names = {'dns': [str(cn[0].value)]}, critical = False)
     else:
         cli_warn("WARNING: CSR does not contain a Common Name (CN) field. SubjectAltName will be empty")
 
+    # Find issuer def
+    ca_cert_id = ctx.conf.find_def(ca or ctx.conf.tls.default_ca_id, HSMOpaqueObject).id
+    ca_def = find_ca_def(ctx.conf, ca_cert_id)
+    if not ca_def:
+        raise click.ClickException(f"CA '{ca_cert_id}' not found in config")
 
     # Sign the CSR with HSM-backed CA
     with open_hsm_session(ctx) as ses:
-        issuer_cert, issuer_key = get_issuer_cert_and_key(ctx, ses, ca or ctx.conf.tls.default_ca_id)
+        issuer_cert, issuer_key = get_issuer_cert_and_key(ctx, ses, ca_cert_id)
         builder = X509CertBuilder(ctx.conf, template, csr_obj)
         signed_cert = builder.amend_and_sign_csr(
             issuer_cert, issuer_key,
             validity_days = validity,
+            crl_urls = ca_def.crl_distribution_points,
             amend_sans = CsrAmendMode.ADD,
             amend_extended_key_usage = CsrAmendMode.ADD,
             amend_key_usage = CsrAmendMode.REPLACE

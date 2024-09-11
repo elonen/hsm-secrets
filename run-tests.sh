@@ -108,8 +108,11 @@ test_create_all() {
 EOF
     assert_success
 
-    local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
+    local output=$(run_cmd -q hsm compare)
     assert_success
+    echo "$output"
+    #local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
+    local count=$(grep -c '\[x\]' <<< "$output")
     [ "$count" -eq 40 ] || { echo "Expected 40 objects, but found $count"; return 1; }
 
     # Remove default admin key
@@ -276,8 +279,9 @@ test_piv_dc_certificate() {
     assert_grep "DNS:dc01.example.com" "$cert_output"
     assert_grep "DNS:dc.example.com" "$cert_output"
     assert_grep "Key Usage: critical" "$cert_output"
-    assert_grep "Digital Signature, Key Encipherment" "$cert_output"
     assert_grep "Extended Key Usage:" "$cert_output"
+    assert_grep "Signing KDC Response" "$cert_output"
+    assert_grep "Microsoft Smartcard Login" "$cert_output"
     assert_grep "Server Authentication" "$cert_output"
     assert_grep "KDC" "$cert_output"
 }
@@ -359,12 +363,12 @@ test_wrapped_backup() {
 
     run_cmd -q hsm objects delete --force 0x0210
     assert_success
-    run_cmd -q hsm compare | grep -q '[ ].*ca-root-key-rsa' || { echo "ERROR: Key not deleted"; return 1; }
+    run_cmd -q hsm compare | grep -q '[ ].*0x0210' || { echo "ERROR: Key not deleted"; return 1; }
     assert_success
 
     run_cmd -q hsm backup import --force $TEMPDIR/backup.tgz
     assert_success
-    run_cmd -q hsm compare | grep -q '[x].*ca-root-key-rsa' || { echo "ERROR: Key not restored"; return 1; }
+    run_cmd -q hsm compare | grep -q '[x].*0x0210' || { echo "ERROR: Key not restored"; return 1; }
     assert_success
 }
 
@@ -375,12 +379,12 @@ test_ssh_user_certificates() {
 
     # RSA key
     ssh-keygen -t rsa -b 2048 -f $TEMPDIR/testkey_rsa -N '' -C 'testkey'
-    run_cmd ssh sign-user -u test.user --ca ssh-rsa-ca-root-key -p users,admins $TEMPDIR/testkey_rsa.pub
+    run_cmd ssh sign-user -u test.user --ca key_ssh-root-ca-rsa4096 -p users,admins $TEMPDIR/testkey_rsa.pub
     assert_success
 
     # ECDSA 256 key
     ssh-keygen -t ecdsa -b 256 -f $TEMPDIR/testkey_ecdsa -N '' -C 'testkey'
-    run_cmd ssh sign-user -u test.user --ca ssh-ecp384-ca-root-key -p users,admins $TEMPDIR/testkey_ecdsa.pub
+    run_cmd ssh sign-user -u test.user --ca key_ssh-root-ca-ecp384 -p users,admins $TEMPDIR/testkey_ecdsa.pub
     assert_success
 
     # ED25519 key
@@ -425,7 +429,7 @@ test_logging_commands() {
     export HSM_PASSWORD="password123-not-really-set"
 
     # Test first fetch
-    run_cmd --auth-password-id='log-audit' log fetch "$DB_PATH"
+    run_cmd --auth-password-id='svc_log-audit' log fetch "$DB_PATH"
     assert_success
     [ -f "$DB_PATH" ] || { echo "ERROR: Log database not created"; return 1; }
 
@@ -437,9 +441,9 @@ test_logging_commands() {
     setup   # Create some objects
 
     # Fetch again twice to log SET_LOG_INDEX due to --clear
-    run_cmd --auth-password-id='log-audit' log fetch "$DB_PATH" --clear
+    run_cmd --auth-password-id='svc_log-audit' log fetch "$DB_PATH" --clear
     assert_success
-    run_cmd --auth-password-id='log-audit' log fetch "$DB_PATH"
+    run_cmd --auth-password-id='svc_log-audit' log fetch "$DB_PATH"
     assert_success
 
     # Test log review
@@ -468,7 +472,7 @@ test_logging_commands() {
     run_cmd -q pass get wiki.example.com
     assert_success
 
-    run_cmd --auth-password-id 'log-audit' log fetch "$DB_PATH" -c
+    run_cmd --auth-password-id='svc_log-audit' log fetch "$DB_PATH" -c
     assert_success
     run_cmd log verify-all "$DB_PATH"
     assert_success

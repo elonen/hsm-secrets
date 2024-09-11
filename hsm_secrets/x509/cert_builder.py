@@ -13,7 +13,7 @@ from datetime import timedelta
 import ipaddress
 from typing import Callable, Dict, TypeVar, Union, List, Optional
 
-from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509Info
+from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509CertInfo
 
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 from cryptography.hazmat.primitives import hashes
@@ -22,7 +22,7 @@ import yubihsm.objects      # type: ignore [import]
 import yubihsm.defs         # type: ignore [import]
 
 from hsm_secrets.utils import HsmSecretsCtx
-from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
+from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 from hsm_secrets.key_adapters import RSAPrivateKeyHSMAdapter, Ed25519PrivateKeyHSMAdapter, ECPrivateKeyHSMAdapter, PrivateKeyOrAdapter
 
 
@@ -43,7 +43,7 @@ class X509CertBuilder:
 
     def __init__(self,
                  hsm_config: HSMConfig,
-                 cert_def_info: X509Info,
+                 cert_def_info: X509CertInfo,
                  key_or_csr: Union[PrivateKeyOrAdapter, yubihsm.objects.AsymmetricKey, x509.CertificateSigningRequest],
                  dn_subject_override: Optional[str] = None
                  ):
@@ -87,11 +87,13 @@ class X509CertBuilder:
         return builder.sign(self.private_key, sign_hash_algo_for_key(self.private_key))
 
 
-    def build_and_sign(self, issuer_cert: x509.Certificate, issuer_key: PrivateKeyOrAdapter) -> x509.Certificate:
+    def build_and_sign(self, issuer_cert: x509.Certificate, issuer_key: PrivateKeyOrAdapter, crl_urls: list[str]|None) -> x509.Certificate:
         """
         Build and sign an intermediate X.509 certificate with one or more issuer certificates.
         """
         builder = self._build_fresh_cert_base(issuer=issuer_cert)
+        if crl_urls:
+            builder = builder.add_extension(*self._mk_crl_distribution_points(crl_urls, critical=False))
         return builder.sign(issuer_key, sign_hash_algo_for_key(issuer_key))
 
 
@@ -124,7 +126,9 @@ class X509CertBuilder:
     # ----- CSR amendment -----
     def amend_and_sign_csr(
             self,
-            issuer_cert: x509.Certificate, issuer_key: PrivateKeyOrAdapter,
+            issuer_cert: x509.Certificate,
+            issuer_key: PrivateKeyOrAdapter,
+            crl_urls: List[str]|None,
             amend_subject: CsrAmendMode = CsrAmendMode.KEEP,
             amend_sans: CsrAmendMode = CsrAmendMode.ADD,
             amend_key_usage: CsrAmendMode = CsrAmendMode.KEEP,
@@ -132,7 +136,6 @@ class X509CertBuilder:
             amend_name_constraints: CsrAmendMode = CsrAmendMode.KEEP,
             amend_basic_constraints: CsrAmendMode = CsrAmendMode.REPLACE,
             amend_crl_urls: CsrAmendMode = CsrAmendMode.ADD,
-            amend_ocsp_urls: CsrAmendMode = CsrAmendMode.ADD,
             validity_days: int|None = None
         ) -> x509.Certificate:
         """
@@ -274,19 +277,9 @@ class X509CertBuilder:
         # CRL Distribution Points
         builder = _amend(self, builder, x509.CRLDistributionPoints,
             amend_mode = amend_crl_urls,
-            new_ext_src = self.cert_def_info.crl_distribution_points,
-            fn_mk_new_ext = lambda nes: (x509.CRLDistributionPoints([x509.DistributionPoint(full_name=[x509.UniformResourceIdentifier(url)], relative_name=None, reasons=None, crl_issuer=None) for url in nes.urls]), False),
+            new_ext_src = crl_urls,
+            fn_mk_new_ext = lambda nes: (x509.CRLDistributionPoints([x509.DistributionPoint(full_name=[x509.UniformResourceIdentifier(url)], relative_name=None, reasons=None, crl_issuer=None) for url in nes]), False),
             fn_add = lambda o,n,oc,nc: (x509.CRLDistributionPoints(list(set(o) | set(n))), oc or nc)
-        )
-
-        # Authority Information Access (OCSP URLs)
-        builder = _amend(self, builder, x509.AuthorityInformationAccess,
-            amend_mode = amend_ocsp_urls,
-            new_ext_src = self.cert_def_info.authority_info_access,
-            fn_mk_new_ext = lambda nes: (x509.AuthorityInformationAccess([x509.AccessDescription(
-                access_method=x509_oid.AuthorityInformationAccessOID.OCSP,
-                access_location=x509.UniformResourceIdentifier(url)) for url in nes.ocsp]), False),
-            fn_add = lambda o,n,oc,nc: (x509.AuthorityInformationAccess(list(set(o) | set(n))), oc or nc)
         )
 
         # Add Subject Key Identifier (SKI) and Authority Key Identifier (AKI)
@@ -337,12 +330,6 @@ class X509CertBuilder:
         if self.cert_def_info.basic_constraints is not None:
             builder = builder.add_extension(*self._mk_basic_constraints())
 
-        if self.cert_def_info.crl_distribution_points and self.cert_def_info.crl_distribution_points.urls:
-            builder = builder.add_extension(*self._mk_crl_distribution_points())
-
-        if self.cert_def_info.authority_info_access and self.cert_def_info.authority_info_access.ocsp:
-            builder = builder.add_extension(*self._mk_authority_info_access())
-
         if self.cert_def_info.certificate_policies and self.cert_def_info.certificate_policies.policies:
             builder = builder.add_extension(*self._mk_cert_policies())
 
@@ -372,7 +359,7 @@ class X509CertBuilder:
             for q in (p.policy_qualifiers or []):
                 if isinstance(q, str):
                     qualifiers.append(q)  # This is a CPS URI
-                elif isinstance(q, X509Info.CertificatePolicies.PolicyInformation.UserNotice):
+                elif isinstance(q, X509CertInfo.CertificatePolicies.PolicyInformation.UserNotice):
                     notice_ref = x509.NoticeReference(q.notice_ref.organization, q.notice_ref.notice_numbers) if q.notice_ref else None
                     qualifiers.append(x509.UserNotice(notice_ref, q.explicit_text))
                 else:
@@ -395,18 +382,10 @@ class X509CertBuilder:
             path_len = None
         return x509.BasicConstraints(ca, path_len), True
 
-    def _mk_crl_distribution_points(self) -> tuple[x509.CRLDistributionPoints, bool]:
-        assert self.cert_def_info.crl_distribution_points, "X509Info.crl_distribution_points is missing"
-        dps = [x509.DistributionPoint(full_name=[x509.UniformResourceIdentifier(url)], relative_name=None, reasons=None, crl_issuer=None) for url in self.cert_def_info.crl_distribution_points.urls]
-        return x509.CRLDistributionPoints(dps), self.cert_def_info.crl_distribution_points.critical
+    def _mk_crl_distribution_points(self, urls: list[str], critical: bool) -> tuple[x509.CRLDistributionPoints, bool]:
+        dps = [x509.DistributionPoint(full_name=[x509.UniformResourceIdentifier(url)], relative_name=None, reasons=None, crl_issuer=None) for url in urls]
+        return x509.CRLDistributionPoints(dps), critical
 
-    def _mk_authority_info_access(self) -> tuple[x509.AuthorityInformationAccess, bool]:
-        assert self.cert_def_info.authority_info_access, "X509Info.authority_info_access is missing"
-        aia_ocsp = [x509.AccessDescription(
-            access_method=x509_oid.AuthorityInformationAccessOID.OCSP,
-            access_location=x509.UniformResourceIdentifier(url))
-            for url in self.cert_def_info.authority_info_access.ocsp]
-        return x509.AuthorityInformationAccess(aia_ocsp), self.cert_def_info.authority_info_access.critical
 
     def _mk_ski_and_aki(self, issuer: x509.Certificate|None) -> tuple[x509.SubjectKeyIdentifier, x509.AuthorityKeyIdentifier]:
         """
@@ -604,7 +583,7 @@ def parse_x500_dn_subject(subject_string: str) -> List[x509.NameAttribute]:
 
 def get_issuer_cert_and_key(ctx: HsmSecretsCtx, ses, ca_id: str|HSMKeyID) -> tuple[x509.Certificate, PrivateKeyOrAdapter]:
     issuer_cert_def = ctx.conf.find_def(ca_id, HSMOpaqueObject)
-    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
+    issuer_x509_def = find_ca_def(ctx.conf, issuer_cert_def.id)
     assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
     return ses.get_certificate(issuer_cert_def), ses.get_private_key(issuer_x509_def.key)
 

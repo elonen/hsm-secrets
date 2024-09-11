@@ -13,13 +13,13 @@ import asn1crypto.core  # type: ignore
 
 import yubikit.piv
 
-from hsm_secrets.config import HSMOpaqueObject, X509Info, X509NameType
+from hsm_secrets.config import HSMOpaqueObject, X509CertInfo, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
 from hsm_secrets.piv.yubikey_piv import import_to_yubikey_piv
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
-from hsm_secrets.x509.def_utils import find_cert_def, merge_x509_info_with_defaults
+from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
 
 @click.group()
@@ -52,10 +52,9 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
     out_path: Path = Path(out) if out else csr_path.with_suffix('.cer.pem')
 
     # Get CA (issuer)
-    ca_id = ca or ctx.conf.piv.default_ca_id
-    issuer_cert_def = ctx.conf.find_def(ca_id, HSMOpaqueObject)
-    issuer_x509_def = find_cert_def(ctx.conf, issuer_cert_def.id)
-    assert issuer_x509_def, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
+    issuer_cert_def = ctx.conf.find_def(ca or ctx.conf.piv.default_ca_id, HSMOpaqueObject)
+    issuer_x509_ca = find_ca_def(ctx.conf, issuer_cert_def.id)
+    assert issuer_x509_ca, f"CA cert ID not found: 0x{issuer_cert_def.id:04x}"
 
     # Get template
     if template:
@@ -92,10 +91,11 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
     # Sign the certificate
     with open_hsm_session(ctx) as ses:
         issuer_cert = ses.get_certificate(issuer_cert_def)
-        issuer_key = ses.get_private_key(issuer_x509_def.key)
+        issuer_key = ses.get_private_key(issuer_x509_ca.key)
         signed_cert = cert_builder.amend_and_sign_csr(
             issuer_cert,
             issuer_key,
+            issuer_x509_ca.crl_distribution_points,
             validity_days=x509_info.validity_days,
             amend_subject=CsrAmendMode.REPLACE,
             amend_sans=CsrAmendMode.ADD,
@@ -110,6 +110,7 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
         f.write(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
     cli_info(f"Signed certificate saved to: {out_path}")
     cli_code_info(f"View it with: `openssl x509 -in {out_path} -text`")
+
 
 @cmd_piv.command('user-cert')
 @pass_common_args
