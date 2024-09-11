@@ -1,8 +1,3 @@
-
-
-# Start of the main configuration
----
-
 # This is a configuration file for the 'hsm-secrets' tool.
 # It is used to generate keys and certificates for YubiHSM 2 devices.
 #
@@ -11,12 +6,109 @@
 # - RSA is very slow on YubiHSM
 # - ECC is fast but has suffered from past implementation weaknesses, backdoor suspicions, etc.
 
+# ---------------------
+# Edit this section first to customize for your organization.
+macros:
+
+  # Variables to be passed to Jinja2 templates. This config file is a Jinja2 template for itself.
+  jinja_vars:
+    "ORG_NAME": "Example"
+    "CRL_URL": "http://crl.example.com"
+    "AD_DOMAIN": "example.directory"
+
+  # Arbitrary reusable YAML snippets (to be used with `<<: *SNIPPET_NAME` syntax below)
+  yaml_scratchpad:
+
+    # Default X.509 subject attributes.
+    # Edit to match your organization's details.
+    - $: &X509_SUBJECT_DEFAULTS
+        country: US
+        state: Calisota
+        locality: Duckburg
+        organization: "Example Inc."
+
+    # Name constraints for TLS intermediate CAs.
+    # Edit to match your domains and IP ranges (or set to null for no constraints).
+    - $: &TLS_NAME_CONSTRAINTS
+        critical: false
+        permitted:
+          dns:
+            - hsm.local
+            - .hsm.local
+            - example.com
+            - .example.com
+            - "{{AD_DOMAIN}}"
+            - ".{{AD_DOMAIN}}"
+          ip:
+            - 10.123.0.0/16
+            - fd12:3456:78::/48
+            - 2a01:2345:6::/48
+
+    # Device list. Declare you YubiHSM 2 devices here.
+    - $: &HSM_DEVICES
+        master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
+        all_devices:
+          "27600137" : "yhusb://serial=27600137"   # For `yubihsm-connector`: http://localhost:12345
+          "27600136" : "yhusb://serial=27600136"
+          "27600135" : "yhusb://serial=27600135"
+
+    # Password rotation tokens for the password derivation rule.
+    # (See the `password_derivation` section below for details.)
+    - $: &PASSWORD_ROTATION_TOKENS
+        rotation_tokens:
+          # List of tool-generated tokens that rotate password for a specific host (or all if name_hmac is None).
+          # - `name_hmac` is the HMAC of the name, so each name can be rotated independently. If missing, the rule applies to all passwords.
+          # - Nonce prevents current HSM operators from pre-generating rotated passwords before they leave the team.
+          # - Timestamp is used to order the rotations, so that displayng previous passwords (e.g. in case of a rollback) is possible.
+          - {name_hmac: 0x4b2d9547f720ec540a9edda5d33f3aa68719cc5891a9b08df3382229cfc90670, nonce: 0x379cb049d15b37ab, ts: 1721727172}
+
+
+# User auth keys are for general use by human operators.
+#
+# These should be YubiKey authenticated, and used for interactive operations,
+# i.e. manually calling day-to-day scripts that sign HTTPS certificates, SSH keys, etc.
+#
+# They aren't supposed to be able to export or create other keys, only use them.
+user_keys:
+
+  - &USER_COMMON_INFO
+    label: user_john.doe
+    id: 0xE001
+    domains: ['tls', 'nac', 'piv', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
+    capabilities:
+      - sign-ssh-certificate          # For SSH certificate creation
+      - sign-hmac                     # For password derivation
+      - verify-hmac                   # For verifying message authenticity
+      - sign-pss                      # X.509 signing in RSA
+      - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
+      - sign-eddsa                    # X.509 signing in Ed25519
+      - sign-ecdsa                    # X.509 signing in EC
+      - derive-ecdh
+      - encrypt-cbc                   # General AES symmetric data encryption
+      - decrypt-cbc
+      - encrypt-ecb                   # (non-chained AES, not recommended for general use)
+      - decrypt-ecb
+      - get-pseudo-random             # Generating random numbrs
+      - sign-attestation-certificate  # Prove some other key is protected by an HSM
+      - exportable-under-wrap         # Allow backing up of this key
+      - get-opaque                    # For getting certificates stored in the HSM
+      - change-authentication-key     # Change this key's credentials
+      - delete-authentication-key     # Delete this or any other auth key
+      - put-authentication-key        # Create new auth keys (allow operators to re-create keys for each other)
+    delegated_capabilities: ['same']  # ('same' = copy from `capabilities` above)
+
+  - <<: *USER_COMMON_INFO             # (YAML anchor -- copy fields from the previous entry)
+    label: user_alice.smith
+    id: 0xE002
+
+
+# --------------------------------------------
+# Starting from here, all organization-specific information are templated using the macros above.
+# The rest of the sections define keys, certificates and their settings.
+# --------------------------------------------
+
 general:
-  master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
-  all_devices:
-    "27600137" : "yhusb://serial=27600137"   # For `yubihsm-connector`: http://localhost:12345
-    "27600136" : "yhusb://serial=27600136"
-    "27600135" : "yhusb://serial=27600135"
+  <<: *HSM_DEVICES
 
   domains:
     # Domain numbers (1-16) separate different types of objects in the YubiHSM 2.
@@ -39,10 +131,7 @@ general:
       ca: true
       path_len: 0             # Allow end-entity certificate signing only, by default
     attribs:
-      country: US
-      state: Calisota
-      locality: Duckburg
-      organization: Example Inc.
+      <<: *X509_SUBJECT_DEFAULTS
       common_name: ''
     key_usage:
       critical: true
@@ -134,45 +223,6 @@ admin:
       session-message: 'off'        # This is a low-level command, spams the log, not very useful to log
 
 
-# User keys are for general use by human operators.
-#
-# These should be YubiKey -authenticated, and used for interactive operations,
-# i.e. manually calling day-to-day scripts that sign HTTPS certificates, SSH keys, etc.
-#
-# They aren't supposed to be able to export or create other keys, only use them.
-user_keys:
-
-  - &USER_COMMON_INFO
-    label: user_john.doe
-    id: 0xE001
-    domains: ['tls', 'nac', 'piv', 'gpg', 'codesign', 'ssh', 'password_derivation', 'encryption']
-    capabilities:
-      - sign-ssh-certificate          # For SSH certificate creation
-      - sign-hmac                     # For password derivation
-      - verify-hmac                   # For verifying message authenticity
-      - sign-pss                      # X.509 signing in RSA
-      - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
-      - sign-eddsa                    # X.509 signing in Ed25519
-      - sign-ecdsa                    # X.509 signing in EC
-      - derive-ecdh
-      - encrypt-cbc                   # General AES symmetric data encryption
-      - decrypt-cbc
-      - encrypt-ecb                   # (non-chained AES, not recommended for general use)
-      - decrypt-ecb
-      - get-pseudo-random             # Generating random numbrs
-      - sign-attestation-certificate  # Prove some other key is protected by an HSM
-      - exportable-under-wrap         # Allow backing up of this key
-      - get-opaque                    # For getting certificates stored in the HSM
-      - change-authentication-key     # Change this key's credentials
-      - delete-authentication-key     # Delete this or any other auth key
-      - put-authentication-key        # Create new auth keys (allow operators to re-create keys for each other)
-    delegated_capabilities: ['same']  # ('same' = copy from `capabilities` above)
-
-  - <<: *USER_COMMON_INFO             # (YAML anchor -- copy fields from the previous entry)
-    label: user_alice.smith
-    id: 0xE002
-
-
 # Service keys are for automated use by services, probably less well authenticated than user keys.
 # These should be strictly domain-limited, and have limited capabilities.
 service_keys:
@@ -234,13 +284,13 @@ x509:
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/root-a1-rsa4096.crl"
+        - "{{CRL_URL}}/root-a1-rsa4096.crl"
       x509_info:    &ROOT_COMMON_CERT_INFO
         validity_days: 7300  # 20 years
         basic_constraints:
           path_len: null  # No limit for root CAs
         attribs:
-          common_name: 'Example Root A1 RSA4096'
+          common_name: '{{ ORG_NAME }} Root A1 RSA4096'
       signed_certs:   # Certificates to create (and store in HSM) for this key
         - id: 0x0111
           label: cert_ca-root-a1-rsa4096
@@ -258,11 +308,11 @@ x509:
           - sign-eddsa
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/root-a1-ed25519.crl"
+        - "{{CRL_URL}}/root-a1-ed25519.crl"
       x509_info:
         <<: *ROOT_COMMON_CERT_INFO
         attribs:
-          common_name: 'Example Root A1 Ed25519'
+          common_name: '{{ ORG_NAME }} Root A1 Ed25519'
       signed_certs:
         - id: 0x0121
           label: cert_ca-root-a1-ed25519
@@ -281,11 +331,11 @@ x509:
           - derive-ecdh
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/root-a1-ecp384.crl"
+        - "{{CRL_URL}}/root-a1-ecp384.crl"
       x509_info:
         <<: *ROOT_COMMON_CERT_INFO
         attribs:
-          common_name: 'Example Root A1 ECP384'
+          common_name: '{{ ORG_NAME }} Root A1 ECP384'
       signed_certs:
         - id: 0x0131
           label: cert_ca-root-a1-ecp384
@@ -309,29 +359,19 @@ tls:
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/tls-i1-rsa4096.crl"
+        - "{{CRL_URL}}/tls-i1-rsa4096.crl"
       x509_info:  &TLS_COMMON_CERT_INFO
         basic_constraints:
           path_len: 0 # Allow end-entity certificate signing only
         name_constraints:
-          critical: false
-          permitted:
-            dns:
-              - hsm.local
-              - .hsm.local
-              - example.com
-              - .example.com
-            ip:
-              - 10.123.0.0/16
-              - fd12:3456:78::/48
-              - 2a01:2345:6::/48
+          <<: *TLS_NAME_CONSTRAINTS
         extended_key_usage:
           usages:
             - serverAuth
             - clientAuth
             - timeStamping
         attribs:
-          common_name: 'Example TLS Intermediate I1 RSA4096'
+          common_name: '{{ ORG_NAME }} TLS Intermediate I1 RSA4096'
       signed_certs:
         - id: 0x0211
           label: cert_tls-i1-rsa4096
@@ -349,11 +389,11 @@ tls:
           - sign-eddsa
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/tls-i1-ed25519.crl"
+        - "{{CRL_URL}}/tls-i1-ed25519.crl"
       x509_info:
         <<: *TLS_COMMON_CERT_INFO
         attribs:
-          common_name: 'Example TLS Intermediate I1 Ed25519'
+          common_name: '{{ ORG_NAME }} TLS Intermediate I1 Ed25519'
       signed_certs:        # Cross-sign with legacy certs for compatibility
         - id: 0x0221
           label: cert_tls-i1-ed25519_rsa4096-root
@@ -382,11 +422,11 @@ tls:
           - derive-ecdh
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/tls-i1-ecp384.crl"
+        - "{{CRL_URL}}/tls-i1-ecp384.crl"
       x509_info:
         <<: *TLS_COMMON_CERT_INFO
         attribs:
-          common_name: 'Example TLS Intermediate I1 ECP384'
+          common_name: '{{ ORG_NAME }} TLS Intermediate I1 ECP384'
       signed_certs:
         - id: 0x0231
           label: cert_tls-i1-ecp384_rsa4096-root
@@ -415,21 +455,12 @@ nac:
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/nac-n1-rsa2048.crl"
+        - "{{CRL_URL}}/nac-n1-rsa2048.crl"
       x509_info:      &NAC_COMMON_CERT_INFO
         basic_constraints:
           path_len: 1  # NAC servers may need their own CAs, so allow one level of intermediates
         attribs:
-          common_name: 'Example NAC Intermediate N1 RSA2048'
-        subject_alt_name:
-          dns:
-            - 'nac.hsm.biz'
-            - 'nac.example.directory'
-        extended_key_usage:
-          usages:
-            - serverAuth
-            - clientAuth
-            - timeStamping
+          common_name: '{{ ORG_NAME }} NAC Intermediate N1 RSA2048'
       signed_certs:
         - id: 0x0311
           label: cert_nac-n1-rsa2048
@@ -448,11 +479,11 @@ nac:
           - derive-ecdh
           - exportable-under-wrap
       crl_distribution_points:
-        - "http://crl.example.com/nac-n1-ecp256.crl"
+        - "{{CRL_URL}}/nac-n1-ecp256.crl"
       x509_info:
         <<: *NAC_COMMON_CERT_INFO
         attribs:
-          common_name: 'Example NAC Intermediate N1 ECP256'
+          common_name: '{{ ORG_NAME }} NAC Intermediate N1 ECP256'
       signed_certs:
         - id: 0x0333
           label: cert_nac-n1-ecp256
@@ -464,7 +495,7 @@ nac:
 # PIV (Personal Identity Verification) keys for smartcard login
 piv:
   default_ca_id: 0x0431
-  default_piv_domain: '@example.directory'  # AD UPN suffix for Windows, rfc822 suffix for Linux/macOS
+  default_piv_domain: '@{{AD_DOMAIN}}'  # AD UPN suffix for Windows, rfc822 suffix for Linux/macOS
 
   intermediate_cas:
       -
@@ -478,10 +509,10 @@ piv:
             - sign-pkcs
             - exportable-under-wrap
         crl_distribution_points:
-          - "http://crl.example.com/piv-p1-rsa2048.crl"
+          - "{{CRL_URL}}/piv-p1-rsa2048.crl"
         x509_info:    &PIV_COMMON_CERT_INFO
           attribs:
-            common_name: 'Example PIV Intermediate P1 RSA2048'
+            common_name: '{{ ORG_NAME }} PIV Intermediate P1 RSA2048'
           validity_days: 3650
           key_usage:
             critical: true
@@ -507,11 +538,11 @@ piv:
             - derive-ecdh
             - exportable-under-wrap
         crl_distribution_points:
-          - "http://crl.example.com/piv-p1-ecp384.crl"
+          - "{{CRL_URL}}/piv-p1-ecp384.crl"
         x509_info:
           <<: *PIV_COMMON_CERT_INFO
           attribs:
-              common_name: 'Example PIV Intermediate P1 ECP384'
+              common_name: '{{ ORG_NAME }} PIV Intermediate P1 ECP384'
         signed_certs:
           - id: 0x0431
             label: cert_piv-p1-ecp384
@@ -667,10 +698,10 @@ codesign:
         - sign-pkcs
         - exportable-under-wrap
     crl_distribution_points:
-      - "http://crl.example.com/codesign-cs1-rsa4096.crl"
+      - "{{CRL_URL}}/codesign-cs1-rsa4096.crl"
     x509_info:    &CODESIGN_COMMON_CERT_INFO
       attribs:
-        common_name: 'Example Code Signing CS1 RSA4096'
+        common_name: '{{ ORG_NAME }} Code Signing CS1 RSA4096'
       key_usage:
         usages:
           - digitalSignature
@@ -698,11 +729,11 @@ codesign:
         - derive-ecdh
         - exportable-under-wrap
     crl_distribution_points:
-      - "http://crl.example.com/codesign-cs1-ecp384.crl"
+      - "{{CRL_URL}}/codesign-cs1-ecp384.crl"
     x509_info:
       <<: *CODESIGN_COMMON_CERT_INFO
       attribs:
-        common_name: 'Example Code Signing CS1 ECP384'
+        common_name: '{{ ORG_NAME }} Code Signing CS1 ECP384'
     signed_certs:
       - id: 0x0733
         label: cert_codesign-cs1-ecp384
@@ -727,16 +758,11 @@ password_derivation:
 
   rules:
     - id: host-root-passwords
+      <<: *PASSWORD_ROTATION_TOKENS
       key: 0x0810
       format: bip39
       separator: '.'      # Separate password parts with a '.' instead of '-' (or space) to avoid keyboard layout issues
       bits: 64            # 64 should be fine for yescrypt / bcrypt etc, Use 128 if the password is hashed with a weak scheme like NTLM
-      rotation_tokens:
-        # List of tool-generated tokens that rotate password for a specific host (or all if name_hmac is None).
-        # - `name_hmac` is the HMAC of the name, so each name can be rotated independently. If missing, the rule applies to all passwords.
-        # - Nonce prevents current HSM operators from pre-generating rotated passwords before they leave the team.
-        # - Timestamp is used to order the rotations, so that displayng previous passwords (e.g. in case of a rollback) is possible.
-        - {name_hmac: 0x4b2d9547f720ec540a9edda5d33f3aa68719cc5891a9b08df3382229cfc90670, nonce: 0x379cb049d15b37ab, ts: 1721727172}
 
 
 # For generic encryption of secrets, passwords, etc.

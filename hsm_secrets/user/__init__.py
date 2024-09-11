@@ -117,7 +117,7 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
             confirm_and_delete_old_yubihsm_object_if_exists(ses, user_key_conf.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             info = ses.auth_key_put(user_key_conf, key_enc=key_enc, key_mac=key_mac)
-            cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
+            cli_info(f"Auth key ID '{hex(info.id)}' ({str(info.label)}) stored in YubiHSM device {ses.get_serial()}")
 
 
     cli_info("OK. User key added" + (f" to all devices (serials: {', '.join(hsm_serials)})" if alldevs else "") + ".")
@@ -191,7 +191,7 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
             #hsm_put_derived_auth_key(ses, ctx.hsm_serial, ctx.conf, ad, pw)
             confirm_and_delete_old_yubihsm_object_if_exists(ses, ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             info = ses.auth_key_put_derived(ad, pw)
-            cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
+            cli_info(f"Auth key ID '{hex(info.id)}' ({str(info.label)}) stored in YubiHSM device {ses.get_serial()}")
 
 
 # ---------------

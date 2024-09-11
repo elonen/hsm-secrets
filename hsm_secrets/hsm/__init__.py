@@ -428,7 +428,7 @@ def make_shared_admin_key(ctx: HsmSecretsCtx, num_shares: int, threshold: int, w
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             confirm_and_delete_old_yubihsm_object_if_exists(ses, ctx.conf.admin.shared_admin_key.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             info = ses.auth_key_put_derived(ctx.conf.admin.shared_admin_key, pw_str)
-            cli_info(f"Auth key ID '{hex(info.id)}' ({info.label}) stored in YubiHSM device {ses.get_serial()}")
+            cli_info(f"Auth key ID '{hex(info.id)}' ({str(info.label)}) stored in YubiHSM device {ses.get_serial()}")
 
     if skip_ceremony:
         pw = prompt_for_secret("Enter the (new) shared admin password to store", confirm=True)
@@ -518,13 +518,13 @@ def backup_export(ctx: HsmSecretsCtx, out: click.File|None):
                     continue
 
             # Write to tar
-            file_name = f"{obj.object_type.name}--0x{obj.id:04x}--{obj.get_info().label}.bin"
+            file_name = f"{obj.object_type.name}--0x{obj.id:04x}--{str(obj.get_info().label)}.bin"
             tarinfo = tarfile.TarInfo(name=file_name)
             tarinfo.size = len(key_bytes)
             tarinfo.mtime = int(datetime.datetime.now().timestamp())
             tar.addfile(tarinfo, fileobj=BytesIO(key_bytes))
 
-            cli_info(f"- Exported 0x{obj.id:04x}: ({obj.object_type.name}): {obj.get_info().label}")
+            cli_info(f"- Exported 0x{obj.id:04x}: ({obj.object_type.name}): {str(obj.get_info().label)}")
 
     tar.close()
     cli_info("")

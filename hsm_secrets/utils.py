@@ -3,7 +3,7 @@ from enum import Enum
 import os
 from textwrap import dedent
 from typing import Callable, Generator, Optional, Sequence
-from contextlib import contextmanager
+from contextlib import _GeneratorContextManager, contextmanager
 
 # YubiHSM 2
 from yubihsm import YubiHsm     # type: ignore [import]
@@ -353,6 +353,7 @@ def open_hsm_session(
         return
 
     # Real HSM session with the selected auth method
+    ctxman: _GeneratorContextManager[AuthSession|HSMSession]
     if auth_method == HSMAuthMethod.YUBIKEY:
         ctxman = open_hsm_session_with_yubikey(ctx, device_serial)
     elif auth_method == HSMAuthMethod.DEFAULT_ADMIN:

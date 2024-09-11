@@ -11,6 +11,8 @@ from typing_extensions import Annotated
 from typing import Any, Callable, Dict, Iterable, List, Literal, NewType, Optional, Sequence, TypeVar, Union, cast
 from yubihsm.defs import CAPABILITY, ALGORITHM, COMMAND  # type: ignore [import]
 import click
+
+import jinja2
 import yaml	# type: ignore [import]
 
 class NoExtraBaseModel(BaseModel):
@@ -35,6 +37,7 @@ class HSMObjBase(NoExtraBaseModel):
 T = TypeVar('T')
 
 class HSMConfig(NoExtraBaseModel):
+    macros: 'HSMConfig.Macros'
     general: 'HSMConfig.General'
     user_keys: list['HSMAuthKey']
     service_keys: list['HSMAuthKey']
@@ -49,6 +52,10 @@ class HSMConfig(NoExtraBaseModel):
     ssh: 'HSMConfig.SSH'
     password_derivation: 'HSMConfig.PasswordDerivation'
     encryption: 'HSMConfig.Encryption'
+
+    class Macros(NoExtraBaseModel):
+        jinja_vars: Dict[str, str]
+        yaml_scratchpad: List[Any]
 
     class General(NoExtraBaseModel):
         master_device: str              # serial number of the master device
@@ -437,9 +444,22 @@ def load_hsm_config(file_name: str) -> 'HSMConfig':
     Load a YAML configuration file, validate with Pydantic, and return a HSMConfig object.
     """
     with click.open_file(file_name) as f:
-        hsm_conf = yaml.load(f, Loader=yaml.FullLoader)
-    if not isinstance(hsm_conf, dict):
-        raise click.ClickException("Configuration file must be a YAML dictionary.")
+
+        file_contents = f.read()
+        prelim_load = yaml.load(file_contents, Loader=yaml.FullLoader)
+        if not isinstance(prelim_load, dict):
+            raise click.ClickException("Configuration file must be a YAML dictionary.")
+
+        # Load Jinja2 variables from the macros section, apply them to the configuration and reload the YAML
+        jinja_vars = prelim_load.get('macros', {}).get('jinja_vars', {})
+        jinja_env = jinja2.Environment()
+        for key, value in jinja_vars.items():
+            jinja_vars[key] = jinja_env.from_string(value).render()
+        jinja_template = jinja2.Template(file_contents)
+        file_contents = jinja_template.render(**jinja_vars)
+
+        hsm_conf = yaml.load(file_contents, Loader=yaml.FullLoader)
+
     res = HSMConfig(**hsm_conf)
 
     items_per_type, _ = find_all_config_items_per_type(res)
