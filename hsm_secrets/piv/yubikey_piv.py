@@ -36,11 +36,12 @@ def import_to_yubikey_piv(
                 piv.put_key(slot, private_key, pin_policy=PIN_POLICY.MATCH_ONCE, touch_policy=TOUCH_POLICY.CACHED)
             else:
                 cli_info(" - Setting PIN policy to 'ONCE': PIN is needed once per session.")
-                piv.put_key(slot, private_key, pin_policy=PIN_POLICY.ONCE, touch_policy=TOUCH_POLICY.CACHED)
+                piv.put_key(slot, private_key, pin_policy=PIN_POLICY.ONCE, touch_policy=TOUCH_POLICY.NEVER)
         else:
             md = piv.get_slot_metadata(slot)
             if not md.public_key_encoded:
                 raise click.ClickException(f"Slot '{slot.name}' has not key pair, cannot import certificate without key")
+
 
         # Import certificate
         piv.put_certificate(slot, cert, compress=True)
@@ -110,14 +111,19 @@ def _yubikey_auth_with_piv_mgm_key(piv: PivSession, management_key: Optional[byt
     :param piv: The PIV session to authenticate
     :param management_key: The management key for the YubiKey PIV application. If None, will use default key or prompt user.
     """
-    mkm = piv.get_management_key_metadata()
-    if management_key is None:
-        if mkm.default_value:
-            cli_warn("WARNING! Using default management key. Change it immediately after import!")
-            management_key = yubikit.piv.DEFAULT_MANAGEMENT_KEY
-        else:
-            mkey_str = click.prompt("Enter PIV management key (hex)", hide_input=True)
-            if mkey_str is None:
-                raise click.ClickException("Management key is required")
-            management_key = bytes.fromhex(mkey_str)
-    piv.authenticate(mkm.key_type, management_key)
+    mkm = None
+    try:
+        mkm = piv.get_management_key_metadata()
+        if management_key is None:
+            if mkm.default_value:
+                cli_warn("WARNING! Using default management key. Change it immediately after import!")
+                management_key = yubikit.piv.DEFAULT_MANAGEMENT_KEY
+            else:
+                mkey_str = click.prompt("Enter PIV management key (hex)", hide_input=True)
+                if mkey_str is None:
+                    raise click.ClickException("Management key is required")
+                management_key = bytes.fromhex(mkey_str)
+        piv.authenticate(mkm.key_type, management_key)
+    except yubikit.core.NotSupportedError:
+        cli_info("(Device does not support management key metadata retrieval. Assuming default management key.)")
+        piv.authenticate(yubikit.piv.DEFAULT_MANAGEMENT_KEY)

@@ -234,6 +234,8 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
     ca_x509_def = find_cert_def(ctx.conf, ca_cert_def.id)
     assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
 
+    print(f"CA cert: {ca_cert_def.label} (0x{ca_cert_def.id:04x})")
+
     with open_hsm_session(ctx) as ses:
         ca_cert = ses.get_certificate(ca_cert_def)
         ca_key = ses.get_private_key(ca_x509_def.key)
@@ -244,7 +246,7 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
         builder = builder.next_update(next_update or (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=validity)))
         builder = builder.add_extension(x509.CRLNumber(crl_number), critical=False)
 
-        crl = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+        crl = builder.sign(ca_key, sign_hash_algo_for_key(ca_key))
 
         crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
         Path(out).write_bytes(crl_pem)

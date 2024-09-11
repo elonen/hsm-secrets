@@ -37,8 +37,8 @@ class PIVDomainControllerCertificateChecker(BaseCertificateChecker):
         super()._check_subject_and_issuer()
         subject = self.certificate.subject
         org_name = subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
-        if not org_name:
-            self._add_issue("Subject DN does not include Organization Name", IssueSeverity.WARNING)
+        #if not org_name:
+        #    self._add_issue("Subject DN does not include Organization Name", IssueSeverity.WARNING)
 
 # ------
 

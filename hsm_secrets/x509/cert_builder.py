@@ -537,14 +537,15 @@ def x509_str_to_general_name(gn_type: str, data: str) -> x509.GeneralName:
         "directory": lambda n: x509.DirectoryName(x509.Name(parse_x500_dn_subject(n))),
         "registered_id": lambda n: x509.RegisteredID(n),
         "upn": lambda n: x509.OtherName(
-            x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3"),
-            asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n).dump()).dump()
+            x509_oid.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3"),
+            asn1crypto.core.UTF8String(n).dump()
         ),
         "oid": lambda n: x509.OtherName(
             x509.ObjectIdentifier(n.split("=", 1)[0]),
-            asn1crypto.core.OctetString(asn1crypto.core.UTF8String(n.split("=", 1)[1]).dump()).dump()
+            asn1crypto.core.UTF8String(n.split("=", 1)[1]).dump()
         )
     }
+
     if gn_type not in type_to_cls:
         raise ValueError(f"Unsupported general name type: {gn_type}")
     return type_to_cls[gn_type](data)
@@ -578,7 +579,10 @@ def parse_x500_dn_subject(subject_string: str) -> List[x509.NameAttribute]:
     }
 
     for item in subject_string.split(','):
-        key, value = item.strip().split('=', 1)
+        split = item.strip().split('=', 1)
+        if len(split) != 2:
+            raise ValueError(f"Invalid DN subject attribute: '{item}', expected 'key=value,...'")
+        key, value = split
         key = key.strip().upper()
         value = value.strip()
 

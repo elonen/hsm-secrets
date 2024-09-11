@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography import x509
 
-from asn1crypto.core import OctetString     # type: ignore [import]
+import asn1crypto.core  # type: ignore
 
 import yubikit.piv
 
@@ -73,8 +73,6 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
     if validity:
         x509_info.validity_days = validity
 
-    x509_info.attribs.common_name = hostname     # Override CN
-
     # Add explicitly provided SANs
     x509_info.subject_alt_name = x509_info.subject_alt_name or x509_info.SubjectAltName()
     for san_entry in san:
@@ -86,11 +84,10 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
 
     # Add hostname to DNS SANs if not already there
     if hostname not in (x509_info.subject_alt_name.names.get('dns') or []):
-
         x509_info.subject_alt_name.names['dns'] = [hostname] + list(x509_info.subject_alt_name.names.get('dns') or [])
 
     # Create X509CertBuilder
-    cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_obj)
+    cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_obj, dn_subject_override=f'CN={hostname}')
 
     # Sign the certificate
     with open_hsm_session(ctx) as ses:
@@ -169,6 +166,9 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
     with open(cer_file, 'wb') as fo:
         fo.write(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
     cli_info(f"Certificate saved to: {cer_file}")
+    cli_code_info(f"View it with: `openssl x509 -in {cer_file} -text`")
+
+    _display_ad_strong_mapping(signed_cert)
 
 
 @cmd_piv_yubikey.command('import')
@@ -210,6 +210,8 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
         slot=slot_enum,
         management_key=bytes.fromhex(management_key) if management_key else None
     )
+    _display_ad_strong_mapping(certificate)
+
 
 @cmd_piv_yubikey.command('generate')
 @pass_common_args
@@ -239,6 +241,8 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, management_k
         slot = slot_enum,
         management_key = bytes.fromhex(management_key) if management_key else None
     )
+    _display_ad_strong_mapping(signed_cert)
+
 
 
 def _show_piv_cert_summary(signed_cert: x509.Certificate):
@@ -248,13 +252,21 @@ def _show_piv_cert_summary(signed_cert: x509.Certificate):
     for i, san in enumerate(signed_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value):
         if isinstance(san, x509.OtherName):
             type_str = 'UPN' if san.type_id == x509.ObjectIdentifier('1.3.6.1.4.1.311.20.2.3') else f'OID {san.type_id.dotted_string}'
-            san_str = f"{type_str}: {OctetString.load(san.value).native.decode().strip()}"
+            san_str = f"{type_str}: {asn1crypto.core.UTF8String.load(san.value).native.strip()}"
         elif isinstance(san, x509.RFC822Name):
             san_str = f"RFC822: {san.value}"
         else:
             san_str = str(san)
         cli_code_info(f" - SAN {i+1}:   {san_str}")
     cli_code_info(f" - Issuer:  {signed_cert.issuer.rfc4514_string()}")
+
+
+def _display_ad_strong_mapping(signed_cert):
+    ski_hex = signed_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest.hex().lower()
+    cli_info("")
+    cli_info(f"For Strong Certificate Mapping (KB5014754), add this attribute to the AD User object:")
+    cli_code_info(f'altSecurityIdentities = `"X509:<SKI>{ski_hex}"`')
+
 
 '''
 def generate_on_yubikey_piv_cmd(slot: str, key_type: str, management_key: Optional[str], subject: str, validity: int):
