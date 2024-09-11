@@ -1,3 +1,4 @@
+import click
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat
@@ -10,6 +11,7 @@ from cryptography.hazmat.primitives import hashes
 
 import yubihsm.objects      # type: ignore [import]
 import yubihsm.defs         # type: ignore [import]
+import yubihsm.exceptions   # type: ignore [import]
 
 """
 Classes that wrap YubiHSM-stored keys in the cryptography.hazmat.primitives.asymmetric interfaces.
@@ -26,7 +28,13 @@ def make_private_key_adapter(hsm_key: yubihsm.objects.AsymmetricKey) -> PrivateK
     """
     Create a PrivateKeyHSMAdapter object for the given YubiHSM-stored key.
     """
-    info = hsm_key.get_info()
+    try:
+        info = hsm_key.get_info()
+    except yubihsm.exceptions.YubiHsmDeviceError as e:
+        if e.code == yubihsm.defs.ERROR.OBJECT_NOT_FOUND:
+            raise click.ClickException(f"Key not found in HSM: 0x{hsm_key.id:04x}")
+        else:
+            raise
     if "RSA_" in str(info.algorithm.name.upper()):
         return RSAPrivateKeyHSMAdapter(hsm_key)
     elif "ED25519" in str(info.algorithm.name.upper()):

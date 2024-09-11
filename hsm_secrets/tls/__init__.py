@@ -137,7 +137,7 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
         cli_info(f"Chain (bundle) written to: {chain_file}")
 
     cli_info("")
-    cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {cer_file} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
+    cli_code_info(f"To view certificate, use:\n`openssl crl2pkcs7 -nocrl -certfile {cer_file} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
 # ----- Sign CSR -----
 

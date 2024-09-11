@@ -77,6 +77,7 @@ def pass_common_args(f):
         except YubiHsmDeviceError as e:
             if e.code == ERROR.OBJECT_NOT_FOUND:
                 cli_error(f"Object not found in HSM: {e}")
+                raise e
             elif e.code == ERROR.INSUFFICIENT_PERMISSIONS:
                 cli_error(f"Insufficient permissions for HSM operation: {e}")
             elif e.code == ERROR.AUTHENTICATION_FAILED:

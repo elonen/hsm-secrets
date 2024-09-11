@@ -374,14 +374,14 @@ class RealHSMSession(HSMSession):
 
     def object_exists_raw(self, id: HSMKeyID, type: OBJECT) -> ObjectInfo | None:
         try:
-            return self.backend.get_object(id, type).get_info()
+            return self._get_object(id, type).get_info()
         except YubiHsmDeviceError as e:
             if e.code == ERROR.OBJECT_NOT_FOUND:
                 return None
             raise e
 
     def put_wrap_key(self, keydef: HSMWrapKey, secret: bytes) -> ObjectInfo:
-        wrap_key = self.backend.get_object(keydef.id, OBJECT.WRAP_KEY)
+        wrap_key = self._get_object(keydef.id, OBJECT.WRAP_KEY)
         assert isinstance(wrap_key, WrapKey)
         res = wrap_key.put(
             session=self.backend,
@@ -397,23 +397,23 @@ class RealHSMSession(HSMSession):
         return res.get_info()
 
     def attest_asym_key(self, key_id: HSMKeyID) -> haz_x509.Certificate:
-        asym_key = self.backend.get_object(key_id, OBJECT.ASYMMETRIC_KEY)
+        asym_key = self._get_object(key_id, OBJECT.ASYMMETRIC_KEY)
         assert isinstance(asym_key, AsymmetricKey)
         return asym_key.attest()
 
     def export_wrapped(self, wrap_key: HSMWrapKey, obj_id: HSMKeyID, obj_type: OBJECT) -> bytes:
-        wrap_key_obj = self.backend.get_object(wrap_key.id, OBJECT.WRAP_KEY)
+        wrap_key_obj = self._get_object(wrap_key.id, OBJECT.WRAP_KEY)
         assert isinstance(wrap_key_obj, WrapKey)
-        export_obj = self.backend.get_object(obj_id, obj_type)
+        export_obj = self._get_object(obj_id, obj_type)
         return wrap_key_obj.export_wrapped(export_obj)
 
     def import_wrapped(self, wrap_key: HSMWrapKey, data: bytes) -> ObjectInfo:
-        wrap_key_obj = self.backend.get_object(wrap_key.id, OBJECT.WRAP_KEY)
+        wrap_key_obj = self._get_object(wrap_key.id, OBJECT.WRAP_KEY)
         assert isinstance(wrap_key_obj, WrapKey)
         return wrap_key_obj.import_wrapped(data).get_info()
 
     def auth_key_put_derived(self, keydef: HSMAuthKey, password: str) -> ObjectInfo:
-        auth_key = self.backend.get_object(keydef.id, OBJECT.AUTHENTICATION_KEY)
+        auth_key = self._get_object(keydef.id, OBJECT.AUTHENTICATION_KEY)
         assert isinstance(auth_key, AuthenticationKey)
         return auth_key.put_derived(
             session=self.backend,
@@ -427,7 +427,7 @@ class RealHSMSession(HSMSession):
             password=password).get_info()
 
     def auth_key_put(self, keydef: HSMAuthKey, key_enc: bytes, key_mac: bytes) -> ObjectInfo:
-        auth_key = self.backend.get_object(keydef.id, OBJECT.AUTHENTICATION_KEY)
+        auth_key = self._get_object(keydef.id, OBJECT.AUTHENTICATION_KEY)
         assert isinstance(auth_key, AuthenticationKey)
         return auth_key.put(
             session=self.backend,
@@ -442,7 +442,7 @@ class RealHSMSession(HSMSession):
             key_mac=key_mac).get_info()
 
     def sym_key_generate(self, keydef: HSMSymmetricKey) -> ObjectInfo:
-        sym_key = self.backend.get_object(keydef.id, OBJECT.SYMMETRIC_KEY)
+        sym_key = self._get_object(keydef.id, OBJECT.SYMMETRIC_KEY)
         assert isinstance(sym_key, SymmetricKey)
         return sym_key.generate(
             session=self.backend,
@@ -453,7 +453,7 @@ class RealHSMSession(HSMSession):
             algorithm=self.conf.algorithm_from_name(keydef.algorithm)).get_info()
 
     def asym_key_generate(self, keydef: HSMAsymmetricKey) -> ObjectInfo:
-        asym_key = self.backend.get_object(keydef.id, OBJECT.ASYMMETRIC_KEY)
+        asym_key = self._get_object(keydef.id, OBJECT.ASYMMETRIC_KEY)
         assert isinstance(asym_key, AsymmetricKey)
         return asym_key.generate(
             session=self.backend,
@@ -464,7 +464,7 @@ class RealHSMSession(HSMSession):
             algorithm=self.conf.algorithm_from_name(keydef.algorithm)).get_info()
 
     def hmac_key_generate(self, keydef: HSMHmacKey) -> ObjectInfo:
-        hmac_key = self.backend.get_object(keydef.id, OBJECT.HMAC_KEY)
+        hmac_key = self._get_object(keydef.id, OBJECT.HMAC_KEY)
         assert isinstance(hmac_key, HmacKey)
         return hmac_key.generate(
             session=self.backend,
@@ -486,21 +486,21 @@ class RealHSMSession(HSMSession):
         self.delete_object_raw(objdef.id, obj_type)
 
     def delete_object_raw(self, id: HSMKeyID, type: OBJECT) -> None:
-        self.backend.get_object(id, type).delete()
+        self._get_object(id, type).delete()
 
     def sign_hmac(self, keydef: HSMHmacKey, data: bytes) -> bytes:
-        hmac_key = self.backend.get_object(keydef.id, OBJECT.HMAC_KEY)
+        hmac_key = self._get_object(keydef.id, OBJECT.HMAC_KEY)
         assert isinstance(hmac_key, HmacKey)
         return hmac_key.sign_hmac(data)
 
     def get_certificate(self, keydef: HSMOpaqueObject) -> haz_x509.Certificate:
-        obj = self.backend.get_object(keydef.id, OBJECT.OPAQUE)
+        obj = self._get_object(keydef.id, OBJECT.OPAQUE)
         assert isinstance(obj, Opaque)
         res = obj.get_certificate()
         return res
 
     def put_certificate(self, keydef: HSMOpaqueObject, certificate: haz_x509.Certificate) -> ObjectInfo:
-        obj = self.backend.get_object(keydef.id, OBJECT.OPAQUE)
+        obj = self._get_object(keydef.id, OBJECT.OPAQUE)
         assert isinstance(obj, Opaque)
         return obj.put_certificate(
             session=self.backend,
@@ -511,12 +511,12 @@ class RealHSMSession(HSMSession):
             certificate=certificate).get_info()
 
     def get_private_key(self, keydef: HSMAsymmetricKey) -> PrivateKeyOrAdapter:
-        asym_key = self.backend.get_object(keydef.id, OBJECT.ASYMMETRIC_KEY)
+        asym_key = self._get_object(keydef.id, OBJECT.ASYMMETRIC_KEY)
         assert isinstance(asym_key, AsymmetricKey)
         return make_private_key_adapter(asym_key)
 
     def get_public_key(self, keydef: HSMAsymmetricKey) -> haz_rsa.RSAPublicKey | haz_ec.EllipticCurvePublicKey | haz_ed25519.Ed25519PublicKey:
-        asym_key = self.backend.get_object(keydef.id, OBJECT.ASYMMETRIC_KEY)
+        asym_key = self._get_object(keydef.id, OBJECT.ASYMMETRIC_KEY)
         assert isinstance(asym_key, AsymmetricKey)
         return asym_key.get_public_key()
 
@@ -555,6 +555,15 @@ class RealHSMSession(HSMSession):
         self.backend.set_force_audit(tristate[settings.forced_audit])
         audit_mapping: dict[COMMAND, AUDIT]  = {lookup_hsm_cmd(k): tristate[v] for k,v in settings.command_logging.items()}
         self.backend.set_command_audit(audit_mapping)
+
+    def _get_object(self, key: HSMKeyID, type: OBJECT) -> YhsmObject:
+        try:
+            return self.backend.get_object(key, type)
+        except YubiHsmDeviceError as e:
+            if e.code == ERROR.OBJECT_NOT_FOUND:
+                raise click.ClickException(f"HSM object not found: {key}")
+            else:
+                raise e
 
 
 # --------- Mock YubiHSM2 ---------
