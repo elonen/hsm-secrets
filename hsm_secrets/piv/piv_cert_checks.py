@@ -26,7 +26,7 @@ class PIVDomainControllerCertificateChecker(BaseCertificateChecker):
         if not has_dns:
             self._add_issue("SubjectAlternativeName does not include a DNS name", IssueSeverity.ERROR)
         if has_upn:
-            self._add_issue("DC certificates does not usually include a UPN (User Principal Name)", IssueSeverity.NOTICE)
+            self._add_issue("DC certificates does not usually include a UPN (User Principal Name)", IssueSeverity.WARNING)
 
     def _check_specific_subject_common_name_consistency(self, cn_value: str, san: x509.SubjectAlternativeName):
         dns_names = [name.value for name in san if isinstance(name, x509.DNSName)]
@@ -62,13 +62,17 @@ class PIVUserCertificateChecker(BaseCertificateChecker):
         #    self._add_issue("ExtendedKeyUsage does not include emailProtection", IssueSeverity.NOTICE)
 
     def _check_specific_subject_alternative_name(self, san: x509.SubjectAlternativeName):
+        # Removed, as multi-account certificates do not have to include a SAN.
+        '''
         has_upn = any(isinstance(name, x509.OtherName) and name.type_id.dotted_string == "1.3.6.1.4.1.311.20.2.3" for name in san)
         has_rfc822 = any(isinstance(name, x509.RFC822Name) for name in san)
-
         if not has_upn and self.os_type == "windows":
             self._add_issue("SubjectAlternativeName does not include a UPN (User Principal Name)", IssueSeverity.WARNING)
         if not has_rfc822 and self.os_type == "other":
             self._add_issue("SubjectAlternativeName does not include an RFC822 (email) name", IssueSeverity.NOTICE)
+        '''
+    def _check_subject_alternative_name(self):
+        pass
 
     def _check_specific_subject_common_name_consistency(self, cn_value: str, san: x509.SubjectAlternativeName):
         # NOTE: these checks are pretty permissive

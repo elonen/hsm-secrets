@@ -22,16 +22,21 @@ def make_signed_piv_user_cert(
         user: str,
         template: str|None,
         subject: str,
-        validity: int,
-        key_type: PivKeyTypeName,
-        csr_pem: str|None,
+        validity: int|None,
+        key_type: PivKeyTypeName|None,
+        csr_obj: x509.CertificateSigningRequest|None,
         ca: str,
         os_type: Literal["windows", "other"],
-        extra_san_strings: list[str]
+        extra_san_strings: list[str],
+        multi_account: bool
     )-> tuple[
         Optional[Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey]],
         x509.CertificateSigningRequest,
         x509.Certificate]:
+    """
+    Create a signed PIV user certificate.
+    If `csr_obj` is provided, it will be signed. Otherwise, a new key pair will be generated.
+    """
 
     # Get and merge template with defaults
     cert_template = ctx.conf.piv.user_cert_templates[template] if template else next(iter(ctx.conf.piv.user_cert_templates.values()))
@@ -42,13 +47,13 @@ def make_signed_piv_user_cert(
         x509_info.validity_days = validity
     subject = subject or _make_dn_subject(user, x509_info.attribs)
     _parse_and_add_explicit_sans(x509_info, extra_san_strings)
-    _add_upn_or_email_to_sans(x509_info, user, os_type, ctx.conf.piv.default_piv_domain)
+    if not multi_account:
+        _add_upn_or_email_to_sans(x509_info, user, os_type, ctx.conf.piv.default_piv_domain)
 
     # Either load CSR or generate new key pair
-    csr_obj, private_key = None, None
-    if csr_pem:
-        csr_obj = x509.load_pem_x509_csr(csr_pem.encode())
-    else:
+    private_key = None
+    if not csr_obj:
+        assert key_type, "Key type must be provided if no CSR is given"
         _, private_key = _generate_piv_key_pair(key_type)
 
     # Create X509CertBuilder, amend CSR (if provided), sign and return

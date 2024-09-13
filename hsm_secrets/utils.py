@@ -138,8 +138,6 @@ def cli_warn(*args, **kwargs):
         click.echo(click.style(*args, fg='yellow', **kwargs), err=True)
 
 
-
-
 def pw_check_fromhex(pw: str) -> str|None:
     try:
         _ = bytes.fromhex(pw)
@@ -215,21 +213,24 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         assert device_serial, "HSM device serial not provided nor inferred."
         connector_url = config.general.all_devices.get(device_serial)
         if not connector_url:
-            raise ValueError(f"Device serial '{device_serial}' not found in config file.")
+            raise ValueError(f"HSM device serial '{device_serial}' not found in config file.")
 
         yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True)
         assert yubikey
-        hsmauth = HsmAuthSession(yubikey.smart_card())
+        try:
+            hsmauth = HsmAuthSession(yubikey.smart_card())
+        except yubikit.core.ApplicationNotAvailableError:
+            raise click.ClickException("YubiHSM auth not available on this YubiKey")
 
         # Get first Yubikey HSM auth key label from device if not specified
         yubikey_label = yubikey_slot_label
         if not yubikey_label:
             yk_hsm_creds = list(hsmauth.list_credentials())
             if not yk_hsm_creds:
-                raise click.ClickException("No Yubikey HSM credentials on device. Cannot authenticate.")
+                raise click.ClickException("No YubiKey HSM credentials on device. Cannot authenticate.")
             else:
                 yubikey_label = yk_hsm_creds[0].label
-                cli_info("Using Yubikey hsmauth label (first slot on device): " + click.style(yubikey_label, fg='cyan'))
+                cli_code_info(f"Using YubiKey hsmauth label (first label on device): `{yubikey_label}`")
 
         hsm = YubiHsm.connect(connector_url)
         verify_hsm_device_info(device_serial, hsm)
@@ -300,6 +301,8 @@ def scan_local_yubikeys(require_one_hsmauth = True, require_one_other = False) -
                     continue
                 elif require_one_hsmauth:
                     raise click.ClickException("ERROR: Multiple YubiKeys found with HSM credentials. Can't decide which one to use for HSM auth.")
+        except yubikit.core.ApplicationNotAvailableError:
+            pass
         except yubikit.core.NotSupportedError:
             pass
 

@@ -1,3 +1,5 @@
+import os
+import random
 import re
 from typing_extensions import Literal
 import click
@@ -16,7 +18,7 @@ import yubikit.piv
 from hsm_secrets.config import HSMOpaqueObject, X509CertInfo, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
-from hsm_secrets.piv.yubikey_piv import import_to_yubikey_piv
+from hsm_secrets.piv.yubikey_piv import YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, set_yubikey_piv_pin_puk_management_key
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
@@ -117,14 +119,15 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
 @click.option('--user', '-u', required=True, help="User identifier (username for Windows, email for macOS/Linux)")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
 @click.option('--subject', '-s', required=False, help="Cert subject (DN), default: from config")
+@click.option('--multi', is_flag=False, help="Multi-account mode (no UPN/email SAN)")
 @click.option('--validity', '-v', type=int, help="Validity period in days, default: from config")
-@click.option('--key-type', '-k', type=click.Choice(['rsa2048', 'ecp256', 'ecp384']), default='ecp384', help="Key type, default: same as CA")
+@click.option('--key-type', '-k', type=click.Choice(['rsa2048', 'ecp256', 'ecp384']), default='rsa2048', help="Key type")
 @click.option('--csr', type=click.Path(exists=True, dir_okay=False, resolve_path=True), help="Path to existing CSR file")
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename stem, default: ./<user>-piv[.key/.cer]")
 @click.option('--os-type', type=click.Choice(['windows', 'other']), default='windows', help="Target operating system")
 @click.option('--san', multiple=True, help="AdditionalSANs, e.g., 'DNS:example.com', 'IP:10.0.0.2', etc.")
-def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: str, validity: int, key_type: PivKeyTypeName, csr: str|None, ca: str, out: str, os_type: Literal["windows", "other"], san: list[str]):
+def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: str, multi: bool, validity: int, key_type: PivKeyTypeName, csr: str|None, ca: str, out: str, os_type: Literal["windows", "other"], san: list[str]):
     """Create or sign PIV user certificate, save to files
 
     If a CSR is provided, sign it with a CA certificate.
@@ -136,12 +139,13 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
     - DIRECTORY:/C=US/O=Example/CN=example.com
     - OID:1.2.3.4.5=myValue
     """
-    csr_pem: str|None = None
+    csr_obj = None
     if csr:
         with open(csr, 'rb') as fi:
             csr_pem = fi.read().decode()
+            csr_obj = x509.load_pem_x509_csr(csr_pem.encode())
 
-    private_key, csr_obj, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, key_type, csr_pem, ca, os_type, san)
+    private_key, csr_obj, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, key_type, csr_obj, ca, os_type, san, multi)
     _show_piv_cert_summary(signed_cert)
 
    # Save files
@@ -151,7 +155,7 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
         return user or "user"
     out = out or f"{_sanitize_username(user)}-piv"
     key_file = Path(out).with_suffix('.key.pem')
-    csr_file = Path(out).with_suffix('.csr.pem')
+    #csr_file = Path(out).with_suffix('.csr.pem')
     cer_file = Path(out).with_suffix('.cer.pem')
 
     if private_key:
@@ -161,8 +165,8 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
             encryption_algorithm=serialization.NoEncryption()
         ))
         cli_info(f"Private key saved to: {key_file}")
-        csr_file.write_bytes(csr_obj.public_bytes(serialization.Encoding.PEM))
-        cli_info(f"CSR saved to: {csr_file}")
+        #csr_file.write_bytes(csr_obj.public_bytes(serialization.Encoding.PEM))
+        #cli_info(f"CSR saved to: {csr_file}")
 
     with open(cer_file, 'wb') as fo:
         fo.write(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
@@ -174,8 +178,8 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
 
 @cmd_piv_yubikey.command('import')
 @pass_common_args
-@click.argument('cert', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, allow_dash=False))
-@click.argument('key', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, allow_dash=False))
+@click.argument('key', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, allow_dash=False), metavar='<KEYFILE>')
+@click.argument('cert', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, allow_dash=False), metavar='<CERTFILE>')
 @click.option('--slot', '-s', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
 @click.option('--management-key', '-m', help="PIV management key (hex), default: prompt")
 def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.Path, slot: str, management_key: str|None):
@@ -183,34 +187,24 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
 
     If two YubiKeys are connected, the one _without_ HSM auth will be used.
     """
-    cert_path = Path(str(cert))
-    with cert_path.open('rb') as f:
-        cert_data = f.read()
-        certificate = x509.load_pem_x509_certificate(cert_data)
+    # Load cert PEM
+    with Path(str(cert)).open('rb') as f:
+        certificate = x509.load_pem_x509_certificate(f.read())
 
-    key_path = Path(str(key))
-    with key_path.open('rb') as f:
-        key_data = f.read()
-        private_key = serialization.load_pem_private_key(key_data, password=None)
+    # Load key PEM
+    with Path(str(key)).open('rb') as f:
+        private_key = serialization.load_pem_private_key(f.read(), password=None)
         if not isinstance(private_key, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey)):
             raise click.ClickException("Unsupported private key type. Only RSA and EC keys are supported for YubiKey PIV.")
 
-    cli_info("PEM files loaded:")
-    cli_code_info(f" - certificate: `{cert_path.name}`")
-    cli_code_info(f" - private key: `{key_path.name}`")
+    # Convert slot string to SLOT enum
+    slot_enum = getattr(yubikit.piv.SLOT, slot)
+    mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
+
+    with YubikeyPivManagementSession(mgt_key_bytes) as piv:
+        import_to_yubikey_piv(piv, certificate, private_key, slot_enum)
 
     _show_piv_cert_summary(certificate)
-
-    # Convert slot string to SLOT enum
-    from yubikit.piv import SLOT
-    slot_enum = getattr(SLOT, slot)
-
-    import_to_yubikey_piv(
-        cert=certificate,
-        private_key=private_key,
-        slot=slot_enum,
-        management_key=bytes.fromhex(management_key) if management_key else None
-    )
     _display_ad_strong_mapping(certificate)
 
 
@@ -218,38 +212,62 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
 @pass_common_args
 @click.argument('user', required=True)
 @click.option('--slot', '-s', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
+@click.option('--no-reset', is_flag=True, help="Do not reset PIV app before generating key")
+@click.option('--multi', is_flag=False, help="Multi-account mode (no UPN/email SAN)")
 @click.option('--management-key', '-m', help="PIV management key (hex), default: prompt")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
 @click.option('--subject', '-s', required=False, help="Cert subject (DN), default: from config")
 @click.option('--validity', '-v', type=int, help="Validity period in days, default: from config")
-@click.option('--key-type', '-k', type=click.Choice(['rsa2048', 'ecp256', 'ecp384']), default='ecp384', help="Key type, default: same as CA")
+@click.option('--key-type', '-k', type=click.Choice(['rsa2048', 'ecp256', 'ecp384']), default='rsa2048', help="Key type")
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--os-type', type=click.Choice(['windows', 'other']), default='windows', help="Target operating system")
 @click.option('--san', multiple=True, help="AdditionalSANs, e.g., 'DNS:example.com', 'IP:10.0.0.2', etc.")
-def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, management_key: str|None, template: str|None, subject: str, validity: int, key_type: PivKeyTypeName, ca: str, os_type: Literal["windows", "other"], san: list[str]):
+def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bool, multi: bool, management_key: str|None, template: str|None, subject: str, validity: int|None, key_type: PivKeyTypeName, ca: str, os_type: Literal["windows", "other"], san: list[str]):
     """Generate a PIV key + cert and store directly in YubiKey
 
     User argument should be a AD username for Windows or email for macOS/Linux.
 
     If two YubiKeys are connected, the one _without_ HSM auth will be used for PIV.
     """
-    slot_enum: yubikit.piv.SLOT = getattr(yubikit.piv.SLOT, slot)
-    private_key, _csr_obj, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, key_type, None, ca, os_type, san)
-    _show_piv_cert_summary(signed_cert)
-    import_to_yubikey_piv(
-        cert = signed_cert,
-        private_key = private_key,
-        slot = slot_enum,
-        management_key = bytes.fromhex(management_key) if management_key else None
-    )
-    _display_ad_strong_mapping(signed_cert)
+    slot_enum = getattr(yubikit.piv.SLOT, slot)
+    yk_key_type =  {'rsa2048': yubikit.piv.KEY_TYPE.RSA2048, 'ecp256': yubikit.piv.KEY_TYPE.ECCP256, 'ecp384': yubikit.piv.KEY_TYPE.ECCP384}[key_type]
+    mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
 
+    with YubikeyPivManagementSession(mgt_key_bytes, reset_piv = not no_reset) as piv:
+        csr = generate_yubikey_piv_keypair(
+            piv,
+            yk_key_type,
+            yubikit.piv.PIN_POLICY.ONCE,
+            yubikit.piv.TOUCH_POLICY.CACHED,
+            f'CN={user}',
+            slot_enum)
+
+        cli_info(f"Signing the certificate on HSM...")
+        _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
+
+        import_to_yubikey_piv(piv, signed_cert, None, slot_enum)
+
+        if not no_reset:
+            random.seed(os.urandom(16))
+            new_pin = str(random.randint(100000, 999999))
+            new_puk = str(random.randint(10000000, 99999999))
+            new_mgt_key = os.urandom(24)
+            set_yubikey_piv_pin_puk_management_key(piv, new_pin, new_puk, 5, new_mgt_key)
+            cli_info("---")
+            cli_code_info(f"New PIN: `{new_pin}` (give this to the user)")
+            cli_code_info(f"New PUK: `{new_puk}`")
+            cli_code_info(f"New PIV Management Key: `{new_mgt_key.hex()}`")
+            cli_info("---")
+
+    _show_piv_cert_summary(signed_cert)
+    _display_ad_strong_mapping(signed_cert)
 
 
 def _show_piv_cert_summary(signed_cert: x509.Certificate):
     cli_info(f"PIV certificate summary:")
-    cli_code_info(f" - Serial:  `{signed_cert.serial_number:x}` (❗️store for revocation❗️)")
+    cli_code_info(f" - Serial:  `{signed_cert.serial_number:x}`")
     cli_code_info(f" - Subject: {signed_cert.subject.rfc4514_string()}")
+    cli_code_info(f" - Key type: {signed_cert.public_key().__class__.__name__}")
     for i, san in enumerate(signed_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value):
         if isinstance(san, x509.OtherName):
             type_str = 'UPN' if san.type_id == x509.ObjectIdentifier('1.3.6.1.4.1.311.20.2.3') else f'OID {san.type_id.dotted_string}'
@@ -266,30 +284,4 @@ def _display_ad_strong_mapping(signed_cert):
     ski_hex = signed_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest.hex().lower()
     cli_info("")
     cli_info(f"For Strong Certificate Mapping (KB5014754), add this attribute to the AD User object:")
-    cli_code_info(f'altSecurityIdentities = `"X509:<SKI>{ski_hex}"`')
-
-
-'''
-def generate_on_yubikey_piv_cmd(slot: str, key_type: str, management_key: Optional[str], subject: str, validity: int):
-    """Generate a PIV key on YubiKey and make a certificate for it"""
-    # Convert slot string to SLOT enum
-    slot_enum = getattr(SLOT, slot)
-
-    # Convert key type string to PivKeyType enum
-    key_type_enum = PivKeyType[key_type]
-    public_key = _generate_on_yubikey_piv(slot_enum, KEY_TYPE[key_type], bytes.fromhex(management_key) if management_key else None)
-
-    # Create a dummy certificate
-    x509_info = X509CertBuilder.get_default_x509_info()
-    x509_info.validity_days = validity
-    x509_info.attribs.common_name = subject
-    x509_info.subject_alt_name = x509_info.SubjectAltName()
-    cert_builder = X509CertBuilder(HSMConfig(), x509_info, public_key, dn_subject_override=subject)
-    dummy_cert = cert_builder.build_self_signed()
-
-    _import_to_yubikey_piv(
-        cert=dummy_cert,
-        private_key=None,
-        slot=slot_enum,
-        management
-'''
+    cli_code_info(f'altSecurityIdentities = `X509:<SKI>{ski_hex}`')

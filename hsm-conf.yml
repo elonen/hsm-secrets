@@ -574,7 +574,12 @@ piv:
   # User certificate templates for PIV cards
   user_cert_templates:
     "default":
-      validity_days: 730  # 2 years
+      validity_days: 398  # ~13 months
+      attribs:
+        country: ''
+        locality: ''
+        organization: '{{ ORG_NAME }}'
+        common_name: ''
       basic_constraints:
         ca: false
         path_len: null
