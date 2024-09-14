@@ -128,7 +128,7 @@ EOF
         spawn sh -c "$CMD -q hsm admin default-enable --use-backup-secret 2>&1"
         expect {
             "Is the backup secret hex" { sleep 0.1; send "n\r"; exp_continue }
-            "Backup secret:" { sleep 0.1; send "passw123\r"; exp_continue }
+            "Backup secret" { sleep 0.1; send "passw123\r"; exp_continue }
             timeout { handle_timeout }
             eof {}
         }

@@ -5,7 +5,7 @@ import click
 
 from hsm_secrets.config import HSMAuditSettings, HSMConfig, YubiHsm2AuditMode, YubiHsm2Command
 from hsm_secrets.log import log_db, yhsm_log
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_error, cli_info, cli_result, open_hsm_session, pass_common_args
 
 
 @click.group()
@@ -39,7 +39,7 @@ def apply_audit_settings(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
             else:
                 cli_info(" └– Mismatching audit commands (current -> new):")
                 cli_info(mismatches_str)
-                if not force and not click.confirm("Do you want to set the audit settings to match the configuration?", default=False, err=True):
+                if not force and not cli_confirm("Do you want to set the audit settings to match the configuration?", default=False):
                     cli_info(f"    └– Skipping device {serial}.")
                 else:
                     # Remove any 'fixed' commands from the current settings before applying.

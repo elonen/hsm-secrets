@@ -2,7 +2,7 @@ import re
 import secrets
 import click
 from hsm_secrets.config import HSMAuthKey, HSMConfig, click_hsm_obj_auto_complete
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_info, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, scan_local_yubikeys, secure_display_secret
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_info, cli_pause, cli_prompt, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, scan_local_yubikeys, secure_display_secret
 
 import yubikit.hsmauth
 import ykman.scripting
@@ -71,7 +71,7 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
         if slot.label == label:
             old_slot = slot
             cli_ui_msg(f"Yubikey hsmauth slot with label '{label}' already exists.")
-            click.confirm("Overwrite the existing slot?", default=False, abort=True, err=True)    # Abort if user doesn't want to overwrite
+            cli_confirm("Overwrite the existing slot?", default=False, abort=True)    # Abort if user doesn't want to overwrite
 
     cli_ui_msg("Changing Yubikey hsmauth slots requires the Management Key (aka. Admin Access Code)")
     cli_ui_msg("(Note: this tool removes spaces, so you can enter the mgt key with or without grouping.)")
@@ -179,9 +179,9 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
                     retries += 1
                     if retries > 5:
                         raise click.Abort("Too many retries. Aborting.")
-                    click.pause("Press ENTER to reveal the generated password.", err=True)
+                    cli_pause("Press ENTER to reveal the generated password.")
                     secure_display_secret(pw)
-                    confirm = click.prompt("Enter the password again to confirm", hide_input=True, err=True)
+                    confirm = cli_prompt("Enter the password again to confirm", hide_input=True)
                     if confirm != pw:
                         cli_ui_msg("Passwords do not match. Try again.")
                         continue
@@ -224,9 +224,9 @@ def _change_yubikey_hsm_mgt_key(auth_ses: yubikit.hsmauth.HsmAuthSession, old_ke
     if old_key_bin is None:
         _, old_key_bin = _ask_yubikey_hsm_mgt_key("Enter the OLD Management Key", default=True)
 
-    if not ask_before_change or click.confirm("Change Management Key now?", default=False, abort=False, err=True):
+    if not ask_before_change or cli_confirm("Change Management Key now?", default=False, abort=False):
         new_mgt_key = None
-        if click.prompt("Generate the key ('n' = enter manually)?", type=bool, default="y", err=True):
+        if cli_prompt("Generate the key ('n' = enter manually)?", type=bool, default="y"):
             new_mgt_key_bin = secrets.token_bytes(16)
             new_mgt_key = new_mgt_key_bin.hex().lower()
             assert len(new_mgt_key) == 32

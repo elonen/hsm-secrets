@@ -8,9 +8,9 @@ from yubikit.piv import PivSession, SLOT, KEY_TYPE, PIN_POLICY, TOUCH_POLICY, MA
 from yubikit.core.smartcard import ApduError, SW
 import yubikit.core
 import yubikit.piv
-import ykman.piv
+import ykman.piv, ykman.scripting
 
-from hsm_secrets.utils import cli_code_info, cli_error, cli_info, cli_ui_msg, cli_warn, prompt_for_secret, scan_local_yubikeys
+from hsm_secrets.utils import cli_code_info, cli_confirm, cli_error, cli_info, cli_ui_msg, cli_warn, prompt_for_secret, scan_local_yubikeys
 
 import click
 
@@ -31,7 +31,7 @@ def import_to_yubikey_piv(
     """
     cli_info(f"Importing certificate to slot '{slot.name.lower()}' ({slot.value:02x})...")
     piv.put_certificate(slot, cert)
-    cli_info("- Certificate imported.")
+    cli_info(" - Certificate imported")
 
     if private_key:
         cli_info(f"Importing private key to slot '{slot.name.lower()}' ({slot.value:02x})...")
@@ -53,10 +53,19 @@ def import_to_yubikey_piv(
             pass  # If firmware doesn't support slot metadata,just skip the check
 
 
-def reset_yubikey_piv_app(piv: PivSession, management_key: Optional[bytes] = None) -> None:
+def confirm_and_reset_yubikey_piv_app(piv_yubikey: ykman.scripting.ScriptingDevice|None = None) -> None:
     """
     Reset a Yubikey PIV slot to its default state.
     """
+    if not piv_yubikey:
+        _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True)
+        if not piv_yubikey:
+            raise click.ClickException("No YubiKey PIV devices found.")
+
+    cli_confirm(f"WIPE previous PIV key/cert from YubiKey '{str(piv_yubikey.name)} serial {str(piv_yubikey.info.serial)}'?", abort=True)
+
+    sc = piv_yubikey.smart_card()
+    piv = PivSession(sc)
     cli_info("Resetting YubiKey PIV app...")
     piv.reset()
     cli_info(" - Re-authing with default Management Key")
@@ -65,6 +74,7 @@ def reset_yubikey_piv_app(piv: PivSession, management_key: Optional[bytes] = Non
     piv.put_object(OBJECT_ID.CHUID, ykman.piv.generate_chuid())
     cli_info(" - Generating new CCC (Card Capability Container)")
     piv.put_object(OBJECT_ID.CAPABILITY, ykman.piv.generate_ccc())
+    sc.close()
 
 
 def set_yubikey_piv_pin_puk_management_key(
@@ -109,58 +119,53 @@ def generate_yubikey_piv_keypair(
     """
     cli_info(f"Generating {key_type} key pair on device, slot '{slot.name.lower()}' ({slot.value:02x})...")
     public_key = piv.generate_key(slot, key_type, pin_policy, touch_policy)
-    cli_code_info("Creating certificate request on YubiKey (`touch it now if it blinks`)...")
+    cli_info("Creating certificate request (CSR) on YubiKey... " + click.style("(Touch it now if it blinks)", fg='blue', blink=True))
 
     hash_algo: type[hashes.SHA384]|type[hashes.SHA256] = hashes.SHA384 if key_type == KEY_TYPE.ECCP384 else hashes.SHA256
     return ykman.piv.generate_csr(piv, slot, public_key, subject, hash_algo)
 
 
+
 YUBIKEY_DEFAULT_PIN = "123456"
 YUBIKEY_DEFAULT_PUK = "12345678"
+YUBIKEY_DEFAULT_MGMT_KEY = bytes.fromhex("010203040506070801020304050607080102030405060708")
 
-T = TypeVar('T')
 class YubikeyPivManagementSession:
     """
     Context manager for YubiKey PIV management operations.
     """
-    def __init__(self, management_key: Optional[bytes] = None, pin: Optional[str] = None, reset_piv: bool = False):
+    def __init__(self, management_key: Optional[bytes] = None, pin: Optional[str] = None):
         self.management_key = management_key
         self.pin = pin
-        self.reset_piv = reset_piv
+        self.sc = None
 
     def __enter__(self):
         """
         Create PIV session and authenticate with PIV management key + PIN.
-        :param piv: The PIV session to authenticate
-        :param management_key: The management key for the YubiKey PIV application. If None, will use default key or prompt user.
+        Returns self to allow access to piv, management_key, and pin.
         """
         _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True)
         assert piv_yubikey
         cli_info(f"Device for PIV storage: '{str(piv_yubikey)}'")
-        if self.reset_piv:
-            click.confirm("WIPE previous key/cert from YubiKey PIV?", abort=True)
 
-        piv = PivSession(piv_yubikey.smart_card())
-        if self.reset_piv:
-            reset_yubikey_piv_app(piv, self.management_key)
-            self.pin = YUBIKEY_DEFAULT_PIN
-            self.management_key = yubikit.piv.DEFAULT_MANAGEMENT_KEY
+        self.sc = piv_yubikey.smart_card()
+        self.piv = PivSession(self.sc)
 
         # Verify PIN first
         if self.pin is None:
-            self.pin = prompt_for_secret("Enter current YubiKey PIV PIN", default="123456")
-        piv.verify_pin(self.pin)
+            self.pin = prompt_for_secret("Enter current YubiKey PIV PIN", default=YUBIKEY_DEFAULT_PIN)
+        self.piv.verify_pin(self.pin)
 
         # Authenticate with management key
-        key, key_type = self._select_management_key_smart(piv)
+        key, key_type = self._select_management_key_smart(self.piv)
         try:
-            piv.authenticate(key_type, key)
+            self.piv.authenticate(key_type, key)
+            self.management_key = key  # Store the management key used
         except yubikit.core.CommandError as e:
             cli_error(f"YubiKey PIV app mgt key authentication failed: {str(e)}")
             cli_warn("(Sometimes this means 'PUK is blocked' in YubiKey GUI. You may need to factory reset the PIV app.)")
 
-        return piv
-
+        return self  # Return self so that piv, management_key, and pin can be accessed
 
     def _select_management_key_smart(self, piv: PivSession) -> tuple[bytes, MANAGEMENT_KEY_TYPE]:
         # Use provided management key if available
@@ -182,13 +187,12 @@ class YubikeyPivManagementSession:
             # Couldn't figure out if it's default or not, prompt user
             return self._prompt_for_management_key(default=yubikit.piv.DEFAULT_MANAGEMENT_KEY)
 
-
     def _prompt_for_management_key(self, default: Optional[bytes] = None) -> tuple[bytes, MANAGEMENT_KEY_TYPE]:
         """
         Prompt user for a PIV management key.
         """
         while True:
-            mkey_str = click.prompt("Enter PIV management key (in hex)", hide_input=True, default=default.hex() if default else None)
+            mkey_str = prompt_for_secret("Enter PIV management key (in hex)", default=default.hex() if default else None)
             try:
                 mkey = bytes.fromhex(mkey_str)
                 key_type, _ = _guess_key_type(mkey)
@@ -197,8 +201,10 @@ class YubikeyPivManagementSession:
             except ValueError:
                 cli_error("Invalid hex string. Try again.")
 
-
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.sc:
+            self.sc.close()
+
         if isinstance(exc_val, ApduError):
             if exc_val.sw == SW.AUTH_METHOD_BLOCKED:
                 cli_error("YubiKey error: PIN is blocked" + f"\n({str(exc_val)})")
@@ -215,6 +221,7 @@ class YubikeyPivManagementSession:
             cli_error(f"Error: {str(exc_val)}")
             raise click.ClickException("Failed to perform PIV operation")
         return True
+
 
 
 def _check_yubikey_bio_support(piv: PivSession) -> bool:

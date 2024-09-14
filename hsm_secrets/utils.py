@@ -137,6 +137,14 @@ def cli_warn(*args, **kwargs):
     if not (click.get_current_context().obj or {}).get('quiet', False):
         click.echo(click.style(*args, fg='yellow', **kwargs), err=True)
 
+def cli_prompt(*args, **kwargs):
+    return click.prompt(click.style(*args, fg='bright_blue'), **kwargs, err=True)
+
+def cli_confirm(*args, **kwargs):
+    return click.confirm(click.style(*args, fg='bright_blue'), **kwargs, err=True)
+
+def cli_pause(*args):
+    return click.pause(click.style(*args, fg='bright_blue'), err=True)
 
 def pw_check_fromhex(pw: str) -> str|None:
     try:
@@ -166,7 +174,7 @@ def prompt_for_secret(
     retries = 0
     while retries < 5:
         retries += 1
-        pw = click.prompt(prompt, hide_input=True, default=default, err=True)
+        pw = click.prompt(click.style(prompt, fg='bright_blue'), hide_input=True, default=default, err=True)
         assert isinstance(pw, str)
         try:
             pw.encode(enc_test)
@@ -175,7 +183,7 @@ def prompt_for_secret(
                 continue
 
             if confirm:
-                if click.prompt("Type again to confirm", hide_input=True, default=default, err=True) == pw:
+                if click.prompt(click.style("Type again to confirm", fg='bright_blue'), hide_input=True, default=default, err=True) == pw:
                     return pw
                 cli_ui_msg("Mismatch. Try again.")
             else:
@@ -230,13 +238,12 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
                 raise click.ClickException("No YubiKey HSM credentials on device. Cannot authenticate.")
             else:
                 yubikey_label = yk_hsm_creds[0].label
-                cli_code_info(f"Using YubiKey hsmauth label (first label on device): `{yubikey_label}`")
 
         hsm = YubiHsm.connect(connector_url)
         verify_hsm_device_info(device_serial, hsm)
 
         auth_key_id = config.find_auth_key(yubikey_label).id
-        cli_info(f"Authenticating as YubiHSM key ID '{hex(auth_key_id)}' with local YubiKey ({yubikey.info.serial}) hsmauth slot '{yubikey_label}'")
+        cli_info(f"Authenticating as YubiHSM key ID {hex(auth_key_id)} with local YubiKey '{yubikey.name} {yubikey.info.serial}' HSM auth slot '{yubikey_label}'")
 
         try:
             symmetric_auth = hsm.init_session(auth_key_id)
@@ -248,15 +255,13 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
 
         pwd = yubikey_password or prompt_for_secret(f"Enter PIN/password for YubiKey HSM slot '{yubikey_label}'")
 
-        cli_ui_msg(f"Authenticating... " + click.style("(Touch your YubiKey if it blinks)", fg='yellow', blink=True))
+        cli_ui_msg(f"Authenticating with YubiKey... " + click.style("(Touch it now if it blinks)", fg='blue', blink=True))
         session_keys = hsmauth.calculate_session_keys_symmetric(
             label=yubikey_label,
             credential_password=pwd,
             context=symmetric_auth.context)
 
         session = symmetric_auth.authenticate(*session_keys)
-
-        cli_info(f"Session authenticated Ok.")
         cli_info("")
         return session
 
@@ -482,7 +487,7 @@ def confirm_and_delete_old_yubihsm_object_if_exists(ses: HSMSession, obj_id: hsc
         cli_ui_msg(f"Object 0x{obj_id:04x} already exists on YubiHSM device:")
         cli_ui_msg(pretty_fmt_yubihsm_object(info))
         cli_info("")
-        if click.confirm("Replace the existing object?", default=False, abort=abort, err=True):
+        if cli_confirm("Replace the existing object?", default=False, abort=abort):
             ses.delete_object_raw(obj_id, object_type)
         else:
             return False

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Sequence
-from hsm_secrets.utils import cli_ui_msg, secure_display_secret
+from hsm_secrets.utils import cli_confirm, cli_pause, cli_prompt, cli_ui_msg, secure_display_secret
 import click
 
 class SecretSharingUIBase(ABC):
@@ -62,21 +62,21 @@ class SecretSharingClickUI(SecretSharingUIBase):
         cli_ui_msg(msg)
 
     def pause(self, msg: str):
-        click.pause(msg)
+        cli_pause(msg)
 
     def confirm_or_abort(self, msg: str):
-        click.confirm(msg, abort=True, err=True)
+        cli_confirm(msg, abort=True)
 
     def clear(self):
         click.clear()
 
     def prompt_name_and_password(self, share_num: int, existing_names: Sequence[str]) -> tuple[str, str|None]:
-        name = click.prompt(f"Enter the name of custodian #{share_num}", err=True).strip() or f"#{share_num}"
+        name = cli_prompt(f"Enter the name of custodian #{share_num}").strip() or f"#{share_num}"
         if name in existing_names:
             raise click.UsageError(f"Name '{name}' is already in use. Please enter a unique name.")
 
-        if click.confirm(f"Password-protect share?", abort=False, err=True):
-            pw = click.prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True, err=True).strip()
+        if cli_confirm(f"Password-protect share?", abort=False):
+            pw = cli_prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True, err=True).strip()
         else:
             pw = None
         cli_ui_msg("")
@@ -89,16 +89,16 @@ class SecretSharingClickUI(SecretSharingUIBase):
         secure_display_secret(backup_part_str)
 
     def prompt_password(self, message: str, share_num: int) -> str:
-        return click.prompt(message, hide_input=True, err=True)
+        return cli_prompt(message, hide_input=True)
 
     def prompt_share_str(self, message: str, share_num: int) -> str:
-        return click.prompt(message, hide_input=True, err=True)
+        return cli_prompt(message, hide_input=True)
 
     def prompt_backup_part_str(self, message: str, share_num: int) -> str:
-        return click.prompt(message, hide_input=True, err=True)
+        return cli_prompt(message, hide_input=True)
 
     def prompt_threshold(self) -> int:
-        return click.prompt("How many shares are required to reconstruct the secret", type=int, err=True)
+        return cli_prompt("How many shares are required to reconstruct the secret", type=int)
 
 # -----
 

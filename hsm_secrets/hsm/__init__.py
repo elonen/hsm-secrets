@@ -8,7 +8,7 @@ import click
 from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, click_hsm_obj_auto_complete, find_all_config_items_per_type, parse_keyid
 from hsm_secrets.secret_sharing.ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
 from hsm_secrets.log import _check_and_format_audit_conf_differences
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_error, cli_info, cli_result, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_error, cli_info, cli_pause, cli_prompt, cli_result, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
 
 from hsm_secrets.x509 import x509_create_certs
 import yubihsm.defs, yubihsm.exceptions, yubihsm.objects    # type: ignore [import]
@@ -41,7 +41,7 @@ def swear_you_are_on_airgapped_computer(quiet: bool):
 |                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     """, fg='yellow'))
-    click.confirm(style("Are you absolutely certain that you are on an airgapped machine?", fg='bright_white', bold=True), abort=True, err=True)
+    cli_confirm("Are you absolutely certain that you are on an airgapped machine?", abort=True)
 
 
 @click.group()
@@ -157,7 +157,7 @@ def delete_object(ctx: HsmSecretsCtx, obj_ids: tuple, alldevs: bool, force: bool
                         if not force:
                             cli_ui_msg("Object found:")
                             cli_ui_msg(pretty_fmt_yubihsm_object(o.get_info()))
-                            click.confirm("Delete this object?", default=False, abort=True, err=True)
+                            cli_confirm("Delete this object?", default=False, abort=True)
                         o.delete()
                         cli_info("Object deleted.")
         if not_found:
@@ -329,8 +329,7 @@ def default_admin_enable(ctx: HsmSecretsCtx, use_backup_secret: bool, alldevs: b
         try:
             if use_backup_secret:
                 cli_ui_msg("Using backup secret to authenticate (instead of shared secret).")
-                is_hex = click.prompt("Is the backup secret hex-encoded (instead of a direct password) [Y/n]?", type=bool, err=True, default=True)
-
+                is_hex = cli_prompt("Is the backup secret hex-encoded (instead of a direct password) [Y/n]?", type=bool)
                 password = prompt_for_secret("Backup secret", check_fn=(pw_check_fromhex if is_hex else None))
                 if is_hex:
                     cli_ui_msg("Interpreting backup secret as hex-encoded UTF-8 string.")
@@ -386,11 +385,11 @@ def default_admin_disable(ctx: HsmSecretsCtx, alldevs: bool, force: bool):
             try:
                 if ses.object_exists(keydef):
                     cli_error(f"ERROR!!! Default admin key still exists on device {serial}. Don't leave the airgapped session before removing it.")
-                    click.pause("Press ENTER to continue.", err=True)
+                    cli_pause("Press ENTER to continue.")
                     raise click.Abort()
             except Exception as e:
                 cli_error("ERROR!! Unexpected error while checking that the key is removed. PLEASE VERIFY MANUALLY THAT IT'S GONE!")
-                click.pause("Press ENTER to continue.", err=True)
+                cli_pause("Press ENTER to continue.")
                 raise e
 
 
@@ -494,7 +493,7 @@ def backup_export(ctx: HsmSecretsCtx, out: click.File|None):
     if out is None:
         p = Path(f"yubihsm2-device-{ctx.hsm_serial}-wrapped-backup.tar.gz")
         if p.exists():
-            click.confirm(f"File '{p}' already exists. Overwrite?", abort=True, err=True)
+            cli_confirm(f"File '{p}' already exists. Overwrite?", abort=True)
         fh = p.open('wb')
     else:
         cli_info(f"Writing tar.gz format to '{out}'")
@@ -548,9 +547,9 @@ def backup_import(ctx: HsmSecretsCtx, backup_file: str, force: bool):
     """
     cli_info("")
     if not force:
-        click.confirm(f"WARNING: This will overwrite existing objects in the YubiHSM device {ctx.hsm_serial}. Continue?", abort=True, err=True)
+        cli_confirm(f"WARNING: This will overwrite existing objects in the YubiHSM device {ctx.hsm_serial}. Continue?", abort=True)
         if ctx.hsm_serial == ctx.conf.general.master_device:
-            click.confirm("This is the configured master device. Are you ABSOLUTELY sure you want to continue?", abort=True, err=True)
+            cli_confirm("This is the configured master device. Are you ABSOLUTELY sure you want to continue?", abort=True)
 
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
         wrap_key_def = ctx.conf.admin.wrap_key
@@ -575,7 +574,7 @@ def backup_import(ctx: HsmSecretsCtx, backup_file: str, force: bool):
                     continue
 
                 if ses.object_exists_raw(obj_id, obj_enum):
-                    if force or click.confirm(f"   └-> Object 0x{obj_id:04x} ({obj_type}) already exists. Overwrite?", default=False, err=True):
+                    if force or cli_confirm(f"   └-> Object 0x{obj_id:04x} ({obj_type}) already exists. Overwrite?", default=False):
                         cli_info(f"      └-> Deleting existing {obj_type} 0x{obj_id:04x}'")
                         ses.delete_object_raw(obj_id, obj_enum)
                     else:

@@ -18,7 +18,7 @@ import yubikit.piv
 from hsm_secrets.config import HSMOpaqueObject, X509CertInfo, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
-from hsm_secrets.piv.yubikey_piv import YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, set_yubikey_piv_pin_puk_management_key
+from hsm_secrets.piv.yubikey_piv import YUBIKEY_DEFAULT_MGMT_KEY, YUBIKEY_DEFAULT_PIN, YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, confirm_and_reset_yubikey_piv_app, set_yubikey_piv_pin_puk_management_key
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
@@ -201,9 +201,10 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
     slot_enum = getattr(yubikit.piv.SLOT, slot)
     mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
 
-    with YubikeyPivManagementSession(mgt_key_bytes) as piv:
-        import_to_yubikey_piv(piv, certificate, private_key, slot_enum)
+    with YubikeyPivManagementSession(mgt_key_bytes) as ses:
+        import_to_yubikey_piv(ses.piv, certificate, private_key, slot_enum)
 
+    cli_info('')
     _show_piv_cert_summary(certificate)
     _display_ad_strong_mapping(certificate)
 
@@ -231,42 +232,51 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     """
     slot_enum = getattr(yubikit.piv.SLOT, slot)
     yk_key_type =  {'rsa2048': yubikit.piv.KEY_TYPE.RSA2048, 'ecp256': yubikit.piv.KEY_TYPE.ECCP256, 'ecp384': yubikit.piv.KEY_TYPE.ECCP384}[key_type]
-    mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
 
-    with YubikeyPivManagementSession(mgt_key_bytes, reset_piv = not no_reset) as piv:
+    mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
+    pin = None
+
+    if not no_reset:
+        confirm_and_reset_yubikey_piv_app()
+        pin = YUBIKEY_DEFAULT_PIN
+        mgt_key_bytes = YUBIKEY_DEFAULT_MGMT_KEY
+
+    with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
+        pin, mgt_key_bytes = ses.pin, ses.management_key
         csr = generate_yubikey_piv_keypair(
-            piv,
+            ses.piv,
             yk_key_type,
             yubikit.piv.PIN_POLICY.ONCE,
             yubikit.piv.TOUCH_POLICY.CACHED,
             f'CN={user}',
             slot_enum)
 
+        cli_info('')
         cli_info(f"Signing the certificate on HSM...")
         _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
 
-        import_to_yubikey_piv(piv, signed_cert, None, slot_enum)
-
+    with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
+        import_to_yubikey_piv(ses.piv, signed_cert, None, slot_enum)
         if not no_reset:
             random.seed(os.urandom(16))
             new_pin = str(random.randint(100000, 999999))
             new_puk = str(random.randint(10000000, 99999999))
             new_mgt_key = os.urandom(24)
-            set_yubikey_piv_pin_puk_management_key(piv, new_pin, new_puk, 5, new_mgt_key)
-            cli_info("---")
-            cli_code_info(f"New PIN: `{new_pin}` (give this to the user)")
-            cli_code_info(f"New PUK: `{new_puk}`")
-            cli_code_info(f"New PIV Management Key: `{new_mgt_key.hex()}`")
-            cli_info("---")
+            cli_info('')
+            set_yubikey_piv_pin_puk_management_key(ses.piv, new_pin, new_puk, 5, new_mgt_key)
+            cli_code_info(f"- New PIN: `{new_pin}` (give this to the user)")
+            cli_code_info(f"- New PUK: `{new_puk}`")
+            cli_code_info(f"- New PIV Management Key: `{new_mgt_key.hex()}`")
 
+    cli_info('')
     _show_piv_cert_summary(signed_cert)
     _display_ad_strong_mapping(signed_cert)
 
 
 def _show_piv_cert_summary(signed_cert: x509.Certificate):
     cli_info(f"PIV certificate summary:")
-    cli_code_info(f" - Serial:  `{signed_cert.serial_number:x}`")
-    cli_code_info(f" - Subject: {signed_cert.subject.rfc4514_string()}")
+    cli_code_info(f" - Serial:   `{signed_cert.serial_number:x}`")
+    cli_code_info(f" - Subject:  {signed_cert.subject.rfc4514_string()}")
     cli_code_info(f" - Key type: {signed_cert.public_key().__class__.__name__}")
     for i, san in enumerate(signed_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value):
         if isinstance(san, x509.OtherName):
@@ -276,8 +286,8 @@ def _show_piv_cert_summary(signed_cert: x509.Certificate):
             san_str = f"RFC822: {san.value}"
         else:
             san_str = str(san)
-        cli_code_info(f" - SAN {i+1}:   {san_str}")
-    cli_code_info(f" - Issuer:  {signed_cert.issuer.rfc4514_string()}")
+        cli_code_info(f" - SAN {i+1}:    {san_str}")
+    cli_code_info(f" - Issuer:   {signed_cert.issuer.rfc4514_string()}")
 
 
 def _display_ad_strong_mapping(signed_cert):

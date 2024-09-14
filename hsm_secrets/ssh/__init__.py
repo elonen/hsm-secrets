@@ -5,7 +5,7 @@ from typing import Sequence, cast
 import click
 
 from hsm_secrets.config import HSMAsymmetricKey, HSMKeyID, click_hsm_obj_auto_complete
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_result, cli_warn, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_result, cli_warn, open_hsm_session, pass_common_args
 from cryptography.hazmat.primitives import _serialization
 from cryptography.hazmat.primitives.serialization import ssh
 
@@ -175,7 +175,7 @@ def _sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, certid: str, valid
     else:
         p = Path(out) if out else (Path(keyfile).parent / (Path(keyfile).stem + "-cert.pub"))
         if p.exists():
-            click.confirm(f"Overwrite existing file '{p}'?", abort=True, err=True)
+            cli_confirm(f"Overwrite existing file '{p}'?", abort=True)
         path = str(p)
 
     # Sign & write out

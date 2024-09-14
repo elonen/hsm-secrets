@@ -17,7 +17,7 @@ import yubihsm.objects  # type: ignore [import]
 
 from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, X509CertInfo, X509KeyUsageName
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, cli_warn, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_info, cli_warn, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder, get_issuer_cert_and_key
 from hsm_secrets.x509.cert_checker import BaseCertificateChecker, IssueSeverity
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
@@ -102,7 +102,7 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     existing_files = [file for file in [key_file, csr_file, cer_file, chain_file] if file.exists()]
     if existing_files:
         file_names = ", ".join( click.style(str(file), fg='cyan') for file in existing_files)
-        click.confirm(f"Files {file_names} already exist. Overwrite?", abort=True, err=True)
+        cli_confirm(f"Files {file_names} already exist. Overwrite?", abort=True)
 
     builder = X509CertBuilder(ctx.conf, merged_info, priv_key)
     issuer_cert = None
@@ -195,7 +195,7 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     # Save the signed certificate
     out_path = Path(str(out)) if out else Path(str(csr)).with_suffix('.cer.pem')
     if out_path.exists():
-        click.confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True, err=True)
+        cli_confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True)
     out_path.write_bytes(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
 
     cli_info(f"Signed certificate saved to: {out_path}")
