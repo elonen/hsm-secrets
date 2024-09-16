@@ -424,6 +424,58 @@ test_ssh_host_certificates() {
 
 }
 
+test_codesign_sign_osslsigncode_hash() {
+
+    if ! which osslsigncode > /dev/null; then
+        echo "osslsigncode not found, skipping test"
+        return 0
+    fi
+
+    setup
+
+    # Create a temporary directory for this test
+    local test_dir=$(mktemp -d "$TEMPDIR/codesign_test.XXXXXX")
+
+    # Write a m inimal 'tiny.exe' for testing
+    echo "H4sIAH/x+VYAA/ONmsDAzMDAwALE//8zMOxggAAHBsJgAxDzye/iY9jCeVZxB6PPWcWQjMxihYKi/PSixFyF5MS8vPwShaRUhaLSPIXMPAUX/2CF3PyUVD1eXi4VqBk/dYtu7vWR6YLhWV2FXXvAdAqYDspMzgCJw+wMcGVg8GFkZMjf6+oKE3vAwMzIzcjBwMCE5DgBKFaA+gbEZoL4k4EBQYPlofog0gIQtXAaTg0o0CtJrShhgLob6hcU/zKAvZJAqrlZWhGHKXbcKBiyAAD3yoGLAAQAAA==" | base64 -d | gzip -d > "$test_dir/tiny.exe"
+
+    # Extract hash to be signed from tiny.exe
+    osslsigncode extract-data -h sha256 -in "$test_dir/tiny.exe" -out "$test_dir/tiny.req"
+    assert_success
+
+    # Sign the request using the HSM
+    run_cmd codesign sign-osslsigncode-hash "$test_dir/tiny.req"
+    assert_success
+
+    # Check if the signed file exists
+    [ -f "$test_dir/tiny.signed.req" ] || { echo "ERROR: Signed file not created"; return 1; }
+
+    # Get the full certificate chain from HSM
+    run_cmd x509 cert get --bundle "$test_dir/bundle.pem" cert_codesign-cs1-rsa4096 cert_ca-root-a1-rsa4096
+    assert_success
+
+    # Create a CRL
+    run_cmd x509 crl init --ca cert_ca-root-a1-rsa4096 -o "$test_dir/crl.pem"
+    assert_success
+
+    # Attach the signature to the executable
+    local attach_output=$(osslsigncode attach-signature -sigin "$test_dir/tiny.signed.req" -CAfile "$test_dir/bundle.pem" -CRLfile "$test_dir/crl.pem" -in "$test_dir/tiny.exe" -out "$test_dir/tiny.signed.exe")
+    assert_success
+
+    # Check the output of the attach-signature command
+    echo "$attach_output"
+    assert_grep "Signature successfully attached" "$attach_output"
+    assert_grep "Succeeded" "$attach_output"
+
+    # Verify the signed executable
+    local verify_output=$(osslsigncode verify -in "$test_dir/tiny.signed.exe" -CAfile "$test_dir/bundle.pem"  -CRLfile "$test_dir/crl.pem")
+    assert_success
+    echo "$verify_output"
+    assert_grep "Signature verification: ok" "$verify_output"
+
+    echo "Codesign sign-osslsigncode-hash test passed successfully"
+}
+
 test_logging_commands() {
     local DB_PATH="$TEMPDIR/test_log.db"
     export HSM_PASSWORD="password123-not-really-set"
@@ -531,6 +583,7 @@ run_test test_password_derivation
 run_test test_wrapped_backup
 run_test test_ssh_user_certificates
 run_test test_ssh_host_certificates
+run_test test_codesign_sign_osslsigncode_hash
 run_test test_piv_user_certificate_key_type
 run_test test_piv_user_certificate_csr
 run_test test_piv_dc_certificate

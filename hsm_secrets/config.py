@@ -103,6 +103,7 @@ class HSMConfig(NoExtraBaseModel):
         keys: List['HSMAsymmetricKey']
 
     class CodeSign(NoExtraBaseModel):
+        default_cert_id: HSMKeyID
         certs: List['X509CA']
 
     class SSHTemplateSlots(NoExtraBaseModel):

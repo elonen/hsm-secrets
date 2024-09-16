@@ -201,7 +201,7 @@ class BaseCertificateChecker:
         pass
 
     @staticmethod
-    def show_issues(issues: list[tuple[IssueSeverity, str]]):
+    def show_issues(issues: list[tuple[IssueSeverity, str]], subject: str|None = None):
         notices = [message for severity, message in issues if severity == IssueSeverity.NOTICE]
         warnings = [message for severity, message in issues if severity == IssueSeverity.WARNING]
         errors = [message for severity, message in issues if severity == IssueSeverity.ERROR]
@@ -210,7 +210,10 @@ class BaseCertificateChecker:
             return
 
         prn: Any = cli_error if errors else (cli_warn if warnings else cli_info)
-        prn("Detected issues:")
+        if subject:
+            prn(f"Detected issues for {subject}:")
+        else:
+            prn("Detected issues:")
 
         if notices:
             cli_info(" - ℹ️ Cert notices:")
@@ -230,7 +233,7 @@ class BaseCertificateChecker:
 
     def check_and_show_issues(self) -> list[tuple[IssueSeverity, str]]:
         self.check()
-        self.show_issues(self.issues)
+        self.show_issues(self.issues, str(self.certificate.subject))
         return self.issues
 
 
@@ -257,8 +260,15 @@ class X509CACertificateChecker(BaseCertificateChecker):
         pass
 
     def _check_specific_key_usage(self, key_usage: x509.KeyUsage):
-        if not key_usage.key_cert_sign:
+        is_ca = False
+        try:
+            bc = self.certificate.extensions.get_extension_for_class(x509.BasicConstraints).value
+            is_ca = bc.ca
+        except x509.ExtensionNotFound:
+            pass
+        if is_ca and not key_usage.key_cert_sign:
             self._add_issue("KeyUsage does not include keyCertSign", IssueSeverity.ERROR)
+
         if not key_usage.digital_signature:
             self._add_issue("KeyUsage does not include digitalSignature", IssueSeverity.WARNING)
         if key_usage.key_encipherment:

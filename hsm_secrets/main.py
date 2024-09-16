@@ -2,6 +2,7 @@ import logging
 import os
 import click
 
+from hsm_secrets.codesign import cmd_codesign
 from hsm_secrets.hsm import cmd_hsm
 from hsm_secrets.log import cmd_log
 from hsm_secrets.piv import cmd_piv
@@ -101,7 +102,6 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
 def cmd_nop(ctx: HsmSecretsCtx):
     cli_info("No errors. Exiting.")
 
-
 cli.add_command(cmd_ssh,  "ssh")
 cli.add_command(cmd_tls,  "tls")
 cli.add_command(cmd_pass, "pass")
@@ -111,6 +111,7 @@ cli.add_command(cmd_nop,  "nop")
 cli.add_command(cmd_piv, "piv")
 cli.add_command(cmd_x509, "x509")
 cli.add_command(cmd_user, "user")
+cli.add_command(cmd_codesign, "codesign")
 register_repl(cli)
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ macros:
         country: US
         state: Calisota
         locality: Duckburg
-        organization: "Example Inc."
+        organization: "ExampleCorp"
 
     # Name constraints for TLS intermediate CAs.
     # Edit to match your domains and IP ranges (or set to null for no constraints).
@@ -691,6 +691,7 @@ gpg:
 # Code signing keys for signing software, firmware, etc.
 # NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 codesign:
+  default_cert_id: 0x0711
   certs:
   -
     key:

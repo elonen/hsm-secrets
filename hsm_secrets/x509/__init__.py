@@ -95,8 +95,8 @@ def get_cert_cmd(ctx: HsmSecretsCtx, all_certs: bool, outdir: str|None, bundle: 
         raise click.ClickException("Error: No certificates selected.")
 
     for cd in selected_certs:
-        cli_info(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'")
-    cli_info("")
+        cli_info(f"- Fetching PEM for 0x{cd.id:04x}: '{cd.label}'", err=True)
+    cli_info("", err=True)
 
     with open_hsm_session(ctx) as ses:
         pem_file = None
@@ -207,7 +207,7 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
         for cd, issues in cert_issues:
             if issues:
                 cli_warn(f"\n-- Check results for certificate 0x{cd.id:04x} ({cd.label}) --")
-                X509RootCACertificateChecker.show_issues(issues)
+                X509RootCACertificateChecker.show_issues(issues, cd.label)
 
     if dry_run:
         cli_warn("DRY RUN. Would create the following certificates:")
@@ -234,8 +234,6 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
     ca_x509_def = find_ca_def(ctx.conf, ca_cert_def.id)
     assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
 
-    print(f"CA cert: {ca_cert_def.label} (0x{ca_cert_def.id:04x})")
-
     with open_hsm_session(ctx) as ses:
         ca_cert = ses.get_certificate(ca_cert_def)
         ca_key = ses.get_private_key(ca_x509_def.key)
@@ -251,8 +249,8 @@ def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: 
         crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
         Path(out).write_bytes(crl_pem)
 
-        cli_info(f"Initialized CRL signed by CA 0x{ca_cert_def.id:04x}")
-        cli_info(f"CRL written to: {out}")
+        cli_code_info(f"Initialized CRL signed by CA `{ca_cert_def.label}` (0x{ca_cert_def.id:04x})")
+        cli_code_info(f"CRL written to: `{out}`")
 
 # ---------------
 
