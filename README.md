@@ -20,8 +20,9 @@ Built mostly on top of Yubico's Python APIs and the Cryptography library.
   - X.509 certificate creationg and signing
     - Sanity checks / lint for generated certificates by usage
   - TLS server cert creation
-  - PIV cert generation (e.g. Windows login with YubiKey)
+  - PIV cert generation (Windows login with YubiKey)
     - Store in YubiKey or save to disk
+  - Codesigning (Authenticode) for Windows executables (you'll need *osslsigncode* also)
   - Password derivation for VMs etc.
 - HSM audit logging
   - Specify HSM audit policy in config file

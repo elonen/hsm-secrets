@@ -113,14 +113,14 @@ EOF
     echo "$output"
     #local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
     local count=$(grep -c '\[x\]' <<< "$output")
-    [ "$count" -eq 40 ] || { echo "Expected 40 objects, but found $count"; return 1; }
+    [ "$count" -eq 42 ] || { echo "Expected 42 objects, but found $count"; return 1; }
 
     # Remove default admin key
     run_cmd hsm admin default-disable
     assert_success
     local count=$(run_cmd -q hsm compare | grep -c '\[x\]')
     assert_success
-    [ "$count" -eq 39 ] || { echo "Expected 39 objects, but found $count"; return 1; }
+    [ "$count" -eq 41 ] || { echo "Expected 41 objects, but found $count"; return 1; }
 
     # Try to add it back (with HSM, this would actually require shared secret reconstruction ceremony, but mocking doesn't really auth)
     expect << EOF

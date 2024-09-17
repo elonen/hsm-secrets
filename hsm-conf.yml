@@ -2,9 +2,9 @@
 # It is used to generate keys and certificates for YubiHSM 2 devices.
 #
 # Many keys are in different formats:
-# - Ed25519 is recommended whenever possible
 # - RSA is very slow on YubiHSM
-# - ECC is fast but has suffered from past implementation weaknesses, backdoor suspicions, etc.
+# - ECC is fast but has suffered from past implementation weaknesses (including Yubico products), backdoor suspicions, etc.
+# - Ed25519 is recommended whenever possible
 
 # ---------------------
 # Edit this section first to customize for your organization.
@@ -100,6 +100,28 @@ user_keys:
   - <<: *USER_COMMON_INFO             # (YAML anchor -- copy fields from the previous entry)
     label: user_alice.smith
     id: 0xE002
+
+  - label: user_bob.johnson
+    id: 0xE003
+    domains: ['piv']                  # Bob is a PIV (smartcard) operator, so no access to other domains
+    delegated_capabilities: []        # Not allowed to create new user keys on HSM
+    capabilities:
+      - sign-hmac
+      - verify-hmac
+      - sign-pss
+      - sign-pkcs
+      - sign-eddsa
+      - sign-ecdsa
+      - derive-ecdh
+      - encrypt-cbc
+      - decrypt-cbc
+      - encrypt-ecb
+      - decrypt-ecb
+      - get-pseudo-random
+      - sign-attestation-certificate
+      - exportable-under-wrap
+      - get-opaque
+      - change-authentication-key
 
 
 # --------------------------------------------
@@ -234,16 +256,16 @@ service_keys:
   - label: svc_log-audit
     id: 0x0008
     domains: ['all']
-    capabilities: ['get-log-entries', 'exportable-under-wrap']
+    capabilities: ['get-log-entries', 'exportable-under-wrap', 'change-authentication-key']
     delegated_capabilities: []
 
-  # For backup / restore only. This is necessary because HSM operator user keys above are not
-  # members of the 'x509' domain, to disallow them from using root CA keys directly.
-  # This user, however, can only export and import keys, not use them.
-  - label: svc_backup-restore
+  # For attestation only. This is necessary because HSM operator user keys above are not
+  # members of the 'x509' domain, to disallow them from signing with root CA keys directly.
+  # This user can attest the keys, but not use them for anything else.
+  - label: svc_attestation
     id: 0x0009
     domains: ['all']
-    capabilities: ['export-wrapped', 'import-wrapped', 'exportable-under-wrap']
+    capabilities: ['sign-attestation-certificate', 'change-authentication-key']
     delegated_capabilities: []
 
   # Service key for NAC (Network Access Control) for
@@ -266,11 +288,6 @@ service_keys:
 
 # Subsystem/domain for root CAs.
 # Intermediate CAs in other subsystems are signed by these.
-#
-# usages: Generate a root CA with OpenSSL using these as private keys.
-# Generate attestation certificates for the root CAs when creating them, and store them
-# separately (they are not sensitive, but cannot be easily recreated),
-# as user keys cannot access the root CA keys directly.
 x509:
   root_certs:
     -
@@ -350,7 +367,7 @@ tls:
   intermediate_cas:
     -
       key:
-        label: key_tls-i1-rsa4096
+        label: key_tls-t1-rsa4096
         id: 0x0210
         domains: ['tls']
         algorithm: rsa4096
@@ -359,7 +376,7 @@ tls:
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "{{CRL_URL}}/tls-i1-rsa4096.crl"
+        - "{{CRL_URL}}/tls-t1-rsa4096.crl"
       x509_info:  &TLS_COMMON_CERT_INFO
         basic_constraints:
           path_len: 0 # Allow end-entity certificate signing only
@@ -371,17 +388,17 @@ tls:
             - clientAuth
             - timeStamping
         attribs:
-          common_name: '{{ ORG_NAME }} TLS Intermediate I1 RSA4096'
+          common_name: '{{ ORG_NAME }} TLS Intermediate T1 RSA4096'
       signed_certs:
         - id: 0x0211
-          label: cert_tls-i1-rsa4096
+          label: cert_tls-t1-rsa4096
           domains: ['tls']    # Only allow TLS services to read this cert
           algorithm: opaque-x509-certificate
           sign_by: 0x0111   # RSA4096 Root CA
 
     -
       key:
-        label: key_tls-i1-ed25519
+        label: key_tls-t1-ed25519
         id: 0x0220
         domains: ['tls']
         algorithm: ed25519
@@ -389,31 +406,31 @@ tls:
           - sign-eddsa
           - exportable-under-wrap
       crl_distribution_points:
-        - "{{CRL_URL}}/tls-i1-ed25519.crl"
+        - "{{CRL_URL}}/tls-t1-ed25519.crl"
       x509_info:
         <<: *TLS_COMMON_CERT_INFO
         attribs:
-          common_name: '{{ ORG_NAME }} TLS Intermediate I1 Ed25519'
+          common_name: '{{ ORG_NAME }} TLS Intermediate T1 Ed25519'
       signed_certs:        # Cross-sign with legacy certs for compatibility
         - id: 0x0221
-          label: cert_tls-i1-ed25519_rsa4096-root
+          label: cert_tls-t1-ed25519_rsa4096-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0111  # RSA4096 Root CA
         - id: 0x0222
-          label: cert_tls-i1-ed25519_ed25519-root
+          label: cert_tls-t1-ed25519_ed25519-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0121  # Ed25519 Root CA
         - id: 0x0223
-          label: cert_tls-i1-ed25519_ecp384-root
+          label: cert_tls-t1-ed25519_ecp384-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0131  # ECP384 Root CA
 
     -
       key:
-        label: key_tls-i1-ecp384
+        label: key_tls-t1-ecp384
         id: 0x0230
         domains: ['tls']
         algorithm: ecp384
@@ -422,22 +439,49 @@ tls:
           - derive-ecdh
           - exportable-under-wrap
       crl_distribution_points:
-        - "{{CRL_URL}}/tls-i1-ecp384.crl"
+        - "{{CRL_URL}}/tls-t1-ecp384.crl"
       x509_info:
         <<: *TLS_COMMON_CERT_INFO
         attribs:
-          common_name: '{{ ORG_NAME }} TLS Intermediate I1 ECP384'
+          common_name: '{{ ORG_NAME }} TLS Intermediate T1 ECP384'
       signed_certs:
         - id: 0x0231
-          label: cert_tls-i1-ecp384_rsa4096-root
+          label: cert_tls-t1-ecp384_rsa4096-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0111   # RSA Root CA
         - id: 0x0233
-          label: cert_tls-i1-ecp384_ecp384-root
+          label: cert_tls-t1-ecp384_ecp384-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0131   # ECP384 Root CA
+
+    # Unconstrained TLS intermediate for (hopefully rare) cases where name
+    # constraints are not practical or possible.
+    # A partner might not to trust this CA, but it could be used for internal services.
+    -
+      key:
+        label: key_tls-tu1-rsa4096
+        id: 0x021A
+        domains: ['tls']
+        algorithm: rsa4096
+        capabilities:
+          - sign-pss
+          - sign-pkcs
+          - exportable-under-wrap
+      crl_distribution_points:
+        - "{{CRL_URL}}/tls-tu1-rsa4096.crl"
+      x509_info:
+        <<: *TLS_COMMON_CERT_INFO
+        name_constraints: {}        # Remove name constraints
+        attribs:
+          common_name: '{{ ORG_NAME }} TLS Unconstrained TU1 RSA4096'
+      signed_certs:
+        - id: 0x021B
+          label: cert_tls-tu1-rsa4096
+          domains: ['tls']
+          algorithm: opaque-x509-certificate
+          sign_by: 0x0111
 
 
 # NAC (Network Access Control) intermediate keys for 802.1X EAP-TLS.
@@ -446,7 +490,7 @@ nac:
   intermediate_cas:
     -
       key:
-        label: key_nac-n1-rsa2048
+        label: key_nac-n1-rsa2048     # NAC is not a very high-security use case, so 2048 for max compatibility
         id: 0x0310
         domains: ['nac']
         algorithm: rsa2048
@@ -503,7 +547,7 @@ piv:
           label: key_piv-p1-rsa2048
           id: 0x0410
           domains: ['piv']
-          algorithm: rsa2048  # 2048 is the maximum for RSA in PIV. Use ECC if possible.
+          algorithm: rsa2048  # 2048 is the maximum for RSA in PIV. Use ECC if compatibility allows.
           capabilities:
             - sign-pss
             - sign-pkcs
@@ -574,7 +618,7 @@ piv:
   # User certificate templates for PIV cards
   user_cert_templates:
     "default":
-      validity_days: 398  # ~13 months
+      validity_days: 1095   # 3 years. This is long, so use Strong Certificate Mapping (KB5014754) for easy revocation.
       attribs:
         country: ''
         locality: ''
@@ -600,7 +644,7 @@ piv:
 # OpenSSH certificates are in proprietary format, so these are not signed by the X.509 root CAs.
 ssh:
   default_user_ca: 0x0520
-  default_host_ca: 0x0520   # You could separate these, but given the HSM, having to change one but not the other is unlikely
+  default_host_ca: 0x0520   # You can separate these, but given the HSM, having to change one but not the other is unlikely
   root_ca_keys:
 
     - label: key_ssh-root-ca-rsa4096
@@ -689,7 +733,6 @@ gpg:
 
 
 # Code signing keys for signing software, firmware, etc.
-# NO COMMANDS FOR THIS SECTION IMPLEMENTED YET -- KEYS ARE GENERATED FOR FUTURE USE
 codesign:
   default_cert_id: 0x0711
   certs:
