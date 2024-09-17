@@ -382,11 +382,6 @@ tls:
           path_len: 0 # Allow end-entity certificate signing only
         name_constraints:
           <<: *TLS_NAME_CONSTRAINTS
-        extended_key_usage:
-          usages:
-            - serverAuth
-            - clientAuth
-            - timeStamping
         attribs:
           common_name: '{{ ORG_NAME }} TLS Intermediate T1 RSA4096'
       signed_certs:
