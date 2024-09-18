@@ -92,6 +92,37 @@ def insert_log_entry(conn: sqlite3.Connection, hsm_serial: int, new_entry: yubih
     return True
 
 
+def insert_rows(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> None:
+    """Insert multiple log entries in entry_number order, skipping duplicates."""
+    cursor = conn.cursor()
+
+    sorted_rows = sorted(rows, key=lambda r: r["entry_number"])
+    filtered_rows = []
+    for row in sorted_rows:
+        cursor.execute("SELECT 1 FROM log_entries WHERE raw_entry = ?", (row["raw_entry"],))
+        if cursor.fetchone() is None:
+            filtered_rows.append(row)
+
+    # Insert the filtered rows
+    cursor.executemany("""
+        INSERT INTO log_entries (entry_number, hsm_serial, raw_entry, fetch_time, command,
+                                 command_desc, length, session_key, session_key_desc, target_key,
+                                 target_key_desc, second_key, second_key_desc, result, tick)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [(r["entry_number"], r["hsm_serial"], r["raw_entry"], r["fetch_time"], r["command"], r["command_desc"],
+          r["length"], r["session_key"], r["session_key_desc"], r["target_key"], r["target_key_desc"],
+          r["second_key"], r["second_key_desc"], r["result"], r["tick"]) for r in filtered_rows])
+
+    conn.commit()
+
+
+def get_hsm_serials(conn: sqlite3.Connection) -> List[int]:
+    """Retrieve all HSM serial numbers."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT hsm_serial FROM log_entries")
+    return [r[0] for r in cursor.fetchall()]
+
+
 def get_log_entries(conn: sqlite3.Connection, hsm_serial: int) -> Generator[sqlite3.Row, None, None]:
     """Retrieve all log entries for a given HSM serial."""
     cursor = conn.cursor()

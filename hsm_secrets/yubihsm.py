@@ -81,6 +81,13 @@ class HSMSession(ABC):
         pass
 
     @abstractmethod
+    def reset_device(self) -> None:
+        """
+        Reset the HSM device.
+        """
+        pass
+
+    @abstractmethod
     def object_exists(self, objdef: HSMObjBase) -> ObjectInfo | None:
         """
         Check if an object exists in the HSM and return its info.
@@ -367,6 +374,9 @@ class RealHSMSession(HSMSession):
             raise YubiHsmDeviceError(ERROR.OBJECT_NOT_FOUND)
         return res
 
+    def reset_device(self) -> None:
+        self.backend.reset_device()
+
     def object_exists(self, objdef: HSMObjBase) -> ObjectInfo | None:
         assert isinstance(objdef, HSM_KEY_TYPES)
         obj_type = _conf_class_to_yhs_object_type[objdef.__class__]
@@ -618,13 +628,22 @@ class MockHSMDevice:
 
     def __init__(self, serial: int, objects: dict):
         self.serial = serial
+        self.reset_device()
         self.objects = objects
+
+    def reset_device(self):
+        self.objects = {}
+
+        keydef = HSMAuthKey(id=1, label="DEFAULT AUTHKEY CHANGE THIS ASAP", domains={'all'}, capabilities={'all'}, delegated_capabilities={'all'})
+        obj = MockYhsmObject(self.serial, keydef, "derived:password".encode())
+        self.objects[(keydef.id, OBJECT.AUTHENTICATION_KEY)] = obj
+
         self.audit_settings = HSMAuditSettings(forced_audit='off', default_command_logging='off', command_logging={})
-        # Inject example initial log entries from an actual YubiHSM2
         self.log_entries = [LogEntry.parse(bytes.fromhex(e)) for e in (
             '0001ffffffffffffffffffffffffffffcf87d1b7256b135b12ca27ec1365e50e',
             '0002000000ffff000000000000000000fc215fbee7154f4d061d80806250f678')]
         self.prev_entry = self.log_entries[-1]
+
 
     def add_log(self, cmd_name: YubiHsm2Command, target_key: HSMKeyID|None, second_key: HSMKeyID|None):
         # Emulate the YubiHSM2 logging
@@ -711,7 +730,8 @@ class MockYhsmObject:
 
         yhsm_deleg_caps = CAPABILITY.NONE
         if deleg_caps := getattr(self.mock_obj, "delegated_capabilities", None):
-            yhsm_deleg_caps = _g_conf.capability_from_names(set(deleg_caps))
+            caps = getattr(self.mock_obj, "capabilities", None)
+            yhsm_deleg_caps = _g_conf.delegated_capability_from_names(set(deleg_caps), set(caps) if caps else None)
 
         global _g_mock_hsms
         device = _g_mock_hsms[self.mock_device_serial]
@@ -764,6 +784,9 @@ class MockHSMSession(HSMSession):
         if not res:
             raise YubiHsmDeviceError(ERROR.OBJECT_NOT_FOUND)
         return res
+
+    def reset_device(self) -> None:
+        self.backend.reset_device()
 
     def object_exists(self, objdef: HSMObjBase) -> ObjectInfo | None:
         assert isinstance(objdef, HSM_KEY_TYPES)

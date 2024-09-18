@@ -109,6 +109,22 @@ def compare_config(ctx: HsmSecretsCtx, alldevs: bool):
     """
     return _compare_create_config(ctx, alldevs, create=False)
 
+@cmd_hsm.command('reset')
+@click.option('--alldevs', is_flag=True, help="Reset all devices")
+@pass_common_args
+def reset_device(ctx: HsmSecretsCtx, alldevs: bool):
+    """Reset YubiHSM to factory defaults
+
+    Resets device(s) - same as plugging the device in an touching it for ten seconds.
+    All objects and keys will be lost.
+    """
+    hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
+    for serial in hsm_serials:
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, serial) as ses:
+            cli_confirm(f"Reset device {serial} to factory defaults?", default=False, abort=True)
+            ses.reset_device()
+            cli_info(f"Device {serial} reset to factory defaults.")
+
 # ---------------
 
 @cmd_hsm_objects.command('list')
@@ -164,15 +180,19 @@ def delete_object(ctx: HsmSecretsCtx, obj_ids: tuple, alldevs: bool, force: bool
             cli_error(f"Objects not found on device {serial}: {', '.join(not_found)}")
 
 @cmd_hsm_objects.command('create-missing')
+@click.option('--keys-only', is_flag=True, help="Only create missing keys, skip certs", default=False)
+@click.option('--certs-only', is_flag=True, help="Only create missing certs, skip keys", default=False)
 @pass_common_args
-def create_missing_keys(ctx: HsmSecretsCtx):
+def create_missing_keys(ctx: HsmSecretsCtx, keys_only: bool, certs_only: bool):
     """Create missing keys and certs on the master YubiHSM
 
     Compares the configuration file with the objects in the YubiHSM and creates
     any missing keys and certificates.
     """
-    _compare_create_config(ctx, alldevs=False, create=True)
-    x509_create_certs(ctx, all_certs=True, dry_run=False, cert_ids=(), skip_existing=True)
+    if not certs_only:
+        _compare_create_config(ctx, alldevs=False, create=True)
+    if not keys_only:
+       x509_create_certs(ctx, all_certs=True, dry_run=False, cert_ids=(), skip_existing=True)
 
 # ---------------
 

@@ -76,7 +76,7 @@ class SecretSharingClickUI(SecretSharingUIBase):
             raise click.UsageError(f"Name '{name}' is already in use. Please enter a unique name.")
 
         if cli_confirm(f"Password-protect share?", abort=False):
-            pw = cli_prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True, err=True).strip()
+            pw = cli_prompt("Custodian " + click.style(f"'{name}'", fg='green') + ", enter the password", hide_input=True).strip()
         else:
             pw = None
         cli_ui_msg("")

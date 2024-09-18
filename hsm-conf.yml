@@ -46,11 +46,11 @@ macros:
 
     # Device list. Declare you YubiHSM 2 devices here.
     - $: &HSM_DEVICES
-        master_device: "27600137"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
+        master_device: "27600135"   # Serial number of the YubiHSM 2 that is cloning source for other devices.
         all_devices:
-          "27600137" : "yhusb://serial=27600137"   # For `yubihsm-connector`: http://localhost:12345
+          "27600135" : "yhusb://serial=27600135"   # For `yubihsm-connector`: http://localhost:12345
           "27600136" : "yhusb://serial=27600136"
-          "27600135" : "yhusb://serial=27600135"
+          "27600137" : "yhusb://serial=27600137"
 
     # Password rotation tokens for the password derivation rule.
     # (See the `password_derivation` section below for details.)
@@ -79,11 +79,11 @@ user_keys:
       - sign-ssh-certificate          # For SSH certificate creation
       - sign-hmac                     # For password derivation
       - verify-hmac                   # For verifying message authenticity
-      - sign-pss                      # X.509 signing in RSA
+      - sign-pss                      # RSA signing
       - sign-pkcs                     # (--||--, but older PKCS#1 v1.5, not recommended)
-      - sign-eddsa                    # X.509 signing in Ed25519
-      - sign-ecdsa                    # X.509 signing in EC
-      - derive-ecdh
+      - sign-eddsa                    # Ed25519 signing
+      - sign-ecdsa                    # ECC signing
+      - derive-ecdh                   # ECC key exchange
       - encrypt-cbc                   # General AES symmetric data encryption
       - decrypt-cbc
       - encrypt-ecb                   # (non-chained AES, not recommended for general use)
@@ -95,6 +95,8 @@ user_keys:
       - change-authentication-key     # Change this key's credentials
       - delete-authentication-key     # Delete this or any other auth key
       - put-authentication-key        # Create new auth keys (allow operators to re-create keys for each other)
+      - get-log-entries
+      - get-option
     delegated_capabilities: ['same']  # ('same' = copy from `capabilities` above)
 
   - <<: *USER_COMMON_INFO             # (YAML anchor -- copy fields from the previous entry)
@@ -237,6 +239,7 @@ admin:
       get-object-info: 'off'
       get-option: 'off'
       get-pseudo-random: 'off'
+      get-public-key: 'off'
       blink-device: 'off'
       get-log-entries: 'off'        # This seems to change after fetch (firmware bug?), so don't log it to avoid digest mismatch
       create-session: 'off'         # Not much point, as auth session key is included in every other log entry
@@ -255,17 +258,22 @@ service_keys:
   # This is why the user keys are not allowed to call this capability wantonly.
   - label: svc_log-audit
     id: 0x0008
-    domains: ['all']
-    capabilities: ['get-log-entries', 'exportable-under-wrap', 'change-authentication-key']
+    domains: []
+    capabilities: [
+      'get-log-entries',
+      'set-option',
+      'get-option',
+      'exportable-under-wrap',
+      'change-authentication-key']
     delegated_capabilities: []
 
-  # For attestation only. This is necessary because HSM operator user keys above are not
+  # For attestation. This is necessary because HSM operator user keys above are not
   # members of the 'x509' domain, to disallow them from signing with root CA keys directly.
   # This user can attest the keys, but not use them for anything else.
   - label: svc_attestation
     id: 0x0009
     domains: ['all']
-    capabilities: ['sign-attestation-certificate', 'change-authentication-key']
+    capabilities: ['sign-attestation-certificate', 'get-opaque', 'change-authentication-key']
     delegated_capabilities: []
 
   # Service key for NAC (Network Access Control) for

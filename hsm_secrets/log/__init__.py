@@ -1,11 +1,12 @@
 import datetime
+from pathlib import Path
 import sqlite3
 from typing import cast
 import click
 
 from hsm_secrets.config import HSMAuditSettings, HSMConfig, YubiHsm2AuditMode, YubiHsm2Command
 from hsm_secrets.log import log_db, yhsm_log
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_error, cli_info, cli_result, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_code_info, cli_confirm, cli_error, cli_info, cli_result, open_hsm_session, pass_common_args
 
 
 @click.group()
@@ -144,12 +145,13 @@ def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, al
 @cmd_log.command('review')
 @pass_common_args
 @click.argument('db_path', type=click.Path(exists=True), required=True)
+@click.option('--alldevs', '-a', is_flag=True, help="Review log entries for all devices")
 @click.option('--start-num', '-s', type=int, help="Start entry number", required=False)
 @click.option('--end-num', '-e', type=int, help="End entry number", required=False)
 @click.option('--start-id', '-S', type=int, help="Start row ID", required=False)
 @click.option('--end-id', '-E', type=int, help="End row ID", required=False)
 @click.option('--jsonl', is_flag=True, help="In JSONL format, not summary")
-def log_review(ctx: HsmSecretsCtx, db_path: str, start_num: int|None, end_num: int|None, start_id: int|None, end_id: int|None, jsonl: bool):
+def log_review(ctx: HsmSecretsCtx, db_path: str, alldevs: bool, start_num: int|None, end_num: int|None, start_id: int|None, end_id: int|None, jsonl: bool):
     """
     Review log entries stored in DB
 
@@ -157,16 +159,50 @@ def log_review(ctx: HsmSecretsCtx, db_path: str, start_num: int|None, end_num: i
 
     YubiHSM log entry numbers wrap around at 2^16, so use the row ID to specify a range that crosses the wrap-around point.
     """
+    hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        for e in log_db.get_log_entries(conn, int(ctx.hsm_serial)):
-            if (start_num and e['entry_number'] < start_num) or (end_num and e['entry_number'] > end_num) or \
-               (start_id and e['id'] < start_id) or (end_id and e['id'] > end_id):
-                    continue
-            if jsonl:
-                cli_result(yhsm_log.export_to_jsonl(e, pretty=False, with_summary=False))
-            else:
-                cli_result(yhsm_log.summarize_log_entry(e))
+        for serial in hsm_serials:
+            if alldevs:
+                cli_info(f"# ----- Entries for device {serial} -----")
+            for e in log_db.get_log_entries(conn, int(serial)):
+                if (start_num and e['entry_number'] < start_num) or (end_num and e['entry_number'] > end_num) or \
+                (start_id and e['id'] < start_id) or (end_id and e['id'] > end_id):
+                        continue
+                if jsonl:
+                    cli_result(yhsm_log.export_to_jsonl(e, pretty=False, with_summary=False))
+                else:
+                    cli_result(yhsm_log.summarize_log_entry(e))
+
+
+@cmd_log.command('merge')
+@pass_common_args
+@click.option('--out', '-o', type=click.Path(dir_okay=False, exists=False), required=True)
+@click.argument('db_paths', type=click.Path(exists=True), nargs=-1)
+def log_merge(ctx: HsmSecretsCtx, out: str, db_paths: list[str]):
+    """
+    Merge multiple log databases into one
+
+    Initialize `out` as a new SQLite database and merge all log
+    entries from the specified databases into it.
+    """
+    if out in db_paths:
+        raise click.ClickException("Output database cannot be the same as any of the input databases")
+
+    with sqlite3.connect(out) as out_conn:
+        log_db.init_db(out_conn)
+        out_conn.row_factory = sqlite3.Row
+
+        all_rows = []
+        for db_path in db_paths:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                for serial in log_db.get_hsm_serials(conn):
+                    for row in log_db.get_log_entries(conn, serial):
+                        all_rows.append(row)
+
+        log_db.insert_rows(out_conn, all_rows)
+        cli_code_info(f"Merged {len(all_rows)} log entries from {len(db_paths)} databases into `{out}`")
 
 
 @cmd_log.command('verify-all')
