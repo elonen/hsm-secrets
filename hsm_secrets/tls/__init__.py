@@ -35,7 +35,7 @@ def cmd_tls(ctx: click.Context):
 @click.option('--san-dns', '-d', multiple=True, help="DNS SAN (Subject Alternative Name)")
 @click.option('--san-ip', '-i', multiple=True, help="IP SAN (Subject Alternative Name)")
 @click.option('--validity', '-v', default=365, help="Validity period in days")
-@click.option('--keyfmt', '-f', type=click.Choice(['rsa4096', 'ed25519', 'ecp256', 'ecp384']), default='ecp384', help="Key format")
+@click.option('--keyfmt', '-f', type=click.Choice(['rsa2048', 'rsa3072', 'rsa4096', 'ed25519', 'ecp256', 'ecp384']), default='ecp384', help="Key format")
 @click.option('--sign-ca', '-s', type=str, required=False, help="CA ID (hex) or label to sign with, or 'self'. Default: use config", default=None)
 def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: list[str], san_ip: list[str], validity: int, keyfmt: str, sign_ca: str):
     """Create a TLS server certificate + key
@@ -85,6 +85,10 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     priv_key: PrivateKeyOrAdapter
     if keyfmt == 'rsa4096':
         priv_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    elif keyfmt == 'rsa3072':
+        priv_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    elif keyfmt == 'rsa2048':
+        priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     elif keyfmt == 'ed25519':
         priv_key = ed25519.Ed25519PrivateKey.generate()
     elif keyfmt == 'ecp256':

@@ -20,6 +20,7 @@ import ykman
 import yubikit.core
 import yubikit.hsmauth as hsmauth
 
+from hsm_secrets import yubihsm
 import hsm_secrets.config as hscfg
 import unicurses as curses   # type: ignore [import]
 import click
@@ -382,6 +383,16 @@ def open_hsm_session(
             yield RealHSMSession(ctx.conf, session=ses, dev_serial=int(device_serial))
 
 
+
+def _close_hsm_session(ses):
+    try:
+        ses.close()
+    except YubiHsmDeviceError as e:
+        if e.code == ERROR.INVALID_SESSION:
+            cli_warn("YubiHSM session invalidated. Already closed.")
+        else:
+            raise
+
 @contextmanager
 def open_hsm_session_with_yubikey(ctx: HsmSecretsCtx, device_serial: str|None = None) -> Generator[AuthSession, None, None]:
     """
@@ -395,7 +406,7 @@ def open_hsm_session_with_yubikey(ctx: HsmSecretsCtx, device_serial: str|None = 
     try:
         yield session
     finally:
-        session.close()
+        _close_hsm_session(session)
 
 
 @contextmanager
@@ -430,8 +441,8 @@ def open_hsm_session_with_default_admin(ctx: HsmSecretsCtx, device_serial: str|N
         yield session
     finally:
         cli_info(click.style(f"Closing HSM session {session.sid}.", fg='magenta'))
-        session.close()
-        hsm.close()
+        _close_hsm_session(session)
+        _close_hsm_session(hsm)
 
 
 @contextmanager
@@ -454,8 +465,8 @@ def open_hsm_session_with_password(ctx: HsmSecretsCtx, auth_key_id: int, passwor
     try:
         yield RealHSMSession(ctx.conf, session=session, dev_serial=int(device_serial))
     finally:
-        session.close()
-        hsm.close()
+        _close_hsm_session(session)
+        _close_hsm_session(hsm)
 
 
 def pretty_fmt_yubihsm_object(info: ObjectInfo) -> str:

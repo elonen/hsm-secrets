@@ -163,31 +163,31 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
 
     for ad in acct_defs:
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
-
             if not confirm_and_delete_old_yubihsm_object_if_exists(ses, ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY, abort=False):
                 cli_warn(f"Skipping service user '{ad.label}' (ID: 0x{ad.id:04x})...")
                 continue
 
-            cli_info(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {ctx.hsm_serial}...")
-            if askpw:
-                pw = prompt_for_secret(f"Enter password for service user '{ad.label}'", confirm=True)
-            else:
-                rnd = ses.get_pseudo_random(16)
-                pw = group_by_4(rnd.hex()).replace(' ', '-')
-                retries = 0
-                while True:
-                    retries += 1
-                    if retries > 5:
-                        raise click.Abort("Too many retries. Aborting.")
-                    cli_pause("Press ENTER to reveal the generated password.")
-                    secure_display_secret(pw)
-                    confirm = cli_prompt("Enter the password again to confirm", hide_input=True)
-                    if confirm != pw:
-                        cli_ui_msg("Passwords do not match. Try again.")
-                        continue
-                    else:
-                        break
+        cli_info(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {ctx.hsm_serial}...")
+        if askpw:
+            pw = prompt_for_secret(f"Enter password for service user '{ad.label}'", confirm=True)
+        else:
+            rnd = secrets.token_bytes(16)
+            pw = group_by_4(rnd.hex()).replace(' ', '-')
+            retries = 0
+            while True:
+                retries += 1
+                if retries > 5:
+                    raise click.Abort("Too many retries. Aborting.")
+                cli_pause("Press ENTER to reveal the generated password.")
+                secure_display_secret(pw)
+                confirm = cli_prompt("Enter the password again to confirm", hide_input=True)
+                if confirm != pw:
+                    cli_ui_msg("Passwords do not match. Try again.")
+                    continue
+                else:
+                    break
 
+        with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             #hsm_put_derived_auth_key(ses, ctx.hsm_serial, ctx.conf, ad, pw)
             confirm_and_delete_old_yubihsm_object_if_exists(ses, ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY)
             info = ses.auth_key_put_derived(ad, pw)

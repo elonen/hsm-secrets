@@ -213,7 +213,7 @@ admin:
   audit:
     # Specify logging/audit policies for the devices.
     # 'fixed' is like 'on', but cannot be turned off again except by a factory reset
-    forced_audit: 'off'             # If on/fixed, HSM refuses further commands until log is audited when it fills up
+    forced_audit: 'on'              # If on/fixed, HSM refuses further commands until log is audited when it fills up
     default_command_logging: 'on'   # Default for commands not listed below
     command_logging:                # Overrides for specific commands
       reset-device: 'fixed'
@@ -258,7 +258,7 @@ service_keys:
   # This is why the user keys are not allowed to call this capability wantonly.
   - label: svc_log-audit
     id: 0x0008
-    domains: []
+    domains: ['all']
     capabilities: [
       'get-log-entries',
       'set-option',
@@ -273,7 +273,7 @@ service_keys:
   - label: svc_attestation
     id: 0x0009
     domains: ['all']
-    capabilities: ['sign-attestation-certificate', 'get-opaque', 'change-authentication-key']
+    capabilities: ['sign-attestation-certificate', 'get-opaque', 'change-authentication-key', 'exportable-under-wrap']
     delegated_capabilities: []
 
   # Service key for NAC (Network Access Control) for
@@ -300,25 +300,25 @@ x509:
   root_certs:
     -
       key:
-        label: key_ca-root-a1-rsa4096
+        label: key_ca-root-a1-rsa3072
         id: 0x0110
         domains: ['x509']
-        algorithm: rsa4096
+        algorithm: rsa3072
         capabilities:
           - sign-pss  # prefer this for RSA
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "{{CRL_URL}}/root-a1-rsa4096.crl"
+        - "{{CRL_URL}}/root-a1-rsa3072.crl"
       x509_info:    &ROOT_COMMON_CERT_INFO
         validity_days: 7300  # 20 years
         basic_constraints:
           path_len: null  # No limit for root CAs
         attribs:
-          common_name: '{{ ORG_NAME }} Root A1 RSA4096'
+          common_name: '{{ ORG_NAME }} Root A1 RSA3072'
       signed_certs:   # Certificates to create (and store in HSM) for this key
         - id: 0x0111
-          label: cert_ca-root-a1-rsa4096
+          label: cert_ca-root-a1-rsa3072
           domains: ['x509', 'tls', 'nac', 'piv', 'gpg', 'codesign']   # Allow the root cert (though not the key) to be read by all services
           algorithm: opaque-x509-certificate
           sign_by: 0x0111   # Root CA signs its own certificate
@@ -375,29 +375,29 @@ tls:
   intermediate_cas:
     -
       key:
-        label: key_tls-t1-rsa4096
+        label: key_tls-t1-rsa3072
         id: 0x0210
         domains: ['tls']
-        algorithm: rsa4096
+        algorithm: rsa3072
         capabilities:
           - sign-pss
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "{{CRL_URL}}/tls-t1-rsa4096.crl"
+        - "{{CRL_URL}}/tls-t1-rsa3072.crl"
       x509_info:  &TLS_COMMON_CERT_INFO
         basic_constraints:
           path_len: 0 # Allow end-entity certificate signing only
         name_constraints:
           <<: *TLS_NAME_CONSTRAINTS
         attribs:
-          common_name: '{{ ORG_NAME }} TLS Intermediate T1 RSA4096'
+          common_name: '{{ ORG_NAME }} TLS Intermediate T1 RSA3072'
       signed_certs:
         - id: 0x0211
-          label: cert_tls-t1-rsa4096
+          label: cert_tls-t1-rsa3072
           domains: ['tls']    # Only allow TLS services to read this cert
           algorithm: opaque-x509-certificate
-          sign_by: 0x0111   # RSA4096 Root CA
+          sign_by: 0x0111   # RSA3072 Root CA
 
     -
       key:
@@ -416,10 +416,10 @@ tls:
           common_name: '{{ ORG_NAME }} TLS Intermediate T1 Ed25519'
       signed_certs:        # Cross-sign with legacy certs for compatibility
         - id: 0x0221
-          label: cert_tls-t1-ed25519_rsa4096-root
+          label: cert_tls-t1-ed25519_rsa3072-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
-          sign_by: 0x0111  # RSA4096 Root CA
+          sign_by: 0x0111  # RSA3072 Root CA
         - id: 0x0222
           label: cert_tls-t1-ed25519_ed25519-root
           domains: ['tls']
@@ -449,7 +449,7 @@ tls:
           common_name: '{{ ORG_NAME }} TLS Intermediate T1 ECP384'
       signed_certs:
         - id: 0x0231
-          label: cert_tls-t1-ecp384_rsa4096-root
+          label: cert_tls-t1-ecp384_rsa3072-root
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0111   # RSA Root CA
@@ -464,24 +464,24 @@ tls:
     # A partner might not to trust this CA, but it could be used for internal services.
     -
       key:
-        label: key_tls-tu1-rsa4096
+        label: key_tls-tu1-rsa3072
         id: 0x021A
         domains: ['tls']
-        algorithm: rsa4096
+        algorithm: rsa3072
         capabilities:
           - sign-pss
           - sign-pkcs
           - exportable-under-wrap
       crl_distribution_points:
-        - "{{CRL_URL}}/tls-tu1-rsa4096.crl"
+        - "{{CRL_URL}}/tls-tu1-rsa3072.crl"
       x509_info:
         <<: *TLS_COMMON_CERT_INFO
         name_constraints: {}        # Remove name constraints
         attribs:
-          common_name: '{{ ORG_NAME }} TLS Unconstrained TU1 RSA4096'
+          common_name: '{{ ORG_NAME }} TLS Unconstrained TU1 RSA3072'
       signed_certs:
         - id: 0x021B
-          label: cert_tls-tu1-rsa4096
+          label: cert_tls-tu1-rsa3072
           domains: ['tls']
           algorithm: opaque-x509-certificate
           sign_by: 0x0111
@@ -650,10 +650,10 @@ ssh:
   default_host_ca: 0x0520   # You can separate these, but given the HSM, having to change one but not the other is unlikely
   root_ca_keys:
 
-    - label: key_ssh-root-ca-rsa4096
+    - label: key_ssh-root-ca-rsa3072
       id: 0x0510
       domains: ['ssh']
-      algorithm: rsa4096
+      algorithm: rsa3072
       capabilities:
         - sign-ssh-certificate
         - sign-pss
@@ -694,10 +694,10 @@ ssh:
 gpg:
   keys:
 
-  - label: key_gpg-g1-rsa4096-sca
+  - label: key_gpg-g1-rsa3072-sca
     id: 0x0610
     domains: ['gpg']
-    algorithm: rsa4096
+    algorithm: rsa3072
     capabilities:
       - sign-pss  # preferred
       - sign-pkcs
@@ -705,10 +705,10 @@ gpg:
       - decrypt-pkcs
       - exportable-under-wrap
 
-  - label: key_gpg-g1-rsa4096-e
+  - label: key_gpg-g1-rsa3072-e
     id: 0x0611
     domains: ['gpg']
-    algorithm: rsa4096
+    algorithm: rsa3072
     capabilities:
       - sign-pss  # preferred
       - sign-pkcs
@@ -741,19 +741,19 @@ codesign:
   certs:
   -
     key:
-      label: key_codesign-cs1-rsa4096
+      label: key_codesign-cs1-rsa3072
       id: 0x0710
       domains: ['codesign']
-      algorithm: rsa4096
+      algorithm: rsa3072
       capabilities:
         - sign-pss
         - sign-pkcs
         - exportable-under-wrap
     crl_distribution_points:
-      - "{{CRL_URL}}/codesign-cs1-rsa4096.crl"
+      - "{{CRL_URL}}/codesign-cs1-rsa3072.crl"
     x509_info:    &CODESIGN_COMMON_CERT_INFO
       attribs:
-        common_name: '{{ ORG_NAME }} Code Signing CS1 RSA4096'
+        common_name: '{{ ORG_NAME }} Code Signing CS1 RSA3072'
       key_usage:
         usages:
           - digitalSignature
@@ -765,7 +765,7 @@ codesign:
           - timeStamping
     signed_certs:
       - id: 0x0711
-        label: cert_codesign-cs1-rsa4096
+        label: cert_codesign-cs1-rsa3072
         domains: ['codesign']
         algorithm: opaque-x509-certificate
         sign_by: 0x0111

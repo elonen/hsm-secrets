@@ -151,7 +151,7 @@ test_tls_certificates() {
     run_cmd -q x509 cert get --all | openssl x509 -text -noout
     assert_success
 
-    for KEYTYPE in ed25519 ecp256 ecp384 rsa4096; do
+    for KEYTYPE in ed25519 ecp256 ecp384 rsa3072; do
         KEYBITS=$(echo $KEYTYPE | sed -E 's/[^0-9]//g')
 
         local output=$(run_cmd tls server-cert --out $TEMPDIR/www-example-com_$KEYTYPE.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt $KEYTYPE)
@@ -379,7 +379,7 @@ test_ssh_user_certificates() {
 
     # RSA key
     ssh-keygen -t rsa -b 2048 -f $TEMPDIR/testkey_rsa -N '' -C 'testkey'
-    run_cmd ssh sign-user -u test.user --ca key_ssh-root-ca-rsa4096 -p users,admins $TEMPDIR/testkey_rsa.pub
+    run_cmd ssh sign-user -u test.user --ca key_ssh-root-ca-rsa3072 -p users,admins $TEMPDIR/testkey_rsa.pub
     assert_success
 
     # ECDSA 256 key
@@ -451,11 +451,11 @@ test_codesign_sign_osslsigncode_hash() {
     [ -f "$test_dir/tiny.signed.req" ] || { echo "ERROR: Signed file not created"; return 1; }
 
     # Get the full certificate chain from HSM
-    run_cmd x509 cert get --bundle "$test_dir/bundle.pem" cert_codesign-cs1-rsa4096 cert_ca-root-a1-rsa4096
+    run_cmd x509 cert get --bundle "$test_dir/bundle.pem" cert_codesign-cs1-rsa3072 cert_ca-root-a1-rsa3072
     assert_success
 
     # Create a CRL
-    run_cmd x509 crl init --ca cert_ca-root-a1-rsa4096 -o "$test_dir/crl.pem"
+    run_cmd x509 crl init --ca cert_ca-root-a1-rsa3072 -o "$test_dir/crl.pem"
     assert_success
 
     # Attach the signature to the executable
