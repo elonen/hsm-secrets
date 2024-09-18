@@ -1,4 +1,5 @@
 from copy import deepcopy
+import re
 import click
 import datetime
 from pathlib import Path
@@ -277,6 +278,8 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
 
     Example: '--remove 123456'.
 
+    Use '0x' prefix for serial numbers in hex.
+
     Remove and add commands can be specified multiple times.
     """
     ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
@@ -319,7 +322,10 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
             else:
                 raise click.ClickException(f"Error: Invalid revocation info: {cert_info}")
 
-            if not serial.isdigit():
+            serial = serial.lower()
+            if serial.startswith('0x') or (re.match(r'^[0-9a-fA-F]+$', serial) and not serial.isdigit()):
+                serial = str(int(serial.lstrip('0x'), 16))
+            elif not serial.isdigit():
                 raise click.ClickException(f"Error: Invalid serial number: {serial}")
             if not (date and date.count('-') == 2):
                 raise click.ClickException(f"Error: Invalid date format: {date} (use YYYY-MM-DD)")
@@ -342,14 +348,14 @@ def update_crl(ctx: HsmSecretsCtx, crl_file: str, ca: str, out: str, validity: O
         if validity:
             next_update = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=validity)
         else:
-            if not existing_crl.next_update:
+            if not existing_crl.next_update_utc:
                 raise click.ClickException("Error: No validity period specified and no existing CRL next_update")
-            if last_update := existing_crl.last_update:
-                next_update = last_update + (existing_crl.next_update - last_update)
+            if last_update := existing_crl.next_update_utc:
+                next_update = last_update + (existing_crl.next_update_utc - last_update)
                 cli_info(f"Extending CRL validity to: {next_update} (same duration as previous)")
             else:
                 cli_warn("Warning: Validity time not extended! No last_update in existing CRL, and no new validity period specified.")
-                next_update = existing_crl.next_update
+                next_update = existing_crl.next_update_utc
 
         builder = builder.last_update(datetime.datetime.now(datetime.UTC))
         builder = builder.next_update(next_update)
@@ -387,4 +393,4 @@ def show_crl(ctx: HsmSecretsCtx, crl_file: str):
         cli_info("Revoked Certificates:")
         for cert in crl:
             reason = cert.extensions.get_extension_for_class(x509.CRLReason).value.reason
-            cli_info(f"  - Serial: {cert.serial_number}, Revoked On: {cert.revocation_date}, Reason: {reason.value}")
+            cli_info(f"  - Serial: 0x{cert.serial_number:x}, Revoked On: {cert.revocation_date_utc}, Reason: {reason.value}")
