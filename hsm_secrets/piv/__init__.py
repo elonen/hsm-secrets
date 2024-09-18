@@ -1,8 +1,7 @@
-import os
-import random
 import re
 from typing_extensions import Literal
 import click
+import secrets
 
 from pathlib import Path
 from typing import cast, get_args
@@ -258,10 +257,9 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
         import_to_yubikey_piv(ses.piv, signed_cert, None, slot_enum)
         if not no_reset:
-            random.seed(os.urandom(16))
-            new_pin = str(random.randint(100000, 999999))
-            new_puk = str(random.randint(10000000, 99999999))
-            new_mgt_key = os.urandom(24)
+            new_pin = str(secrets.randbelow(900000) + 100000)
+            new_puk = str(secrets.randbelow(90000000) + 10000000)
+            new_mgt_key = secrets.token_bytes(24)
             cli_info('')
             set_yubikey_piv_pin_puk_management_key(ses.piv, new_pin, new_puk, 5, new_mgt_key)
             cli_code_info(f"- New PIN: `{new_pin}` (give this to the user)")

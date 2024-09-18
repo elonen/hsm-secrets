@@ -162,16 +162,20 @@ def add_service(ctx: HsmSecretsCtx, obj_ids: tuple[str], all_accts: bool, askpw:
         raise click.ClickException(f"Service user ID(s) {', '.join(unknown_ids)} not found in the configuration file.")
 
     for ad in acct_defs:
+        rnd: bytes|None = None
         with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
             if not confirm_and_delete_old_yubihsm_object_if_exists(ses, ad.id, yubihsm.defs.OBJECT.AUTHENTICATION_KEY, abort=False):
                 cli_warn(f"Skipping service user '{ad.label}' (ID: 0x{ad.id:04x})...")
                 continue
+            else:
+                if not askpw:
+                    rnd = ses.get_pseudo_random(16)
 
         cli_info(f"Adding service user '{ad.label}' (ID: 0x{ad.id:04x}) to device {ctx.hsm_serial}...")
         if askpw:
             pw = prompt_for_secret(f"Enter password for service user '{ad.label}'", confirm=True)
         else:
-            rnd = secrets.token_bytes(16)
+            assert rnd
             pw = group_by_4(rnd.hex()).replace(' ', '-')
             retries = 0
             while True:
