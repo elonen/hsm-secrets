@@ -236,35 +236,40 @@ def log_verify_all(ctx: HsmSecretsCtx, db_path: str, initial_num: int, alldevs: 
 @cmd_log.command('export')
 @pass_common_args
 @click.argument('db_path', type=click.Path(exists=True))
-@click.option('--out', '-o', type=click.File('a', lazy=True), default='-', help="Output file ('-' for stdout)")
+@click.option('--out', '-o', type=click.File('a', lazy=True), default='-', help="File to append ('-' for stdout)")
 @click.option('--restart', '-r', is_flag=True, help="Start exporting from the beginning")
 @click.option('--no-summary', is_flag=True, help="Don't include human-readable summary in JSONL output")
-def log_export_jsonl(ctx: HsmSecretsCtx, db_path: str, out, restart: bool, no_summary: bool):
+@click.option('--alldevs', '-a', is_flag=True, help="Export logs for all devices")
+def log_export_jsonl(ctx: HsmSecretsCtx, db_path: str, out, restart: bool, no_summary: bool, alldevs: bool):
     """
-    Export log entries to JSONL format for a specific HSM.
+    Export new log entries from DB to JSONL format
 
     The command keeps track of the last exported entry and only exports new entries in subsequent runs.
     This makes it suitable for incremental exports to a log aggregator.
+    Each HSM serial number has its own last exported entry ID in the database.
+
+    This command does not connect to the HSM device at all.
     """
-    serial = int(ctx.hsm_serial)
+    hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     with sqlite3.connect(db_path) as conn:
-        if restart:
-            log_db.update_last_exported_id(conn, serial, 0)
+        for ser in hsm_serials:
+            serial = int(ser)
+            if restart:
+                log_db.update_last_exported_id(conn, serial, 0)
 
-        count, last_exported_id = 0, None
+            count, last_exported_id = 0, None
+            with out as fh:
+                conn.row_factory = sqlite3.Row
+                for e in log_db.get_non_exported_log_entries(conn, serial):
+                    l = yhsm_log.export_to_jsonl(e, pretty=False, with_summary=not no_summary)
+                    fh.write(l + '\n')
+                    last_exported_id = e['id']
+                    count += 1
 
-        with out as fh:
-            conn.row_factory = sqlite3.Row
-            for e in log_db.get_non_exported_log_entries(conn, serial):
-                l = yhsm_log.export_to_jsonl(e, pretty=False, with_summary=not no_summary)
-                fh.write(l + '\n')
-                last_exported_id = e['id']
-                count += 1
+                if last_exported_id:
+                    log_db.update_last_exported_id(conn, serial, last_exported_id)
 
-            if last_exported_id:
-                log_db.update_last_exported_id(conn, serial, last_exported_id)
-
-        if count:
-            cli_info(f"Exported {count} new entries from database {db_path} to {out.name}")
-        else:
-            cli_info("No new entries to export")
+            if count:
+                cli_info(f"Exported {count} new entries from database {db_path} to {out.name} for device {serial}")
+            else:
+                cli_info(f"No new entries to export for device {serial}")
