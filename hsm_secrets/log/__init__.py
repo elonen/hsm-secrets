@@ -230,6 +230,7 @@ def log_verify_all(ctx: HsmSecretsCtx, db_path: str, initial_num: int, alldevs: 
                 cli_info("Log chain verified successfully")
             except ValueError as e:
                 cli_info(f"Log chain verification failed: {str(e)}")
+                exit(1)
 
 
 @cmd_log.command('export')

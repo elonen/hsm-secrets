@@ -243,6 +243,7 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         hsm = YubiHsm.connect(connector_url)
         verify_hsm_device_info(device_serial, hsm)
 
+        assert yubikey_label
         auth_key_id = config.find_auth_key(yubikey_label).id
         cli_info(f"Authenticating as YubiHSM key ID {hex(auth_key_id)} with local YubiKey '{yubikey.name} {yubikey.info.serial}' HSM auth slot '{yubikey_label}'")
 
