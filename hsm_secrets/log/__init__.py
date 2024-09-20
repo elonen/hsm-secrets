@@ -98,7 +98,8 @@ def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, al
 
     Each new entry is verified against previous one to ensure log integrity. Failure aborts the process.
 
-    If --clear is specified, log entries will be cleared from the HSM after they are successfully verified and stored.
+    If --clear is specified and over 1 new entry is fetched, log entries will be cleared from the HSM after
+    they are successfully verified and stored.
     """
     config: HSMConfig = ctx.conf
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
@@ -134,7 +135,9 @@ def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, al
 
                 cli_info(f"\nFetched {new+skipped} entries. Stored {new} in '{db_path}', skipped {skipped} pre-existing.")
 
-                if clear and (new > 0 or force_clear):
+                # Clear log entries if requested and more than 1 new entry fetched.
+                # The >1 instead of >0 is to avoid cycle of logging clear operations and fetching them.
+                if clear and (new > 1 or force_clear):
                     last_entry = log_db.get_last_log_entry(conn, hsm_serial)
                     if last_entry:
                         session.free_log_entries(last_entry["entry_number"])
@@ -142,7 +145,7 @@ def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, al
                     else:
                         cli_info("No entries to clear")
                 elif clear:
-                    cli_info("No new entries fetched; skipping clear operation.")
+                    cli_info("Less than 2 new entries fetched; skipping clear operation to avoid fetch-clear cycle.")
 
 
 @cmd_log.command('review')
