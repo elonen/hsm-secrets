@@ -324,7 +324,7 @@ test_crl_commands() {
     echo "$show_output"
     assert_grep "CRL Issuer.*Duckburg," "$show_output"
     assert_grep "Number of revoked certificates: 1" "$show_output"
-    assert_grep ".*1000.*$revoke_date.*keyCompromise" "$show_output"
+    assert_grep ".*0x3e8.*$revoke_date.*keyCompromise" "$show_output"
 
     # Update CRL to remove a certificate
     run_cmd x509 crl update $TEMPDIR/test.crl --ca 0x0211 --remove 1000

@@ -88,7 +88,8 @@ def _check_and_format_audit_conf_differences(cur_settings: HSMAuditSettings, con
 @click.option('--clear', '-c', is_flag=True, help="Clear the log entries after fetching")
 @click.option('--no-verify', '-n', is_flag=True, help="Ignore log integrity verification failures")
 @click.option('--alldevs', '-a', is_flag=True, help="Fetch from all devices")
-def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, alldevs: bool):
+@click.option('--force-clear', is_flag=True, help="Force clearing even if no new entries fetched")
+def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, alldevs: bool, force_clear: bool):
     """
     Fetch log entries from HSM and store in SQLite DB
 
@@ -133,13 +134,15 @@ def log_fetch(ctx: HsmSecretsCtx, db_path: str, clear: bool, no_verify: bool, al
 
                 cli_info(f"\nFetched {new+skipped} entries. Stored {new} in '{db_path}', skipped {skipped} pre-existing.")
 
-                if clear:
+                if clear and (new > 0 or force_clear):
                     last_entry = log_db.get_last_log_entry(conn, hsm_serial)
                     if last_entry:
                         session.free_log_entries(last_entry["entry_number"])
                         cli_info(f"Cleared log entries up to {last_entry['entry_number']}")
                     else:
                         cli_info("No entries to clear")
+                elif clear:
+                    cli_info("No new entries fetched; skipping clear operation.")
 
 
 @cmd_log.command('review')
@@ -251,14 +254,15 @@ def log_export_jsonl(ctx: HsmSecretsCtx, db_path: str, out, restart: bool, no_su
     This command does not connect to the HSM device at all.
     """
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
-    with sqlite3.connect(db_path) as conn:
-        for ser in hsm_serials:
-            serial = int(ser)
-            if restart:
-                log_db.update_last_exported_id(conn, serial, 0)
+    with out as fh:
+        with sqlite3.connect(db_path) as conn:
+            for ser in hsm_serials:
+                serial = int(ser)
+                if restart:
+                    log_db.update_last_exported_id(conn, serial, 0)
 
-            count, last_exported_id = 0, None
-            with out as fh:
+                count, last_exported_id = 0, None
+
                 conn.row_factory = sqlite3.Row
                 for e in log_db.get_non_exported_log_entries(conn, serial):
                     l = yhsm_log.export_to_jsonl(e, pretty=False, with_summary=not no_summary)
@@ -269,7 +273,7 @@ def log_export_jsonl(ctx: HsmSecretsCtx, db_path: str, out, restart: bool, no_su
                 if last_exported_id:
                     log_db.update_last_exported_id(conn, serial, last_exported_id)
 
-            if count:
-                cli_info(f"Exported {count} new entries from database {db_path} to {out.name} for device {serial}")
-            else:
-                cli_info(f"No new entries to export for device {serial}")
+                if count:
+                    cli_info(f"Exported {count} new entries from database {db_path} to {out.name} for device {serial}")
+                else:
+                    cli_info(f"No new entries to export for device {serial}")
