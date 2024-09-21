@@ -225,17 +225,6 @@ You can always force a different authentication type, though:
 
 YubiHSM2 devices are easy to reset, so you might want to do a test-run or two before an actual production deployment.
 
-## Security tips
-
-- Always perform setup on airgapped systems
-- Password-protect the shared admin secrets
-- Secure physical access to HSMs
-- Favor YubiKey auth for daily operations over service accounts
-- Audit HSM logs
-
-Airgapped setup is necessary to prevent supply chain attacks from exfiltrating any generated secrets.
-You might want to use something like Tails Linux on USB stick, and wipe/destroy the media after setup.
-
 ## License
 
 Released under the MIT license
