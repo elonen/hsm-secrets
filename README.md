@@ -10,35 +10,71 @@ Built mostly on top of Yubico's Python APIs and the Cryptography library.
 
 ## Highlights
 
-- Centralized configuration in a single YAML file
-  - Automatic key/cert generation based on the config file
-  - Sensible default config with comments
-- Authenticate HSM operators by YubiKey 5 hardware tokens
-  - Integrated Yubikey HSM auth (yubihsm-auth) slot management for operators
-- Integrate daily operations under a single tool:
-  - OpenSSH certificate creation and signing, including hardware token **sk-ed25519** and **sk-ecdsa** keys
-  - X.509 certificate creationg and signing
-    - Sanity checks / lint for generated certificates by usage
-  - TLS server cert creation
-  - PIV cert generation (Windows login with YubiKey)
-    - Store in YubiKey or save to disk
-  - Codesigning (Authenticode) for Windows executables (you'll need *osslsigncode* also)
-  - Password derivation for VMs etc.
-- HSM audit logging
-  - Specify HSM audit policy in config file
-  - Incrementally fetch and parse log entries from YubiHSM
-    - from multiple devices (for HA / load balancing)
-    - store into SQlite database
-    - convenient "forced logging mode" support (with `log fetch --clear`)
-  - Show log entries in human-readable
-  - Verify audit chain integrity
-  - Export new logs to JSONL, for log server submission
-- Improved Secret Sharing ceremony vs. YubiHSM setup util (vs. yubihsm-setup)
-  - password protected shares (optional)
-  - better display hygiene
-  - detailed interactive guiding
-- Discourage leaking secrets in process listing, local disk or terminal scrollback
-  - Fully within one process, does not invoke external CLI tools (except in unit tests)
+<table>
+  <tbody>
+    <tr>
+      <td>Define HSM with config file</td>
+      <td>
+        <ul>
+          <li>Single YML file to configure keys, certs and users</li>
+          <li>Automatic key/cert generation based on the config file</li>
+          <li>Sensible default config with comments</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td>High level service tools</td>
+      <td>
+        <ul>
+          <li><strong>TLS</strong> server cert creation</li>
+          <li><strong>PIV / Smartcard</strong> cert generation (Windows login with YubiKey)</li>          
+          <li><strong>Codesigning</strong> (Authenticode) for Windows executables (you'll need <em>osslsigncode</em> also)</li>
+          <li><strong>OpenSSH</strong> certificate creation and signing, including hardware token <strong>sk-ed25519</strong> and <strong>sk-ecdsa</strong> keys</li>
+          <li>Generic <strong>X.509</strong> certificate creation and signing</li>          
+          <li>Stateless <strong>password derivation</strong> for VMs etc.</li>          
+          <li>Sanity checks / lint for generated certificates by usage</li>          
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td>Improved security</td>
+      <td>
+        <ul>
+          <li>Authenticate all daily HSM ops by YubiKey 5 hardware tokens</li>
+          <li>Integrated Yubikey (HSMauth slot) management</li>
+          <li>When service accounts keys are needed, use ENV for passwords instead of CLI args</li>
+          <li>Fully within one process, does not invoke external CLI tools (except in unit tests)</li>
+	        <li>Avoid leaking secrets in process listings, disk, or terminal scrollback</li>
+        </ul>
+      </td>
+    </tr>    
+    <tr>
+      <td>HSM audit logging</td>
+      <td>
+        <ul>
+          <li>Specify HSM audit policy in config file</li>
+          <li>Incrementally fetch and parse log entries from YubiHSM</li>
+          <li>Store into SQlite database</li>
+          <li>Convenient "forced logging mode" support (with <code>log fetch --clear</code>)</li>
+          <li>Show log entries in human-readable format</li>
+          <li>Verify audit chain integrity</li>          
+          <li>Export new logs to JSONL, for log server submission</li>
+          <li>Supports multiple devices (for HA / load balancing)</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td>Improved Secret Sharing (SSSS) vs. yubihsm-setup</td>
+      <td>
+        <ul>
+          <li>Password protected shares (optional)</li>
+          <li>Better display hygiene</li>
+          <li>Detailed interactive guiding</li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ## Practical Examples
 
