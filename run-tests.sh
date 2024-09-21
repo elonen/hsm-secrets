@@ -151,9 +151,18 @@ test_tls_certificates() {
     run_cmd -q x509 cert get --all | openssl x509 -text -noout
     assert_success
 
+    for CERT in cert_tls-t1-rsa3072  cert_tls-t1-ed25519_ed25519-root  cert_tls-t1-ecp384_ecp384-root; do
+        # Check that intermediate's CRL distribution point is set to root-signed one
+        local intermediate_cert=$(run_cmd -q x509 cert get $CERT | openssl x509 -in /dev/stdin -text -noout)
+        assert_success
+        echo "$intermediate_cert"
+        assert_grep "URI:http.*/root-a1-.*crl" "$intermediate_cert"
+    done
+
     for KEYTYPE in ed25519 ecp256 ecp384 rsa3072; do
         KEYBITS=$(echo $KEYTYPE | sed -E 's/[^0-9]//g')
 
+        # Generate a server (end-entity) certificate
         local output=$(run_cmd tls server-cert --out $TEMPDIR/www-example-com_$KEYTYPE.pem --common-name www.example.com --san-dns www.example.org --san-ip 192.168.0.1 --san-ip fd12:123::80 --keyfmt $KEYTYPE)
         assert_success
         echo "$output"

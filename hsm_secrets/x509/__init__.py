@@ -155,6 +155,13 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
             issuer = scid_to_opq_def[cd.sign_by] if cd.sign_by and cd.sign_by != cd.id else None
             signer = f"signed by: '{issuer.label}'" if issuer else 'self-signed'
 
+            # Get CRL distribution points from issuer (if not self-signed)
+            crl_url_list = []
+            if issuer:
+                issuer_ca_def = find_ca_def(ctx.conf, issuer.id)
+                assert issuer_ca_def, f"CA cert ID not found: 0x{issuer.id:04x}"
+                crl_url_list = issuer_ca_def.crl_distribution_points
+
             cli_info(f"\nCreating 0x{cd.id:04x}: '{cd.label}' ({signer})")
             cli_info(indent(pretty_x509_info(x509_info), "    "))
 
@@ -184,7 +191,7 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
                 builder = X509CertBuilder(ctx.conf, x509_ca.x509_info, priv_key)
                 if issuer_cert:
                     assert issuer_key
-                    id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key, x509_ca.crl_distribution_points)
+                    id_to_cert_obj[cd.id] = builder.build_and_sign(issuer_cert, issuer_key, crl_url_list)
                     # NOTE: We'll assume all signed certs on HSM are CA -- fix this if storing leaf certs for some reason
                     issues = X509IntermediateCACertificateChecker(id_to_cert_obj[cd.id]).check_and_show_issues()
                     cert_issues.append((cd, issues))
