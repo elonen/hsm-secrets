@@ -213,7 +213,7 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
 @click.argument('user', required=True)
 @click.option('--slot', '-s', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
 @click.option('--no-reset', is_flag=True, help="Do not reset PIV app before generating key")
-@click.option('--multi', is_flag=False, help="Multi-account mode (no UPN/email SAN)")
+@click.option('--multi', is_flag=True, help="Multi-account mode (no UPN/email SAN)")
 @click.option('--management-key', '-m', help="PIV management key (hex), default: prompt")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
 @click.option('--subject', '-s', required=False, help="Cert subject (DN), default: from config")
