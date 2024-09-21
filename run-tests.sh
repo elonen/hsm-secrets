@@ -8,7 +8,8 @@ trap "rm -rf $TEMPDIR" EXIT
 cp hsm-conf.yml $TEMPDIR/
 MOCKDB="$TEMPDIR/mock.pickle"
 #CMD="./_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
-CMD="./_venv/bin/coverage run --parallel-mode --source=hsm_secrets ./_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
+CURDIR=$(realpath $(dirname $0))
+CMD="$CURDIR/_venv/bin/coverage run --parallel-mode --source=hsm_secrets $CURDIR/_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
 
 
 # Helpers for `expect` calls:
@@ -81,8 +82,8 @@ EOF
 # ------------------ test cases -------------------------
 
 test_pytest() {
-    ./_venv/bin/pip install pytest
-    ./_venv/bin/pytest --cov=hsm_secrets --cov-append --cov-report='' -v hsm_secrets
+    $CURDIR/_venv/bin/pip install pytest
+    $CURDIR/_venv/bin/pytest --cov=hsm_secrets --cov-append --cov-report='' -v hsm_secrets
 }
 
 test_fresh_device() {
@@ -299,8 +300,15 @@ test_piv_dc_certificate() {
 test_crl_commands() {
     setup
 
-    # Initialize a new CRL
-    run_cmd x509 crl init --ca 0x0211 --out $TEMPDIR/test.crl --validity 30
+    # Try generating multiple CRLs first, with defaults
+    cd "$TEMPDIR"
+    run_cmd x509 crl init cert_tls-t1-ecp384_rsa3072-root cert_nac-n1-ecp256
+    assert_success
+    [ -f $TEMPDIR/tls-t1-ecp384.crl ] || { echo "ERROR: CRL file not created"; return 1; }
+    [ -f $TEMPDIR/nac-n1-ecp256.crl ] || { echo "ERROR: CRL file not created"; return 1; }
+
+    # Initialize a test CRL
+    run_cmd x509 crl init --out $TEMPDIR/test.crl --period 30 0x0211
     assert_success
     [ -f $TEMPDIR/test.crl ] || { echo "ERROR: CRL file not created"; return 1; }
 
@@ -464,7 +472,7 @@ test_codesign_sign_osslsigncode_hash() {
     assert_success
 
     # Create a CRL
-    run_cmd x509 crl init --ca cert_ca-root-a1-rsa3072 -o "$test_dir/crl.pem"
+    run_cmd x509 crl init -o "$test_dir/crl.pem"  cert_ca-root-a1-rsa3072
     assert_success
 
     # Attach the signature to the executable
@@ -576,7 +584,7 @@ run_test() {
 }
 
 # Reset previous coverage files before accumulating new data
-./_venv/bin/pip install coverage pytest-cov
+$CURDIR/_venv/bin/pip install coverage pytest-cov
 rm -f .coverage .coverage.*
 
 echo "Running tests:"
@@ -601,10 +609,10 @@ run_test test_logging_commands
 echo "---"
 
 echo "Running coverage report:"
-./_venv/bin/coverage combine --append
-./_venv/bin/coverage report
-./_venv/bin/coverage html
-./_venv/bin/coverage xml
+$CURDIR/_venv/bin/coverage combine --append
+$CURDIR/_venv/bin/coverage report
+$CURDIR/_venv/bin/coverage html
+$CURDIR/_venv/bin/coverage xml
 
 echo "---"
 echo "OK. All tests passed successfully!"

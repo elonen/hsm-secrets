@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization, hashes
 from hsm_secrets.config import HSMConfig, HSMKeyID, HSMOpaqueObject, X509CA, click_hsm_obj_auto_complete, find_config_items_of_class
 
-from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
+from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_result, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, cli_code_info, pass_common_args, cli_info
 
 from hsm_secrets.x509.cert_builder import X509CertBuilder, sign_hash_algo_for_key
 from hsm_secrets.x509.cert_checker import X509IntermediateCACertificateChecker, X509RootCACertificateChecker
@@ -229,36 +229,79 @@ def x509_create_certs(ctx: HsmSecretsCtx, all_certs: bool, dry_run: bool, cert_i
 
 @cmd_x509_crl.command('init')
 @pass_common_args
-@click.option('--ca', '-c', required=True, help="CA cert ID or label to sign the CRL", shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
-@click.option('--out', '-o', required=True, type=click.Path(dir_okay=False), help="Output CRL file")
-@click.option('--validity', '-v', default=7, help="CRL validity period in days")
+@click.argument('cacerts', nargs=-1, type=str, metavar='<cacert-id|label>...', shell_complete=click_hsm_obj_auto_complete(HSMOpaqueObject))
+@click.option('--out', '-o', required=False, type=click.Path(dir_okay=False), help="Output CRL file (default: from config)")
+@click.option('--period', '-v', type=int, default=None, help="CRL update period in days")
 @click.option('--this-update', type=click.DateTime(), default=None, help="This Update date (default: now)")
-@click.option('--next-update', type=click.DateTime(), default=None, help="Next Update date (default: now + validity)")
+@click.option('--next-update', type=click.DateTime(), default=None, help="Next Update date (default: cert's expiry date)")
 @click.option('--crl-number', type=int, default=1, help="CRL Number (default: 1)")
-def init_crl(ctx: HsmSecretsCtx, ca: str, out: str, validity: int, this_update: Optional[datetime.datetime],
-             next_update: Optional[datetime.datetime], crl_number: int):
-    """Create empty CRL signed by a CA"""
-    ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
-    ca_x509_def = find_ca_def(ctx.conf, ca_cert_def.id)
-    assert ca_x509_def, f"CA cert ID not found: 0x{ca_cert_def.id:04x}"
+@click.option('--force', '-f', is_flag=True, default=False, help="Overwrite existing CRL file(s)")
+def init_crl(ctx: HsmSecretsCtx, cacerts: list[str], out: str|None, period: int|None, this_update: datetime.datetime|None,
+             next_update: datetime.datetime|None, crl_number: int, force: bool):
+    """Create empty CRL for a CA
 
+    Given CA certificate must be present in the HSM, as it will be fetched and
+    its subject used as the new CRL's issuer name. (For cross-signed CAs, pick any of the
+    certs, as their subject will be the same.)
+
+    Options `--validity` and `--next-update` are mutually exclusive.
+    If neither is specified, the next update will be set to the CA cert's expiry date.
+    Clients may check the CRL more frequently than the next update period, but it's not
+    guaranteed, so if your use case has frequent revocations, set a shorter period.
+    """
+    if (period is not None) and (next_update is not None):
+        raise click.ClickException("Error: --period and --next-update options are mutually exclusive.")
+
+    if len(cacerts) > 1 and out is not None:
+        raise click.ClickException("Error: Output file name option is not supported for multiple CA certs.")
+
+    defs: list[tuple[HSMOpaqueObject, X509CA, Path]] = []
+    for ca in cacerts:
+
+        # Find CA definition for the given cert ID
+        ca_cert_def = ctx.conf.find_def(ca, HSMOpaqueObject)
+        ca_def = find_ca_def(ctx.conf, ca_cert_def.id)
+        if not ca_def:
+            raise click.ClickException(f"CA cert ID not found: 0x{ca_cert_def.id:04x}")
+
+        # Determine output file name
+        if not out:
+            if not ca_def.crl_distribution_points:
+                raise click.ClickException(f"Error: CRL DP not set for CA '{ca_cert_def.label}' (0x{ca_cert_def.id:04x}), cannot determine output file.")
+            outfile = Path(ca_def.crl_distribution_points[0].split('/')[-1])
+        else:
+            outfile = Path(out)
+
+        if outfile.exists() and not force:
+            cli_confirm(f"Overwrite the existing file: {outfile}?", abort=True)
+        defs.append((ca_cert_def, ca_def, outfile))
+
+    # Create the CRLs
     with open_hsm_session(ctx) as ses:
-        ca_cert = ses.get_certificate(ca_cert_def)
-        ca_key = ses.get_private_key(ca_x509_def.key)
+        for ca_cert_def, ca_def, outfile in defs:
+            ca_cert = ses.get_certificate(ca_cert_def)
+            ca_key = ses.get_private_key(ca_def.key)
 
-        builder = x509.CertificateRevocationListBuilder()
-        builder = builder.issuer_name(ca_cert.subject)
-        builder = builder.last_update(this_update or datetime.datetime.now(datetime.UTC))
-        builder = builder.next_update(next_update or (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=validity)))
-        builder = builder.add_extension(x509.CRLNumber(crl_number), critical=False)
+            this_update = this_update or datetime.datetime.now(datetime.UTC)
 
-        crl = builder.sign(ca_key, sign_hash_algo_for_key(ca_key))
+            if next_update is None:
+                if period is not None:
+                    next_update = this_update + datetime.timedelta(days=period)
+                else:
+                    next_update = ca_cert.not_valid_after - datetime.timedelta(seconds=1)
 
-        crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
-        Path(out).write_bytes(crl_pem)
+            builder = x509.CertificateRevocationListBuilder()
+            builder = builder.issuer_name(ca_cert.subject)
+            builder = builder.last_update(this_update)
+            builder = builder.next_update(next_update)
+            builder = builder.add_extension(x509.CRLNumber(crl_number), critical=False)
 
-        cli_code_info(f"Initialized CRL signed by CA `{ca_cert_def.label}` (0x{ca_cert_def.id:04x})")
-        cli_code_info(f"CRL written to: `{out}`")
+            crl = builder.sign(ca_key, sign_hash_algo_for_key(ca_key))
+
+            crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
+            outfile.write_bytes(crl_pem)
+
+            cli_code_info(f"Initialized CRL for `{ca_def.key.label}` (0x{ca_def.key.id:04x}), written to: `./{str(outfile)}`")
 
 # ---------------
 
