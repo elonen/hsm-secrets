@@ -372,7 +372,7 @@ test_password_derivation() {
 
 test_wrapped_backup() {
     setup
-    run_cmd -q hsm backup export --out $TEMPDIR/backup.tgz
+    run_cmd -q hsm backup export --all --out $TEMPDIR/backup.tgz
     assert_success
 
     tar tvfz $TEMPDIR/backup.tgz | grep -q 'ASYMMETRIC_KEY' || { echo "ERROR: No asymmetric keys found in backup"; return 1; }

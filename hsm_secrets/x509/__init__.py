@@ -288,7 +288,7 @@ def init_crl(ctx: HsmSecretsCtx, cacerts: list[str], out: str|None, period: int|
                 if period is not None:
                     next_update = this_update + datetime.timedelta(days=period)
                 else:
-                    next_update = ca_cert.not_valid_after - datetime.timedelta(seconds=1)
+                    next_update = ca_cert.not_valid_after_utc - datetime.timedelta(minutes=1)
 
             builder = x509.CertificateRevocationListBuilder()
             builder = builder.issuer_name(ca_cert.subject)

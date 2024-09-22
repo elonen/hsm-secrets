@@ -5,7 +5,7 @@ import tarfile
 from typing import cast
 import click
 
-from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, click_hsm_obj_auto_complete, find_all_config_items_per_type, parse_keyid
+from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, HSMKeyID, click_hsm_obj_auto_complete, find_all_config_items_per_type, parse_keyid
 from hsm_secrets.secret_sharing.ceremony import cli_reconstruction_ceremony, cli_splitting_ceremony
 from hsm_secrets.log import _check_and_format_audit_conf_differences
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_error, cli_info, cli_pause, cli_prompt, cli_result, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, open_hsm_session, open_hsm_session_with_password, pass_common_args, pretty_fmt_yubihsm_object, prompt_for_secret, pw_check_fromhex
@@ -497,16 +497,32 @@ def make_wrap_key(ctx: HsmSecretsCtx):
 
 @cmd_hsm_backup.command('export')
 @pass_common_args
+@click.argument('ids', nargs=-1, type=str, metavar='<id|label> ...', required=False)
 @click.option('--out', '-o', type=click.Path(exists=False, allow_dash=False), required=False, help='Output file', default=None)
-def backup_export(ctx: HsmSecretsCtx, out: click.File|None):
+@click.option('--all', is_flag=True, help="Export all objects")
+def backup_export(ctx: HsmSecretsCtx, ids: list[str], out: click.File|None, all: bool):
     """Export backup .tar.gz of HSM
 
     Exports all objects under wrap from the YubiHSM and saves them
     to a .tar.gz file. The file can be used to restore the objects
     to the same or another YubiHSM device that has the same wrap key.
     """
+    if not all and not ids:
+        cli_error("No object IDs or labels provided. Use --all to export all objects.")
+        raise click.Abort()
+
     cli_info("")
     cli_info(f"Reading objects from YubiHSM device {ctx.hsm_serial}...")
+
+    # Convert explicitly selected object IDs/labels to numeric IDs
+    selected_key_ids: list[HSMKeyID] = []
+    for id_or_label in ids:
+        try:
+            id_int = ctx.conf.find_def_non_typed(id_or_label).id
+        except KeyError:
+            cli_warn(f"Object '{id_or_label}' not found in the configuration file. Assuming it's raw ID on the device.")
+            id_int = parse_keyid(id_or_label)
+        selected_key_ids.append(id_int)
 
     # Open the output file
     fh = None
@@ -524,6 +540,11 @@ def backup_export(ctx: HsmSecretsCtx, out: click.File|None):
     with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN, ctx.hsm_serial) as ses:
         device_objs = list(ses.list_objects())
         for obj in device_objs:
+
+            if not all and obj.id not in selected_key_ids:
+                cli_warn(f"- SKIPPED non-selected object 0x{obj.id:04x} ({obj.object_type.name}): {str(obj.get_info().label)}")
+                continue
+
             # Try to export the object
             try:
                 key_bytes = ses.export_wrapped(ctx.conf.admin.wrap_key, obj.id, obj.object_type)
