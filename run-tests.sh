@@ -273,7 +273,7 @@ test_piv_dc_certificate() {
     openssl ecparam -genkey -name secp384r1 -out $TEMPDIR/dc.key.pem
     openssl req -new -key $TEMPDIR/dc.key.pem -out $TEMPDIR/dc.csr.pem -subj "/CN=dc01.example.com"
 
-    local output=$(run_cmd piv sign-dc-cert $TEMPDIR/dc.csr.pem --hostname "dc01.example.com" --san "DNS:dc.example.com" --out $TEMPDIR/dc.cer.pem)
+    local output=$(run_cmd piv sign-dc-cert $TEMPDIR/dc.csr.pem --san "DNS:dc01.example.com" --san "DNS:dc.example.com" --out $TEMPDIR/dc.cer.pem)
     assert_success
     echo "$output"
     assert_not_grep "Cert errors" "$output"

@@ -27,7 +27,7 @@ Built mostly on top of Yubico's Python APIs and the Cryptography library.
       <td>
         <ul>
           <li><strong>TLS</strong> server cert creation</li>
-          <li><strong>PIV / Smartcard</strong> cert generation (Windows login with YubiKey)</li>
+          <li><strong>PIV ("smartcard")</strong> authentication (Windows login with YubiKey <a href="/doc/windows-piv-login.md">setup instructions</a>)</li>
           <li><strong>Codesigning</strong> (Authenticode) for Windows executables (you'll need <em>osslsigncode</em> also)</li>
           <li><strong>OpenSSH</strong> certificate creation and signing, including hardware token <strong>sk-ed25519</strong> and <strong>sk-ecdsa</strong> keys</li>
           <li>Generic <strong>X.509</strong> certificate creation and signing</li>
