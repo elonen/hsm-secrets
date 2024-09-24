@@ -15,7 +15,7 @@ class PIVDomainControllerCertificateChecker(BaseCertificateChecker):
 
     def _check_specific_extended_key_usage(self, ext_key_usage: x509.ExtendedKeyUsage):
         if ExtendedKeyUsageOID.SERVER_AUTH not in ext_key_usage:
-            self._add_issue("ExtendedKeyUsage does not include serverAuth", IssueSeverity.ERROR)
+            self._add_issue("ExtendedKeyUsage does not include serverAuth - this certificate won't be usable for TLS (e.g. LDAPS). Make sure this is intentional.", IssueSeverity.WARNING)
         if ExtendedKeyUsageOID.KERBEROS_PKINIT_KDC not in ext_key_usage:
             self._add_issue("ExtendedKeyUsage does not include KerberosKDC (PKINIT)", IssueSeverity.ERROR)
 

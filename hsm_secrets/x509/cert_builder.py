@@ -145,7 +145,8 @@ class X509CertBuilder:
         assert self.csr, "No CSR available for amendment"
 
         assert amend_subject != CsrAmendMode.ADD, "Amend mode ADD not supported for subject"
-        subject = self.csr.subject if amend_subject==CsrAmendMode.KEEP else self._mk_name_attribs()
+        explicit_cn_is_set = self.dn_subject_override or (self.cert_def_info.attribs and self.cert_def_info.attribs.common_name)
+        subject = self.csr.subject if (amend_subject==CsrAmendMode.KEEP or not explicit_cn_is_set) else self._mk_name_attribs()
 
         validity = self.cert_def_info.validity_days or validity_days
         assert validity, "Validity days not set in either CSR or X509Info"

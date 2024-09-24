@@ -42,10 +42,12 @@ def cmd_piv_yubikey():
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=False), help="Output filename, default: deduced from input")
 @click.option('--san', multiple=True, help="Additional (GeneralName) SANs")
-@click.option('--hostname', '-n', required=True, help="Hostname (CommonName) for the DC certificate")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
-def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: list[str], hostname: str, template: str|None):
-    """Sign a DC Kerberos PKINIT certificate for PIV"""
+def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, out: str|None, san: list[str], template: str|None):
+    """Sign a DC Kerberos PKINIT certificate for PIV
+
+    Usage: create a PKINIT CSR on the Domain Controller first, then sign it with this command.
+    """
     csr_path = Path(csr.name)
     with csr_path.open('rb') as f:
         csr_obj: x509.CertificateSigningRequest = x509.load_pem_x509_csr(f.read())
@@ -82,12 +84,8 @@ def sign_dc_cert(ctx: HsmSecretsCtx, csr: click.File, validity: int, ca: str, ou
             raise click.ClickException(f"Provided '{san_type.lower()}' is not a supported X509NameType")
         x509_info.subject_alt_name.names.setdefault(san_type_lower, []).append(san_value)  # type: ignore [arg-type]
 
-    # Add hostname to DNS SANs if not already there
-    if hostname not in (x509_info.subject_alt_name.names.get('dns') or []):
-        x509_info.subject_alt_name.names['dns'] = [hostname] + list(x509_info.subject_alt_name.names.get('dns') or [])
-
     # Create X509CertBuilder
-    cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_obj, dn_subject_override=f'CN={hostname}')
+    cert_builder = X509CertBuilder(ctx.conf, x509_info, csr_obj)
 
     # Sign the certificate
     with open_hsm_session(ctx) as ses:
