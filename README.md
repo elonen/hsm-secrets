@@ -27,12 +27,12 @@ Built mostly on top of Yubico's Python APIs and the Cryptography library.
       <td>
         <ul>
           <li><strong>TLS</strong> server cert creation</li>
-          <li><strong>PIV / Smartcard</strong> cert generation (Windows login with YubiKey)</li>          
+          <li><strong>PIV / Smartcard</strong> cert generation (Windows login with YubiKey)</li>
           <li><strong>Codesigning</strong> (Authenticode) for Windows executables (you'll need <em>osslsigncode</em> also)</li>
           <li><strong>OpenSSH</strong> certificate creation and signing, including hardware token <strong>sk-ed25519</strong> and <strong>sk-ecdsa</strong> keys</li>
-          <li>Generic <strong>X.509</strong> certificate creation and signing</li>          
-          <li>Stateless <strong>password derivation</strong> for VMs etc.</li>          
-          <li>Sanity checks / lint for generated certificates by usage</li>          
+          <li>Generic <strong>X.509</strong> certificate creation and signing</li>
+          <li>Stateless <strong>password derivation</strong> for VMs etc.</li>
+          <li>Sanity checks / lint for generated certificates by usage</li>
         </ul>
       </td>
     </tr>
@@ -47,7 +47,7 @@ Built mostly on top of Yubico's Python APIs and the Cryptography library.
 	        <li>Avoid leaking secrets in process listings, disk, or terminal scrollback</li>
         </ul>
       </td>
-    </tr>    
+    </tr>
     <tr>
       <td>HSM audit logging</td>
       <td>
@@ -57,7 +57,7 @@ Built mostly on top of Yubico's Python APIs and the Cryptography library.
           <li>Store into SQlite database</li>
           <li>Convenient "forced logging mode" support (with <code>log fetch --clear</code>)</li>
           <li>Show log entries in human-readable format</li>
-          <li>Verify audit chain integrity</li>          
+          <li>Verify audit chain integrity</li>
           <li>Export new logs to JSONL, for log server submission</li>
           <li>Supports multiple devices (for HA / load balancing)</li>
         </ul>
@@ -147,7 +147,7 @@ implementation (using `--mock` option) to test the commands with `openssl`, `ssh
 
 ## Installation and upgrade
 
-LINUX:
+**LINUX**:
 
 Assuming you have a `~/bin/` directory in path, this will install(/upgrade) the
 tool in a `_venv` and link it into your bin directory:
@@ -159,23 +159,24 @@ make
 rm -f ~/bin/hsm-secrets; ln -s $(pwd)/_venv/bin/hsm-secrets ~/bin/
 ```
 
-WINDOWS:
+**WINDOWS**:
 
 ```
 git pull
 python3 -m venv _venv
 _venv\Scripts\activate
+pip install setuptools
 pip install -r requirements.txt
-python setup.py install -e .
+pip install -e .
 ```
 
 Then add to PowerShell profile something like this:
 
 ```
-$env:HSM_SECRETS_CONFIG = "~\hsm-secrets\hsm-conf.yml"
-Set-Alias -Name hsm-secrets -Value "~\hsm-secrets\_venv\Scripts\hsm-secrets"
+$env:HSM_SECRETS_CONFIG = "$HOME\hsm-secrets\hsm-conf.yml"
+Set-Alias -Name hsm-secrets -Value "$HOME\hsm-secrets\_venv\Scripts\hsm-secrets"
 ```
-...and restart PowerShell.
+...and restart PowerShell. After this configuration, you can call the `hsm-secrets` command from any directory in PowerShell.
 
 ## Authentication
 
