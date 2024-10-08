@@ -19,7 +19,8 @@ def import_to_yubikey_piv(
     piv: PivSession,
     cert: x509.Certificate,
     private_key: Optional[Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey]],
-    slot: SLOT = SLOT.AUTHENTICATION
+    touch_policy: TOUCH_POLICY,
+    slot: SLOT = SLOT.AUTHENTICATION,
 ) -> None:
     """
     Import the certificate and private key into a Yubikey PIV slot.
@@ -38,10 +39,10 @@ def import_to_yubikey_piv(
         cli_info(" - Setting touch requirement 'CACHED'. Touch is a non-standard Yubico PIV extension.")
         if _check_yubikey_bio_support(piv):
             cli_info(" - Biometric support detected. Enabling MATCH_ONCE for PIN policy.")
-            piv.put_key(slot, private_key, pin_policy=PIN_POLICY.MATCH_ONCE, touch_policy=TOUCH_POLICY.CACHED)
+            piv.put_key(slot, private_key, pin_policy=PIN_POLICY.MATCH_ONCE, touch_policy=touch_policy)
         else:
             cli_info(" - Setting PIN policy to 'ONCE': PIN is needed once per session.")
-            piv.put_key(slot, private_key, pin_policy=PIN_POLICY.ONCE, touch_policy=TOUCH_POLICY.CACHED)
+            piv.put_key(slot, private_key, pin_policy=PIN_POLICY.ONCE, touch_policy=touch_policy)
 
         cli_info(f" - Key imported.")
     else:
@@ -82,7 +83,7 @@ def set_yubikey_piv_pin_puk_management_key(
     pin: str,
     puk: str,
     pin_puk_attempts: int,
-    new_management_key: bytes) -> None:
+    new_management_key: bytes) -> str:
     """
     Set the PIN, PUK, and management key for a Yubikey PIV application.
     """
@@ -96,11 +97,24 @@ def set_yubikey_piv_pin_puk_management_key(
     piv.change_puk(YUBIKEY_DEFAULT_PUK, puk)
     piv.verify_pin(pin)
 
-    key_type, key_type_name = _guess_key_type(new_management_key)
-    #cli_info(f" - Setting new mgt key ({key_type_name})")
-    if not key_type:
-        raise click.ClickException("Invalid management key, cannot continue")
-    ykman.piv.pivman_set_mgm_key(piv, new_management_key, key_type)
+    if len(new_management_key) == 16:
+        ykman.piv.pivman_set_mgm_key(piv, new_management_key, MANAGEMENT_KEY_TYPE.AES128)
+        return "AES128"
+    elif len(new_management_key) == 24:
+        # Try AES192 first, fallback to TDES if not supported
+        try:
+            ykman.piv.pivman_set_mgm_key(piv, new_management_key, MANAGEMENT_KEY_TYPE.AES192)
+            return "AES192"
+        except Exception as e:
+            cli_warn(f"Failed to set AES192 management key: {str(e)}")
+            cli_info(" - Retrying management key type as TDES")
+            ykman.piv.pivman_set_mgm_key(piv, new_management_key, MANAGEMENT_KEY_TYPE.TDES)
+            return "3DES"
+    elif len(new_management_key) == 32:
+        ykman.piv.pivman_set_mgm_key(piv, new_management_key, MANAGEMENT_KEY_TYPE.AES256)
+        return "AES256"
+    else:
+        raise click.ClickException("Invalid management key length (must be 16, 24, or 32 bytes)")
 
 
 def generate_yubikey_piv_keypair(
@@ -157,35 +171,25 @@ class YubikeyPivManagementSession:
         self.piv.verify_pin(self.pin)
 
         # Authenticate with management key
-        key, key_type = self._select_management_key_smart(self.piv)
+        key = self._select_management_key_smart(self.piv)
         try:
             self.management_key = key  # Store the management key used
-            try:
-                self.piv.authenticate(key_type, key)
-            except ValueError as ve:
-                if 'management key type"' in str(ve) and key_type == MANAGEMENT_KEY_TYPE.TDES:
-                    # try AES192 instead
-                    cli_warn(f"Failed to authenticate with 3DES management key (key len: {len(key)} bytes - expected be 24). Trying again with AES192...")
-                    self.piv.authenticate(MANAGEMENT_KEY_TYPE.AES192, key)
+            self.piv.authenticate(key)
         except yubikit.core.CommandError as e:
             cli_error(f"YubiKey PIV app mgt key authentication failed: {str(e)}")
             cli_warn("(Sometimes this means 'PUK is blocked' in YubiKey GUI. You may need to factory reset the PIV app.)")
 
         return self  # Return self so that piv, management_key, and pin can be accessed
 
-    def _select_management_key_smart(self, piv: PivSession) -> tuple[bytes, MANAGEMENT_KEY_TYPE]:
+    def _select_management_key_smart(self, piv: PivSession) -> bytes:
         # Use provided management key if available
         if self.management_key is not None:
-            key_type, key_type_name = _guess_key_type(self.management_key)
-            cli_info(f"Authenticating with provided management key (assuming {key_type_name})...")
-            if not key_type:
-                raise click.ClickException("Invalid management key, cannot continue")
-            return self.management_key, key_type
+            return self.management_key
         try:
             # Check if default management key is set
             mkm = piv.get_management_key_metadata()
             if mkm.default_value:
-                return yubikit.piv.DEFAULT_MANAGEMENT_KEY, MANAGEMENT_KEY_TYPE.TDES
+                return yubikit.piv.DEFAULT_MANAGEMENT_KEY
             else:
                 # Not default, prompt user
                 return self._prompt_for_management_key()
@@ -193,7 +197,7 @@ class YubikeyPivManagementSession:
             # Couldn't figure out if it's default or not, prompt user
             return self._prompt_for_management_key(default=yubikit.piv.DEFAULT_MANAGEMENT_KEY)
 
-    def _prompt_for_management_key(self, default: Optional[bytes] = None) -> tuple[bytes, MANAGEMENT_KEY_TYPE]:
+    def _prompt_for_management_key(self, default: Optional[bytes] = None) -> bytes:
         """
         Prompt user for a PIV management key.
         """
@@ -201,9 +205,10 @@ class YubikeyPivManagementSession:
             mkey_str = prompt_for_secret("Enter PIV management key (in hex)", default=default.hex() if default else None)
             try:
                 mkey = bytes.fromhex(mkey_str)
-                key_type, _ = _guess_key_type(mkey)
-                if key_type:
-                    return mkey, key_type
+                if len(mkey) not in (16, 24, 32):
+                    cli_error("Management key must be 16, 24, or 32 bytes (32, 48 or 64 hex digits) -- AES128, TDES, or AES256.")
+                    continue
+                return mkey
             except ValueError:
                 cli_error("Invalid hex string. Try again.")
 
@@ -236,15 +241,3 @@ def _check_yubikey_bio_support(piv: PivSession) -> bool:
         return True
     except yubikit.core.NotSupportedError:
         return False
-
-
-def _guess_key_type(key: bytes) -> tuple[MANAGEMENT_KEY_TYPE|None, str]:
-    if len(key) == 16:
-        return MANAGEMENT_KEY_TYPE.AES128, "AES128"
-    elif len(key) == 24:
-        return MANAGEMENT_KEY_TYPE.TDES, "3DES"
-    elif len(key) == 32:
-        return MANAGEMENT_KEY_TYPE.AES256, "AES256"
-    else:
-        cli_error("Management key must be 16, 24, or 32 bytes (32, 48 or 64 hex digits) -- AES128, TDES, or AES256.")
-        return None, ''

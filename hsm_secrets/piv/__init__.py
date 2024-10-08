@@ -177,9 +177,10 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
 @pass_common_args
 @click.argument('key', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, allow_dash=False), metavar='<KEYFILE>')
 @click.argument('cert', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, allow_dash=False), metavar='<CERTFILE>')
+@click.option('--no-touch', is_flag=True, help="Do not require touch for key use")
 @click.option('--slot', '-s', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
 @click.option('--management-key', '-m', help="PIV management key (hex), default: prompt")
-def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.Path, slot: str, management_key: str|None):
+def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, no_touch: bool, key: click.Path, slot: str, management_key: str|None):
     """Import cert and key from files to YubiKey PIV slot
 
     If two YubiKeys are connected, the one _without_ HSM auth will be used.
@@ -199,7 +200,8 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
     mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
 
     with YubikeyPivManagementSession(mgt_key_bytes) as ses:
-        import_to_yubikey_piv(ses.piv, certificate, private_key, slot_enum)
+        tp = yubikit.piv.TOUCH_POLICY.NEVER if no_touch else yubikit.piv.TOUCH_POLICY.CACHED
+        import_to_yubikey_piv(ses.piv, certificate, private_key, touch_policy=tp, slot=slot_enum)
 
     cli_info('')
     _show_piv_cert_summary(certificate)
@@ -211,6 +213,7 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
 @click.argument('user', required=True)
 @click.option('--slot', '-s', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
 @click.option('--no-reset', is_flag=True, help="Do not reset PIV app before generating key")
+@click.option('--no-touch', is_flag=True, help="Do not require touch for key use")
 @click.option('--multi', is_flag=True, help="Multi-account mode (no UPN/email SAN)")
 @click.option('--management-key', '-m', help="PIV management key (hex), default: prompt")
 @click.option('--template', '-t', required=False, help="Template label, default: first template")
@@ -220,7 +223,7 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, key: click.P
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--os-type', type=click.Choice(['windows', 'other']), default='windows', help="Target operating system")
 @click.option('--san', multiple=True, help="AdditionalSANs, e.g., 'DNS:example.com', 'IP:10.0.0.2', etc.")
-def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bool, multi: bool, management_key: str|None, template: str|None, subject: str, validity: int|None, key_type: PivKeyTypeName, ca: str, os_type: Literal["windows", "other"], san: list[str]):
+def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bool, no_touch: bool, multi: bool, management_key: str|None, template: str|None, subject: str, validity: int|None, key_type: PivKeyTypeName, ca: str, os_type: Literal["windows", "other"], san: list[str]):
     """Generate a PIV key + cert and store directly in YubiKey
 
     User argument should be a AD username for Windows or email for macOS/Linux.
@@ -236,7 +239,9 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     if not no_reset:
         confirm_and_reset_yubikey_piv_app()
         pin = YUBIKEY_DEFAULT_PIN
-        mgt_key_bytes = YUBIKEY_DEFAULT_MGMT_KEY
+        mgt_key_bytes = None
+
+    tp = yubikit.piv.TOUCH_POLICY.NEVER if no_touch else yubikit.piv.TOUCH_POLICY.CACHED
 
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
         pin, mgt_key_bytes = ses.pin, ses.management_key
@@ -244,7 +249,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
             ses.piv,
             yk_key_type,
             yubikit.piv.PIN_POLICY.ONCE,
-            yubikit.piv.TOUCH_POLICY.CACHED,
+            tp,
             f'CN={user}',
             slot_enum)
 
@@ -253,16 +258,16 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
         _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
 
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
-        import_to_yubikey_piv(ses.piv, signed_cert, None, slot_enum)
+        import_to_yubikey_piv(ses.piv, signed_cert, private_key=None, touch_policy=tp, slot=slot_enum)
         if not no_reset:
             new_pin = str(secrets.randbelow(900000) + 100000)
             new_puk = str(secrets.randbelow(90000000) + 10000000)
             new_mgt_key = secrets.token_bytes(24)
             cli_info('')
-            set_yubikey_piv_pin_puk_management_key(ses.piv, new_pin, new_puk, 5, new_mgt_key)
+            new_key_type = set_yubikey_piv_pin_puk_management_key(ses.piv, new_pin, new_puk, 5, new_mgt_key)
             cli_code_info(f"- New PIN: `{new_pin}` (give this to the user)")
             cli_code_info(f"- New PUK: `{new_puk}`")
-            cli_code_info(f"- New PIV Management Key: `{new_mgt_key.hex()}`")
+            cli_code_info(f"- New PIV Management Key ({new_key_type}): `{new_mgt_key.hex()}`")
 
     cli_info('')
     _show_piv_cert_summary(signed_cert)
