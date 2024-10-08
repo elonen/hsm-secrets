@@ -159,8 +159,14 @@ class YubikeyPivManagementSession:
         # Authenticate with management key
         key, key_type = self._select_management_key_smart(self.piv)
         try:
-            self.piv.authenticate(key_type, key)
             self.management_key = key  # Store the management key used
+            try:
+                self.piv.authenticate(key_type, key)
+            except ValueError as ve:
+                if 'management key type"' in str(ve) and key_type == MANAGEMENT_KEY_TYPE.TDES:
+                    # try AES192 instead
+                    cli_warn(f"Failed to authenticate with 3DES management key (key len: {len(key)} bytes - expected be 24). Trying again with AES192...")
+                    self.piv.authenticate(MANAGEMENT_KEY_TYPE.AES192, key)
         except yubikit.core.CommandError as e:
             cli_error(f"YubiKey PIV app mgt key authentication failed: {str(e)}")
             cli_warn("(Sometimes this means 'PUK is blocked' in YubiKey GUI. You may need to factory reset the PIV app.)")
