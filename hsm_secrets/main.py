@@ -22,6 +22,7 @@ from click_repl import register_repl    # type: ignore
 #@click.option('-d', '--debug', is_flag=True, help="Enable debug mode")
 @click.option('-c', '--config', required=False, type=click.Path(), default=None, help="Path to configuration file")
 @click.option('-q', '--quiet', is_flag=True, help="Suppress all non-essential output", default=False)
+@click.option("--debug", required=False, is_flag=True, help="Enable debug logging")
 @click.option("-y", "--yklabel", required=False, help="Yubikey HSM auth key label (default: first slot)")
 @click.option("-s", "--hsmserial", required=False, help="YubiHSM serial number to connect to (default: get master from config)")
 @click.option("--auth-yubikey", required=False, is_flag=True, help="Use Yubikey HSM auth key for HSM login")
@@ -30,7 +31,7 @@ from click_repl import register_repl    # type: ignore
 @click.option("--mock", required=False, type=click.Path(dir_okay=False, file_okay=True, exists=False), help="Use mock HSM for testing, data in give file")
 @click.version_option()
 @click.pass_context
-def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hsmserial: str|None,
+def cli(ctx: click.Context, config: str|None, quiet: bool, debug: bool, yklabel: str|None, hsmserial: str|None,
         auth_default_admin: str|None, auth_yubikey: str|None, auth_password_id: str|None, mock: str|None):
     """Config file driven secret management tool for YubiHSM2 devices.
 
@@ -50,6 +51,10 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, yklabel: str|None, hs
         HSM_PASSWORD with the specified auth key ID (hex) or label.
     """
     ctx.obj = {'quiet': quiet}  # early setup for cli_info and other utils to work
+
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
+        cli_info("Debug logging enabled", err=True)
 
     # Use config file from env var or default locations if not specified
     if not config:
