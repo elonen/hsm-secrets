@@ -1,7 +1,7 @@
 import re
 import secrets
 import click
-from hsm_secrets.config import HSMAuthKey, HSMConfig, click_hsm_obj_auto_complete
+from hsm_secrets.config import HSMAuthKey, click_hsm_obj_auto_complete
 from hsm_secrets.utils import HSMAuthMethod, HsmSecretsCtx, cli_confirm, cli_info, cli_pause, cli_prompt, cli_ui_msg, cli_warn, confirm_and_delete_old_yubihsm_object_if_exists, group_by_4, open_hsm_session, pass_common_args, prompt_for_secret, pw_check_fromhex, scan_local_yubikeys, secure_display_secret
 
 import yubikit.hsmauth
@@ -41,7 +41,8 @@ def change_yubikey_mgt(ctx: HsmSecretsCtx):
 @pass_common_args
 @click.argument('label', type=str, metavar='<label>', shell_complete=click_hsm_obj_auto_complete(HSMAuthKey, 'user_keys', ids=False))
 @click.option('--alldevs', is_flag=True, help="Add to all devices")
-def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
+@click.option('--target-yk', '-s', type=str, help="Write to a specific Yubikey (serial number)")
+def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool, target_yk: str):
     """Register Yubikey auth for a user
 
     <label> is the label of the Yubikey hsmauth slot / HSM key label,
@@ -58,11 +59,35 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
     user_key_conf = user_key_configs[0]
 
+    yubikey = None
 
-    n_yubikeys = len(ykman.device.list_all_devices())
-    if n_yubikeys > 1:
-        raise click.ClickException(f"Found {n_yubikeys} Yubikeys. Can't decide which one to set HSM auth on.")
-    yubikey = ykman.scripting.single(prompt = True)    # Connect to the first Yubikey found, prompt user to insert one if not found
+    # Figure out which Yubikey to use for storing the new user vs. authenticating this command
+    yk_devices = ykman.device.list_all_devices()
+    n_yubikeys = len(yk_devices)
+    if n_yubikeys <= 1:
+        yubikey = ykman.scripting.single(prompt = True)    # Connect to the first Yubikey found, prompt user to insert one if not found
+    else:
+        if target_yk:
+            for (yd, di) in yk_devices:
+                if str(di.serial) == str(target_yk):
+                    yubikey = ykman.scripting.ScriptingDevice(yd, di)
+                    cli_ui_msg(f"- Selected Yubikey for storing the user key: {di.serial}")
+                else:
+                    # Not the target Yubikey, so use for authenticating _this_ command
+                    if ctx.forced_auth_method == HSMAuthMethod.YUBIKEY:
+                        ctx.forced_yubikey_serial = str(di.serial)
+                        cli_ui_msg(f"- Selected Yubikey for authenticating this command: {di.serial}")
+        else:
+            cli_warn(f"Found {n_yubikeys} Yubikeys. Can't automatically decide which one to set HSM auth on.")
+            cli_warn("Use the --target-yk option to specify the serial number of the Yubikey to write to. Candidates:")
+            for (man_dev, dev_info) in yk_devices:
+                cli_ui_msg(f" - {dev_info.serial}: {str(dev_info.form_factor)} / {man_dev.fingerprint}")
+            raise click.Abort("Aborting.")
+
+    if not yubikey:
+        raise click.ClickException("No target Yubikey found. Aborting.")
+    cli_ui_msg(f"Will write to Yubikey with serial number: {yubikey.info.serial}, form factor: {yubikey.info.form_factor}")
+
     yk_auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
     existing_slots = list(yk_auth_ses.list_credentials())
 
@@ -96,9 +121,11 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool):
 
     cli_info("Generating symmetric key for the slot...")
     key_enc, key_mac = None, None
-    with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
-        key_enc = ses.get_pseudo_random(128//8)
-        key_mac = ses.get_pseudo_random(128//8)
+    key_enc = secrets.token_bytes(128//8)
+    key_mac = secrets.token_bytes(128//8)
+    #with open_hsm_session(ctx, HSMAuthMethod.DEFAULT_ADMIN) as ses:
+    #    key_enc = ses.get_pseudo_random(128//8)
+    #    key_mac = ses.get_pseudo_random(128//8)
 
     # Store the auth key on Yubikey
     cred = yk_auth_ses.put_credential_symmetric(

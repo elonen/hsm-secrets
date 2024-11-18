@@ -4,7 +4,7 @@ import click
 import secrets
 
 from pathlib import Path
-from typing import cast, get_args
+from typing import get_args
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
@@ -14,10 +14,10 @@ import asn1crypto.core  # type: ignore
 
 import yubikit.piv
 
-from hsm_secrets.config import HSMOpaqueObject, X509CertInfo, X509NameType
+from hsm_secrets.config import HSMOpaqueObject, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
-from hsm_secrets.piv.yubikey_piv import YUBIKEY_DEFAULT_MGMT_KEY, YUBIKEY_DEFAULT_PIN, YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, confirm_and_reset_yubikey_piv_app, set_yubikey_piv_pin_puk_management_key
+from hsm_secrets.piv.yubikey_piv import YUBIKEY_DEFAULT_PIN, YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, confirm_and_reset_yubikey_piv_app, set_yubikey_piv_pin_puk_management_key
 from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, open_hsm_session, pass_common_args
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
@@ -211,7 +211,7 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, no_touch: bo
 @cmd_piv_yubikey.command('generate')
 @pass_common_args
 @click.argument('user', required=True)
-@click.option('--slot', '-s', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
+@click.option('--slot', type=click.Choice(['AUTHENTICATION', 'SIGNATURE', 'KEY_MANAGEMENT', 'CARD_AUTH']), default='AUTHENTICATION', help="PIV slot to import to")
 @click.option('--no-reset', is_flag=True, help="Do not reset PIV app before generating key")
 @click.option('--no-touch', is_flag=True, help="Do not require touch for key use")
 @click.option('--multi', is_flag=True, help="Multi-account mode (no UPN/email SAN)")
@@ -231,6 +231,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     If two YubiKeys are connected, the one _without_ HSM auth will be used for PIV.
     """
     slot_enum = getattr(yubikit.piv.SLOT, slot)
+    assert slot_enum, f"Invalid slot: {slot}"
     yk_key_type =  {'rsa2048': yubikit.piv.KEY_TYPE.RSA2048, 'ecp256': yubikit.piv.KEY_TYPE.ECCP256, 'ecp384': yubikit.piv.KEY_TYPE.ECCP384}[key_type]
 
     mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
@@ -254,7 +255,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
             slot_enum)
 
         cli_info('')
-        cli_info(f"Signing the certificate on HSM...")
+        cli_info("Signing the certificate on HSM...")
         _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
 
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
@@ -275,7 +276,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
 
 
 def _show_piv_cert_summary(signed_cert: x509.Certificate):
-    cli_info(f"PIV certificate summary:")
+    cli_info("PIV certificate summary:")
     cli_code_info(f" - Serial:   `{signed_cert.serial_number:x}`")
     cli_code_info(f" - Subject:  {signed_cert.subject.rfc4514_string()}")
     cli_code_info(f" - Key type: {signed_cert.public_key().__class__.__name__}")
@@ -294,5 +295,5 @@ def _show_piv_cert_summary(signed_cert: x509.Certificate):
 def _display_ad_strong_mapping(signed_cert):
     ski_hex = signed_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest.hex().lower()
     cli_info("")
-    cli_info(f"For Strong Certificate Mapping (KB5014754), add this attribute to the AD User object:")
+    cli_info("For Strong Certificate Mapping (KB5014754), add this attribute to the AD User object:")
     cli_code_info(f'altSecurityIdentities = `X509:<SKI>{ski_hex}`')
