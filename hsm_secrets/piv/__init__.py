@@ -166,6 +166,11 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
         #csr_file.write_bytes(csr_obj.public_bytes(serialization.Encoding.PEM))
         #cli_info(f"CSR saved to: {csr_file}")
 
+    # Submit the certificate to the configured URL, if set
+    if post_url := ctx.conf.general.cert_submit_url:
+        cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
+        try_post_cert_to_http_endpoint_as_form(cert_bytes, cer_file.name, str(post_url), {})
+
     with open(cer_file, 'wb') as fo:
         fo.write(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
     cli_info(f"Certificate saved to: {cer_file}")
