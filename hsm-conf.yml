@@ -147,6 +147,9 @@ general:
     password_derivation: 8
     encryption: 9
 
+  # URL for submitting certificates to a monitoring service. Leave null to disable.
+  #cert_submit_url: https://monitoring.example.com/api/upload/auth_SECRET123456
+
   # Default settings for X.509 certificates.
   # These are used for all generated certificates when a specific setting is not provided (i.e. is null).
   x509_defaults:

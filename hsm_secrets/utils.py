@@ -1,11 +1,16 @@
 from dataclasses import dataclass
 from enum import Enum
 import os
+from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, Optional
 from contextlib import _GeneratorContextManager, contextmanager
 
 # YubiHSM 2
+import requests
+import urllib3
+from io import BytesIO
+
 from yubihsm import YubiHsm     # type: ignore [import]
 from yubihsm.core import AuthSession     # type: ignore [import]
 from yubihsm.defs import ERROR, OBJECT     # type: ignore [import]
@@ -503,6 +508,38 @@ def pretty_fmt_yubihsm_object(info: ObjectInfo) -> str:
         delegated_caps: {hscfg.HSMConfig.capability_to_names(info.delegated_capabilities)}
     """).strip()
 
+
+def try_post_cert_to_http_endpoint_as_form(file_contents: bytes, file_name: str, url: str, headers: dict[str, str], purpose: str = "monitoring"):
+    """
+    Post a file to an HTTP endpoint, encoded as form data.
+    """
+    def save_failed():
+        try:
+            save_name = f"submit-failed__{file_name}"
+            cli_warn( f"   => Saving to file './{save_name}', try submitting it manually")
+            with open(Path(save_name), 'wb') as f:
+                f.write(file_contents)
+        except OSError as e:
+            cli_error(f" - File write error: {e}")
+
+    submit_ok = False
+    try:
+        cli_info(f"HTTP POSTing certificate for {purpose}...")
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        files = { "file": (file_name, BytesIO(file_contents)) }
+        with requests.post(url, files=files, headers=headers, verify=False) as resp:
+            status_num, status_txt = resp.status_code, resp.text
+
+        if status_num == 200:
+            cli_info(" - OK")
+            submit_ok = True
+        else:
+            cli_error(f" - Submission failed: {status_num} {status_txt}")
+    except requests.exceptions.ConnectionError as e:
+        cli_error(f" - Connection error: {e}")
+    finally:
+        if not submit_ok:
+            save_failed()
 
 
 def confirm_and_delete_old_yubihsm_object_if_exists(ses: HSMSession, obj_id: hscfg.HSMKeyID, object_type: OBJECT, abort=True) -> bool:

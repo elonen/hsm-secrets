@@ -5,6 +5,7 @@ click
 click-repl
 
 pydantic
+requests
 
 pyyaml
 types-pyyaml

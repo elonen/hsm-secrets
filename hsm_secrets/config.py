@@ -61,6 +61,8 @@ class HSMConfig(NoExtraBaseModel):
         master_device: str              # serial number of the master device
         all_devices: dict[str, str]     # serial number -> connection URL
 
+        cert_submit_url: Optional[HttpUrl] = None        # URL for some commands to POST created certificates to
+
         domains: 'HSMDomains'
         x509_defaults: 'X509CertInfo'
 

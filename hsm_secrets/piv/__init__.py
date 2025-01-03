@@ -1,3 +1,4 @@
+from datetime import datetime
 import re
 from typing_extensions import Literal
 import click
@@ -18,7 +19,7 @@ from hsm_secrets.config import HSMOpaqueObject, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
 from hsm_secrets.piv.yubikey_piv import YUBIKEY_DEFAULT_PIN, YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, confirm_and_reset_yubikey_piv_app, set_yubikey_piv_pin_puk_management_key
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_info, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_error, cli_info, cli_warn, open_hsm_session, pass_common_args, try_post_cert_to_http_endpoint_as_form
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
@@ -223,7 +224,8 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, no_touch: bo
 @click.option('--ca', '-c', required=False, help="CA ID (hex) or label, default: from config")
 @click.option('--os-type', type=click.Choice(['windows', 'other']), default='windows', help="Target operating system")
 @click.option('--san', multiple=True, help="AdditionalSANs, e.g., 'DNS:example.com', 'IP:10.0.0.2', etc.")
-def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bool, no_touch: bool, multi: bool, management_key: str|None, template: str|None, subject: str, validity: int|None, key_type: PivKeyTypeName, ca: str, os_type: Literal["windows", "other"], san: list[str]):
+@click.option('--no-submit', is_flag=True, help="Do not submit the certificate to the configured URL")
+def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bool, no_touch: bool, multi: bool, management_key: str|None, template: str|None, subject: str, validity: int|None, key_type: PivKeyTypeName, ca: str, os_type: Literal["windows", "other"], san: list[str], no_submit: bool):
     """Generate a PIV key + cert and store directly in YubiKey
 
     User argument should be a AD username for Windows or email for macOS/Linux.
@@ -257,6 +259,14 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
         cli_info('')
         cli_info("Signing the certificate on HSM...")
         _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
+
+    # Submit the certificate to the configured URL, if set
+    if post_url := ctx.conf.general.cert_submit_url:
+        if not no_submit:
+            cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
+            today = datetime.now().strftime('%Y-%m-%d')
+            cert_name = f"{user}-piv-{today}.pem"
+            try_post_cert_to_http_endpoint_as_form(cert_bytes, cert_name, str(post_url), {})
 
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
         import_to_yubikey_piv(ses.piv, signed_cert, private_key=None, touch_policy=tp, slot=slot_enum)
