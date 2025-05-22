@@ -1,4 +1,4 @@
-yubihsm[http,usb]
+yubihsm[http,usb]==3.1.0
 yubikey-manager
 
 click
