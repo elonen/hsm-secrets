@@ -54,6 +54,9 @@ class RSAPrivateKeyHSMAdapter(rsa.RSAPrivateKey):
     def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
         self.hsm_obj = hsm_key
 
+    def __copy__(self):
+        return RSAPrivateKeyHSMAdapter(self.hsm_obj)
+
     def sign(self, data: bytes, padding: AsymmetricPadding, algorithm: Any) -> bytes:
         assert padding.name == "EMSA-PKCS1-v1_5", f"Unsupported padding: {padding.name}"
         assert algorithm.name in ("sha256", "sha512"), f"Unsupported algorithm: {algorithm.name}"
@@ -88,6 +91,9 @@ class Ed25519PrivateKeyHSMAdapter(ed25519.Ed25519PrivateKey):
     def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
         self.hsm_obj = hsm_key
 
+    def __copy__(self):
+        return Ed25519PrivateKeyHSMAdapter(self.hsm_obj)
+
     def sign(self, data: bytes) -> bytes:
         return self.hsm_obj.sign_eddsa(data)
 
@@ -107,6 +113,9 @@ class Ed25519PrivateKeyHSMAdapter(ed25519.Ed25519PrivateKey):
 class ECPrivateKeyHSMAdapter(ec.EllipticCurvePrivateKey):
     def __init__(self, hsm_key: yubihsm.objects.AsymmetricKey):
         self.hsm_obj = hsm_key
+
+    def __copy__(self):
+        return ECPrivateKeyHSMAdapter(self.hsm_obj)
 
     def sign(self, data: bytes, signature_algorithm: ec.EllipticCurveSignatureAlgorithm) -> bytes:
         if isinstance(signature_algorithm, ec.ECDSA):
