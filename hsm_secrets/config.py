@@ -377,7 +377,7 @@ class X509CertInfo(NoExtraBaseModel):
     class CertAttribs(NoExtraBaseModel):
         common_name: str                                    # FQDN for host, or username for user, etc.
         organization: Optional[str] = Field(default=None)   # Legal entity name
-        organizational_unit: str = Field(default=None)      # NOTE: Deprecated TLS field
+        organizational_unit: Optional[str] = Field(default=None)      # NOTE: Deprecated TLS field
         locality: Optional[str] = Field(default=None)       # City
         state: Optional[str] = Field(default=None)          # State or province where the organization is located
         country: Optional[str] = Field(default=None)        # Country code (2-letter ISO 3166-1)
@@ -395,8 +395,8 @@ class X509CertInfo(NoExtraBaseModel):
         names: Dict[X509NameType, List[str]] = Field(default_factory=dict)
 
     class NameConstraints(X509Extension):
-        permitted: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=dict)
-        excluded: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=dict)
+        permitted: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=lambda: {})
+        excluded: Optional[Dict[X509NameType, List[str]]] = Field(default_factory=lambda: {})
 
     #class AuthorityInfoAccess(X509Extension):
     #    ocsp: List[str] = Field(default_factory=list)

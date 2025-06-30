@@ -1,6 +1,8 @@
 from typing import Callable, TypeVar, Union, Optional
 
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
 from cryptography.hazmat.primitives import hashes
 from cryptography import x509
 
@@ -135,6 +137,10 @@ def generate_yubikey_piv_keypair(
     public_key = piv.generate_key(slot, key_type, pin_policy, touch_policy)
     cli_info("Creating certificate request (CSR) on YubiKey... " + click.style("(Touch it now if it blinks)", fg='blue', blink=True))
 
+    # Ensure public_key is a supported type for generate_csr
+    if not isinstance(public_key, (RSAPublicKey, EllipticCurvePublicKey)):
+        raise ValueError(f"Unsupported key type for CSR generation: {type(public_key)}")
+    
     hash_algo: type[hashes.SHA384]|type[hashes.SHA256] = hashes.SHA384 if key_type == KEY_TYPE.ECCP384 else hashes.SHA256
     return ykman.piv.generate_csr(piv, slot, public_key, subject, hash_algo)
 
