@@ -3,9 +3,20 @@ set -e
 
 TEMPDIR=$(mktemp -d /tmp/hsm-secret-test.XXXXXX)
 [[ $TEMPDIR =~ ^/tmp/hsm-secret-test ]] || { echo "Error: Invalid temp directory"; exit 1; }
-trap "rm -rf $TEMPDIR" EXIT
+
+# Start mock server for certificate uploads and CRL requests
+echo "Starting mock server..."
+python3 test-mock-server.py 8693 &
+MOCK_SERVER_PID=$!
+trap "kill $MOCK_SERVER_PID 2>/dev/null || true; rm -rf $TEMPDIR" EXIT
+
+# Give server time to start
+sleep 1
 
 cp hsm-conf.yml $TEMPDIR/
+# Replace CRL URL with mock server endpoint to avoid external HTTP requests during testing
+sed 's|http://crl.example.com|http://localhost:8693/mock-crl|g' $TEMPDIR/hsm-conf.yml > $TEMPDIR/hsm-conf-temp.yml
+mv $TEMPDIR/hsm-conf-temp.yml $TEMPDIR/hsm-conf.yml
 MOCKDB="$TEMPDIR/mock.pickle"
 #CMD="./_venv/bin/hsm-secrets -c $TEMPDIR/hsm-conf.yml --mock $MOCKDB"
 CURDIR=$(realpath $(dirname $0))
