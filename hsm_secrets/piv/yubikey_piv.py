@@ -12,7 +12,7 @@ import yubikit.core
 import yubikit.piv
 import ykman.piv, ykman.scripting
 
-from hsm_secrets.utils import cli_code_info, cli_confirm, cli_error, cli_info, cli_ui_msg, cli_warn, prompt_for_secret, scan_local_yubikeys
+from hsm_secrets.utils import cli_code_info, cli_confirm, cli_debug, cli_error, cli_info, cli_ui_msg, cli_warn, prompt_for_secret, scan_local_yubikeys
 
 import click
 
@@ -164,11 +164,13 @@ class YubikeyPivManagementSession:
         Create PIV session and authenticate with PIV management key + PIN.
         Returns self to allow access to piv, management_key, and pin.
         """
+        cli_debug("[PIV] YubikeyPivManagementSession.__enter__: Starting PIV session")
         _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True)
         assert piv_yubikey
         cli_info(f"Device for PIV storage: '{str(piv_yubikey)}'")
 
         self.sc = piv_yubikey.smart_card()
+        cli_debug(f"[PIV] Opened smartcard connection for PIV YubiKey {getattr(piv_yubikey, 'serial', 'unknown')}")
         self.piv = PivSession(self.sc)
 
         # Verify PIN first
@@ -219,8 +221,10 @@ class YubikeyPivManagementSession:
                 cli_error("Invalid hex string. Try again.")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        cli_debug(f"[PIV] YubikeyPivManagementSession.__exit__: Closing PIV session (exc_type={exc_type})")
         if self.sc:
             self.sc.close()
+            cli_debug("[PIV] Closed smartcard connection for PIV YubiKey")
 
         if isinstance(exc_val, ApduError):
             if exc_val.sw == SW.AUTH_METHOD_BLOCKED:

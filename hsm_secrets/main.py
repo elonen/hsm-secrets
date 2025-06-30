@@ -74,7 +74,7 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, debug: bool, yklabel:
     assert conf.general.master_device, "No master YubiHSM serial specified in config file."
 
     ctx.obj = {
-        # 'debug': debug,
+        'debug': debug,
         'yubikey_label': yklabel,
         'config': conf,
         'quiet': quiet,

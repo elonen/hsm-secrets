@@ -102,6 +102,14 @@ def cli_info(*args, **kwargs):
         click.echo(*args, **kwargs)
 
 
+def cli_debug(msg: str):
+    """
+    Only print if debug mode is enabled.
+    """
+    if (click.get_current_context().obj or {}).get('debug', False):
+        click.echo(f"DEBUG: {msg}", err=True)
+
+
 def cli_code_info(msg: str):
     """
     Print a message with code formatting, if not in quiet mode.
@@ -229,10 +237,14 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
         if not connector_url:
             raise ValueError(f"HSM device serial '{device_serial}' not found in config file.")
 
+        cli_debug(f"[HSM] connect_hsm_and_auth_with_yubikey: Starting HSM authentication")
         yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True, hsmauth_yk_serial=auth_yubikey_serial)
         assert yubikey
+        cli_debug(f"[HSM] Found HSMauth YubiKey: {getattr(yubikey, 'serial', 'unknown')}")
         try:
-            hsmauth = HsmAuthSession(yubikey.smart_card())
+            sc_hsm = yubikey.smart_card()
+            cli_debug(f"[HSM] Opened smartcard connection for HSMauth YubiKey {getattr(yubikey, 'serial', 'unknown')}")
+            hsmauth = HsmAuthSession(sc_hsm)
         except yubikit.core.ApplicationNotAvailableError:
             raise click.ClickException("YubiHSM auth not available on this YubiKey")
 
@@ -273,6 +285,11 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
 
         session = symmetric_auth.authenticate(*session_keys)
         cli_info("")
+        
+        # Close the smartcard connection for HSMauth YubiKey to prevent sharing violations
+        sc_hsm.close()
+        cli_debug(f"[HSM] Closed smartcard connection for HSMauth YubiKey {getattr(yubikey, 'serial', 'unknown')}")
+        
         return session
 
     except yubikit.core.InvalidPinError as e:
@@ -299,11 +316,30 @@ def scan_local_yubikeys(require_one_hsmauth = True, require_one_other = False, h
         if require_one_hsmauth or require_one_other:
             raise click.ClickException("No local YubiKey(s) found")
     elif n_devices == 1:
-        # Only one YubiKey => return it for both HSM and other uses
+        # Only one YubiKey => check if it has HSMauth credentials if required
         yk_dev, yk_info = ykman.device.list_all_devices()[0]
         yk = ykman.scripting.ScriptingDevice(yk_dev, yk_info)
         if hsmauth_yk_serial and str(yk_info.serial) != str(hsmauth_yk_serial):
             raise click.ClickException(f"ERROR: YubiKey with serial {hsmauth_yk_serial} not found.")
+        
+        # Check if this single YubiKey has HSMauth credentials if required
+        if require_one_hsmauth:
+            sc = yk.smart_card()
+            sc_closed = False
+            cli_debug(f"[CONNECTION] Checking single YubiKey {yk_info.serial if yk_info.serial else 'unknown'} for HSMauth credentials")
+            try:
+                if not HsmAuthSession(connection=sc).list_credentials():
+                    raise click.ClickException(f"YubiKey {yk_info.serial if yk_info.serial else 'unknown'} has no HSMauth credentials")
+                cli_debug(f"[CONNECTION] Single YubiKey {yk_info.serial if yk_info.serial else 'unknown'} has HSMauth credentials")
+            except yubikit.core.ApplicationNotAvailableError:
+                raise click.ClickException(f"YubiKey {yk_info.serial if yk_info.serial else 'unknown'} does not support HSMauth")
+            except yubikit.core.NotSupportedError:
+                raise click.ClickException(f"YubiKey {yk_info.serial if yk_info.serial else 'unknown'} does not support HSMauth")
+            finally:
+                if not sc_closed and sc:
+                    sc.close()
+                    cli_debug(f"[CONNECTION] Closed smartcard connection for single YubiKey {yk_info.serial if yk_info.serial else 'unknown'}")
+        
         return yk, yk
     elif n_devices == 2 and hsmauth_yk_serial:
         # Two YubiKeys, but one is forced for HSM auth
@@ -323,20 +359,32 @@ def scan_local_yubikeys(require_one_hsmauth = True, require_one_other = False, h
     for yk_dev, yk_info in ykman.device.list_all_devices():
         yk = ykman.scripting.ScriptingDevice(yk_dev, yk_info)
         sc = yk.smart_card()
+        sc_closed = False
+        cli_debug(f"[CONNECTION] Opened smartcard connection for YubiKey {yk_info.serial if yk_info.serial else 'unknown'}")
         try:
             if HsmAuthSession(connection=sc).list_credentials():
+                cli_debug(f"[CONNECTION] Found HSMauth credentials on YubiKey {yk_info.serial if yk_info.serial else 'unknown'}")
                 if not hsm_yubikey:
                     hsm_yubikey = yk
                     sc.close()
+                    sc_closed = True
+                    cli_debug(f"[CONNECTION] Closed smartcard connection for HSM YubiKey {yk_info.serial if yk_info.serial else 'unknown'}")
                     continue
                 elif require_one_hsmauth:
                     raise click.ClickException("ERROR: Multiple YubiKeys found with HSM credentials. Can't decide which one to use for HSM auth.")
-        except yubikit.core.ApplicationNotAvailableError:
+            else:
+                cli_debug(f"[CONNECTION] No HSMauth credentials found on YubiKey {yk_info.serial if yk_info.serial else 'unknown'}")
+        except yubikit.core.ApplicationNotAvailableError as e:
+            cli_debug(f"[CONNECTION] ApplicationNotAvailableError on YubiKey {yk_info.serial if yk_info.serial else 'unknown'}: {e}")
             pass
-        except yubikit.core.NotSupportedError:
+        except yubikit.core.NotSupportedError as e:
+            cli_debug(f"[CONNECTION] NotSupportedError on YubiKey {yk_info.serial if yk_info.serial else 'unknown'}: {e}")
             pass
-
-        sc.close()
+        finally:
+            # Ensure connection is always closed to prevent sharing violations
+            if not sc_closed and sc:
+                sc.close()
+                cli_debug(f"[CONNECTION] Closed smartcard connection for YubiKey {yk_info.serial if yk_info.serial else 'unknown'} in finally block")
         if not piv_yubikey:
             piv_yubikey = yk
             continue

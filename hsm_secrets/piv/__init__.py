@@ -19,7 +19,7 @@ from hsm_secrets.config import HSMOpaqueObject, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
 from hsm_secrets.piv.yubikey_piv import YUBIKEY_DEFAULT_PIN, YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, confirm_and_reset_yubikey_piv_app, set_yubikey_piv_pin_puk_management_key
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_error, cli_info, cli_warn, open_hsm_session, pass_common_args, try_post_cert_to_http_endpoint_as_form
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_debug, cli_error, cli_info, cli_warn, open_hsm_session, pass_common_args, scan_local_yubikeys, try_post_cert_to_http_endpoint_as_form
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
@@ -249,8 +249,23 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
         pin = YUBIKEY_DEFAULT_PIN
         mgt_key_bytes = None
 
+    # Validate HSM credentials exist first, before generating PIV key
+    cli_info("Checking for HSM authentication credentials...")
+    cli_debug(f"[PIV] Pre-validating HSMauth credentials exist before PIV key generation")
+    try:
+        hsm_yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True, require_one_other=False)
+        if not hsm_yubikey:
+            raise click.ClickException("No YubiKey with HSMauth credentials found")
+        cli_debug(f"[PIV] Found HSMauth credentials on YubiKey {getattr(hsm_yubikey, 'serial', 'unknown')}")
+        cli_info("HSM authentication credentials found.")
+    except Exception as e:
+        cli_error(f"HSM authentication validation failed: {e}")
+        cli_error("Cannot proceed with PIV certificate generation without HSM access")
+        exit(1)
+
     tp = yubikit.piv.TOUCH_POLICY.NEVER if no_touch else yubikit.piv.TOUCH_POLICY.CACHED
 
+    # Generate PIV key and CSR (after HSM validation)
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
         pin, mgt_key_bytes = ses.pin, ses.management_key
         csr = generate_yubikey_piv_keypair(
@@ -260,10 +275,15 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
             tp,
             f'CN={user}',
             slot_enum)
-
-        cli_info('')
-        cli_info("Signing the certificate on HSM...")
-        _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
+    
+    cli_debug(f"[PIV] PIV key generation completed, now proceeding to HSM signing")
+    
+    # HSM signing (with no PIV session open to avoid sharing violations)
+    cli_info('')
+    cli_info("Signing the certificate on HSM...")
+    cli_debug(f"[PIV] About to call make_signed_piv_user_cert for certificate signing")
+    _, _, signed_cert = make_signed_piv_user_cert(ctx, user, template, subject, validity, None, csr, ca, os_type, san, multi)
+    cli_debug(f"[PIV] Certificate signing completed successfully")
 
     # Submit the certificate to the configured URL, if set
     if post_url := ctx.conf.general.cert_submit_url:
@@ -273,6 +293,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
             cert_name = f"{user}-piv-{today}.pem"
             try_post_cert_to_http_endpoint_as_form(cert_bytes, cert_name, str(post_url), {})
 
+    cli_debug(f"[PIV] Opening second PIV session to import certificate to YubiKey")
     with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
         import_to_yubikey_piv(ses.piv, signed_cert, private_key=None, touch_policy=tp, slot=slot_enum)
         if not no_reset:
