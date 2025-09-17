@@ -12,7 +12,7 @@ import yubikit.core
 import yubikit.piv
 import ykman.piv, ykman.scripting
 
-from hsm_secrets.utils import cli_code_info, cli_confirm, cli_debug, cli_error, cli_info, cli_ui_msg, cli_warn, prompt_for_secret, scan_local_yubikeys
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_debug, cli_error, cli_info, cli_ui_msg, cli_warn, prompt_for_secret, scan_local_yubikeys
 
 import click
 
@@ -56,12 +56,12 @@ def import_to_yubikey_piv(
             pass  # If firmware doesn't support slot metadata,just skip the check
 
 
-def confirm_and_reset_yubikey_piv_app(piv_yubikey: ykman.scripting.ScriptingDevice|None = None) -> None:
+def confirm_and_reset_yubikey_piv_app(ctx: HsmSecretsCtx, piv_yubikey: ykman.scripting.ScriptingDevice|None = None) -> None:
     """
     Reset a Yubikey PIV slot to its default state.
     """
     if not piv_yubikey:
-        _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True)
+        _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True, hsmauth_yk_serial=ctx.forced_yubikey_serial)
         if not piv_yubikey:
             raise click.ClickException("No YubiKey PIV devices found.")
 
@@ -140,7 +140,7 @@ def generate_yubikey_piv_keypair(
     # Ensure public_key is a supported type for generate_csr
     if not isinstance(public_key, (RSAPublicKey, EllipticCurvePublicKey)):
         raise ValueError(f"Unsupported key type for CSR generation: {type(public_key)}")
-    
+
     hash_algo: type[hashes.SHA384]|type[hashes.SHA256] = hashes.SHA384 if key_type == KEY_TYPE.ECCP384 else hashes.SHA256
     return ykman.piv.generate_csr(piv, slot, public_key, subject, hash_algo)
 
@@ -154,10 +154,11 @@ class YubikeyPivManagementSession:
     """
     Context manager for YubiKey PIV management operations.
     """
-    def __init__(self, management_key: Optional[bytes] = None, pin: Optional[str] = None):
+    def __init__(self, management_key: Optional[bytes] = None, pin: Optional[str] = None, hsm_auth_yk_serial: Optional[str] = None):
         self.management_key = management_key
         self.pin = pin
         self.sc = None
+        self.hsmauth_yk_serial = hsm_auth_yk_serial
 
     def __enter__(self):
         """
@@ -165,7 +166,7 @@ class YubikeyPivManagementSession:
         Returns self to allow access to piv, management_key, and pin.
         """
         cli_debug("[PIV] YubikeyPivManagementSession.__enter__: Starting PIV session")
-        _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True)
+        _, piv_yubikey = scan_local_yubikeys(require_one_hsmauth=False, require_one_other=True, hsmauth_yk_serial=self.hsmauth_yk_serial)
         assert piv_yubikey
         cli_info(f"Device for PIV storage: '{str(piv_yubikey)}'")
 

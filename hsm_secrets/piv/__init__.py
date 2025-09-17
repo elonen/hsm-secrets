@@ -205,7 +205,7 @@ def import_to_yubikey_piv_cmd(ctx: HsmSecretsCtx, cert: click.Path, no_touch: bo
     slot_enum = getattr(yubikit.piv.SLOT, slot)
     mgt_key_bytes = bytes.fromhex(management_key) if management_key else None
 
-    with YubikeyPivManagementSession(mgt_key_bytes) as ses:
+    with YubikeyPivManagementSession(mgt_key_bytes, hsm_auth_yk_serial=ctx.forced_yubikey_serial) as ses:
         tp = yubikit.piv.TOUCH_POLICY.NEVER if no_touch else yubikit.piv.TOUCH_POLICY.CACHED
         import_to_yubikey_piv(ses.piv, certificate, private_key, touch_policy=tp, slot=slot_enum)
 
@@ -245,7 +245,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     pin = None
 
     if not no_reset:
-        confirm_and_reset_yubikey_piv_app()
+        confirm_and_reset_yubikey_piv_app(ctx)
         pin = YUBIKEY_DEFAULT_PIN
         mgt_key_bytes = None
 
@@ -253,7 +253,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     cli_info("Checking for HSM authentication credentials...")
     cli_debug(f"[PIV] Pre-validating HSMauth credentials exist before PIV key generation")
     try:
-        hsm_yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True, require_one_other=False)
+        hsm_yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True, require_one_other=False, hsmauth_yk_serial=ctx.forced_yubikey_serial)
         if not hsm_yubikey:
             raise click.ClickException("No YubiKey with HSMauth credentials found")
         cli_debug(f"[PIV] Found HSMauth credentials on YubiKey {getattr(hsm_yubikey, 'serial', 'unknown')}")
@@ -266,7 +266,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     tp = yubikit.piv.TOUCH_POLICY.NEVER if no_touch else yubikit.piv.TOUCH_POLICY.CACHED
 
     # Generate PIV key and CSR (after HSM validation)
-    with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
+    with YubikeyPivManagementSession(mgt_key_bytes, pin, hsm_auth_yk_serial=ctx.forced_yubikey_serial) as ses:
         pin, mgt_key_bytes = ses.pin, ses.management_key
         csr = generate_yubikey_piv_keypair(
             ses.piv,
@@ -275,9 +275,9 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
             tp,
             f'CN={user}',
             slot_enum)
-    
+
     cli_debug(f"[PIV] PIV key generation completed, now proceeding to HSM signing")
-    
+
     # HSM signing (with no PIV session open to avoid sharing violations)
     cli_info('')
     cli_info("Signing the certificate on HSM...")
@@ -294,7 +294,7 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
             try_post_cert_to_http_endpoint_as_form(cert_bytes, cert_name, str(post_url), {})
 
     cli_debug(f"[PIV] Opening second PIV session to import certificate to YubiKey")
-    with YubikeyPivManagementSession(mgt_key_bytes, pin) as ses:
+    with YubikeyPivManagementSession(mgt_key_bytes, pin, hsm_auth_yk_serial=ctx.forced_yubikey_serial) as ses:
         import_to_yubikey_piv(ses.piv, signed_cert, private_key=None, touch_policy=tp, slot=slot_enum)
         if not no_reset:
             new_pin = str(secrets.randbelow(900000) + 100000)

@@ -4,6 +4,7 @@ import click
 
 from hsm_secrets.codesign import cmd_codesign
 from hsm_secrets.hsm import cmd_hsm
+from hsm_secrets.list_yubikeys import cmd_list_yubikeys
 from hsm_secrets.log import cmd_log
 from hsm_secrets.piv import cmd_piv
 from hsm_secrets.ssh import cmd_ssh
@@ -25,13 +26,14 @@ from click_repl import register_repl    # type: ignore
 @click.option("--debug", required=False, is_flag=True, help="Enable debug logging")
 @click.option("-y", "--yklabel", required=False, help="Yubikey HSM auth key label (default: first slot)")
 @click.option("-s", "--hsmserial", required=False, help="YubiHSM serial number to connect to (default: get master from config)")
+@click.option("-a", "--ykserial", required=False, help="Force Yubikey serial number for HSM auth (default: auto-detect)")
 @click.option("--auth-yubikey", required=False, is_flag=True, help="Use Yubikey HSM auth key for HSM login")
 @click.option("--auth-default-admin", required=False, is_flag=True, help="Use default auth key for HSM login")
 @click.option("--auth-password-id", required=False, type=str, help="Auth key ID (hex) to login with password from env HSM_PASSWORD")
 @click.option("--mock", required=False, type=click.Path(dir_okay=False, file_okay=True, exists=False), help="Use mock HSM for testing, data in give file")
 @click.version_option()
 @click.pass_context
-def cli(ctx: click.Context, config: str|None, quiet: bool, debug: bool, yklabel: str|None, hsmserial: str|None,
+def cli(ctx: click.Context, config: str|None, quiet: bool, debug: bool, yklabel: str|None, hsmserial: str|None, ykserial: str|None,
         auth_default_admin: str|None, auth_yubikey: str|None, auth_password_id: str|None, mock: str|None):
     """Config file driven secret management tool for YubiHSM2 devices.
 
@@ -80,6 +82,7 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, debug: bool, yklabel:
         'quiet': quiet,
         'hsmserial': hsmserial or conf.general.master_device,
         'forced_auth_method': None,
+        'forced_yubikey_serial': ykserial,
         'auth_password_id': conf.find_def(auth_password_id, HSMAuthKey).id if auth_password_id else None,
         'auth_password': os.getenv("HSM_PASSWORD", None),
         'mock_file': mock,
@@ -107,12 +110,14 @@ def cli(ctx: click.Context, config: str|None, quiet: bool, debug: bool, yklabel:
 def cmd_nop(ctx: HsmSecretsCtx):
     cli_info("No errors. Exiting.")
 
+
 cli.add_command(cmd_ssh,  "ssh")
 cli.add_command(cmd_tls,  "tls")
 cli.add_command(cmd_pass, "pass")
 cli.add_command(cmd_hsm,  "hsm")
 cli.add_command(cmd_log,  "log")
 cli.add_command(cmd_nop,  "nop")
+cli.add_command(cmd_list_yubikeys, "list-yubikeys")
 cli.add_command(cmd_piv, "piv")
 cli.add_command(cmd_x509, "x509")
 cli.add_command(cmd_user, "user")

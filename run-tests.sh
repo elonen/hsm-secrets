@@ -6,7 +6,7 @@ TEMPDIR=$(mktemp -d /tmp/hsm-secret-test.XXXXXX)
 
 # Start mock server for certificate uploads and CRL requests
 echo "Starting mock server..."
-python3 test-mock-server.py 8693 &
+_venv/bin/python test-mock-server.py 8693 &
 MOCK_SERVER_PID=$!
 trap "kill $MOCK_SERVER_PID 2>/dev/null || true; rm -rf $TEMPDIR" EXIT
 

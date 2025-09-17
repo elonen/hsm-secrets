@@ -29,7 +29,7 @@ def change_yubikey_mgt(ctx: HsmSecretsCtx):
     This can also be done with the `yubihsm-auth -a change-mgmkey -k <oldkey>` command.
     It's included here for convenience.
     """
-    yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True)
+    yubikey, _ = scan_local_yubikeys(require_one_hsmauth=True, hsmauth_yk_serial=ctx.forced_yubikey_serial)
     assert yubikey
     auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
     _, old_mgt_key_bin = _ask_yubikey_hsm_mgt_key("Enter the old Management Key", default=True)

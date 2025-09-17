@@ -73,6 +73,7 @@ def pass_common_args(f):
             yubikey_label = click_ctx.obj.get('yubikey_label'),
             quiet=click_ctx.obj.get('quiet', False),
             forced_auth_method = click_ctx.obj.get('forced_auth_method'),
+            forced_yubikey_serial = click_ctx.obj.get('forced_yubikey_serial'),
             auth_password = click_ctx.obj.get('auth_password'),
             auth_password_id = click_ctx.obj.get('auth_password_id'),
             mock_file = click_ctx.obj.get('mock_file'))
@@ -285,11 +286,11 @@ def connect_hsm_and_auth_with_yubikey(config: hscfg.HSMConfig, yubikey_slot_labe
 
         session = symmetric_auth.authenticate(*session_keys)
         cli_info("")
-        
+
         # Close the smartcard connection for HSMauth YubiKey to prevent sharing violations
         sc_hsm.close()
         cli_debug(f"[HSM] Closed smartcard connection for HSMauth YubiKey {getattr(yubikey, 'serial', 'unknown')}")
-        
+
         return session
 
     except yubikit.core.InvalidPinError as e:
@@ -321,7 +322,7 @@ def scan_local_yubikeys(require_one_hsmauth = True, require_one_other = False, h
         yk = ykman.scripting.ScriptingDevice(yk_dev, yk_info)
         if hsmauth_yk_serial and str(yk_info.serial) != str(hsmauth_yk_serial):
             raise click.ClickException(f"ERROR: YubiKey with serial {hsmauth_yk_serial} not found.")
-        
+
         # Check if this single YubiKey has HSMauth credentials if required
         if require_one_hsmauth:
             sc = yk.smart_card()
@@ -339,7 +340,7 @@ def scan_local_yubikeys(require_one_hsmauth = True, require_one_other = False, h
                 if not sc_closed and sc:
                     sc.close()
                     cli_debug(f"[CONNECTION] Closed smartcard connection for single YubiKey {yk_info.serial if yk_info.serial else 'unknown'}")
-        
+
         return yk, yk
     elif n_devices == 2 and hsmauth_yk_serial:
         # Two YubiKeys, but one is forced for HSM auth
