@@ -144,6 +144,396 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     cli_info("")
     cli_code_info(f"To view certificate, use:\n`openssl crl2pkcs7 -nocrl -certfile {cer_file} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
+# ----- CSR from TLS -----
+
+@cmd_tls.command('recreate-from-tls')
+@pass_common_args
+@click.argument('url', type=str, required=True, metavar='<https://host:port or tls://host:port>')
+@click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output CSR filename (default: <hostname>.csr.pem)")
+@click.option('--keyfmt', '-f', type=click.Choice(['rsa2048', 'rsa3072', 'rsa4096', 'ed25519', 'ecp256', 'ecp384']), default='ecp384', help="Key format for new CSR")
+@click.option('--validity', '-v', default=365, help="Validity period in days for signing command")
+def recreate_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, keyfmt: str, validity: int):
+    """Recreate a certificate by extracting fields from a TLS server
+
+    TYPICAL USAGE:
+
+        $ hsm-secrets tls recreate-from-tls https://example.com -o example.com.csr.pem
+
+    Connects to a TLS server, extracts the certificate fields (CN, SANs, etc.),
+    generates a NEW private key and CSR with the same fields, and prints out
+    signing instructions. This creates a completely new certificate with a
+    new private key.
+
+    The URL can be either https://host:port or tls://host:port format.
+    If port is not specified, defaults to 443.
+    """
+    import ssl
+    import socket
+    from urllib.parse import urlparse
+
+    # Parse the URL
+    if url.startswith('tls://'):
+        url = url.replace('tls://', 'https://', 1)
+
+    if not url.startswith('https://'):
+        url = 'https://' + url
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or 443
+
+    if not host:
+        raise click.ClickException("Invalid URL: could not extract hostname")
+
+    cli_info(f"Connecting to {host}:{port} to retrieve certificate...")
+
+    # Connect to the server and get certificate
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as ssock:
+                peer_cert_der = ssock.getpeercert(binary_form=True)  # Get the leaf certificate in DER format
+                server_cert = x509.load_der_x509_certificate(peer_cert_der)
+    except Exception as e:
+        raise click.ClickException(f"Failed to connect to {host}:{port}: {e}")
+
+    cli_info(f"Retrieved certificate for: {server_cert.subject.rfc4514_string()}")
+
+    # Extract certificate fields
+    cn = None
+    san_dns = []
+    san_ip = []
+
+    # Get CN from subject
+    for attr in server_cert.subject:
+        if attr.oid == x509_oid.NameOID.COMMON_NAME:
+            cn = attr.value
+            break
+
+    # Get SANs
+    try:
+        san_ext = server_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        for san in san_ext.value:
+            if isinstance(san, x509.DNSName):
+                san_dns.append(san.value)
+            elif isinstance(san, x509.IPAddress):
+                san_ip.append(str(san.value))
+    except x509.ExtensionNotFound:
+        pass
+
+    if not cn and not san_dns:
+        raise click.ClickException("Certificate has no Common Name or DNS Subject Alternative Names")
+
+    # Determine output filename
+    out_path = Path(out) if out else Path(f"{host}.csr.pem")
+    key_path = out_path.with_suffix('.key.pem')
+
+    # Check for existing files
+    existing_files = [file for file in [out_path, key_path] if file.exists()]
+    if existing_files:
+        file_names = ", ".join(click.style(str(file), fg='cyan') for file in existing_files)
+        cli_confirm(f"Files {file_names} already exist. Overwrite?", abort=True)
+
+    # Generate new private key
+    priv_key: PrivateKeyOrAdapter
+    if keyfmt == 'rsa4096':
+        priv_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    elif keyfmt == 'rsa3072':
+        priv_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    elif keyfmt == 'rsa2048':
+        priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    elif keyfmt == 'ed25519':
+        priv_key = ed25519.Ed25519PrivateKey.generate()
+    elif keyfmt == 'ecp256':
+        priv_key = ec.generate_private_key(ec.SECP256R1())
+    elif keyfmt == 'ecp384':
+        priv_key = ec.generate_private_key(ec.SECP384R1())
+    else:
+        raise click.ClickException(f"Unsupported key format: {keyfmt}")
+
+    # Build certificate info for CSR
+    info = X509CertInfo()
+    info.attribs = X509CertInfo.CertAttribs(common_name=cn or san_dns[0])
+
+    # Set key usage for TLS server cert
+    ku: set[X509KeyUsageName] = set(['digitalSignature', 'keyEncipherment', 'keyAgreement'])
+    info.key_usage = X509CertInfo.KeyUsage(usages=ku, critical=True)
+    info.extended_key_usage = X509CertInfo.ExtendedKeyUsage(usages=set(['serverAuth']), critical=False)
+
+    # Add all DNS names to SANs (including CN if not already present)
+    all_dns = list(san_dns)
+    if cn and cn not in all_dns:
+        all_dns.insert(0, cn)
+
+    if all_dns or san_ip:
+        info.subject_alt_name = X509CertInfo.SubjectAltName(names={'dns': all_dns, 'ip': san_ip}, critical=False)
+
+    # Merge with defaults and generate CSR
+    merged_info = merge_x509_info_with_defaults(info, ctx.conf)
+    merged_info.basic_constraints = X509CertInfo.BasicConstraints(ca=False, path_len=None, critical=False)
+
+    builder = X509CertBuilder(ctx.conf, merged_info, priv_key)
+    csr = builder.generate_csr()
+
+    # Write key and CSR files
+    key_pem = priv_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    csr_pem = csr.public_bytes(encoding=serialization.Encoding.PEM)
+
+    key_path.write_bytes(key_pem)
+    out_path.write_bytes(csr_pem)
+
+    cli_info(f"Private key written to: {key_path}")
+    cli_info(f"CSR written to: {out_path}")
+
+    # Show certificate details
+    cli_info("")
+    cli_info("Certificate details extracted:")
+    if cn:
+        cli_info(f"  Common Name: {cn}")
+    if san_dns:
+        cli_info(f"  DNS SANs: {', '.join(san_dns)}")
+    if san_ip:
+        cli_info(f"  IP SANs: {', '.join(san_ip)}")
+
+    cli_info("")
+    cli_code_info(f"To view the CSR details, use:\n`openssl req -in {out_path} -text -noout`")
+
+    # Generate tls sign command
+    sign_cmd_parts = ['hsm-secrets', 'tls', 'sign', str(out_path)]
+    sign_cmd_parts.extend(['--validity', str(validity)])
+    sign_cmd_parts.extend(['--out', str(out_path.with_suffix('.cer.pem'))])
+
+    sign_cmd = ' '.join(sign_cmd_parts)
+
+    cli_info("")
+    cli_code_info(f"To sign this CSR with your CA, run:\n`{sign_cmd}`")
+    cli_info("")
+    cli_info("⚠️  Remember to install BOTH the new certificate AND the new private key:")
+    cli_info(f"   Certificate: {out_path.with_suffix('.cer.pem')}")
+    cli_info(f"   Private key: {key_path}")
+
+# ----- Resign from TLS -----
+
+@cmd_tls.command('resign-from-tls')
+@pass_common_args
+@click.argument('url', type=str, required=True, metavar='<https://host:port or tls://host:port>')
+@click.option('--out', '-o', required=False, type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output certificate filename (default: <hostname>.cer.pem)")
+@click.option('--validity', '-v', default=365, help="Validity period in days")
+def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
+    """Create a signed certificate by extracting everything from a TLS server
+
+    TYPICAL USAGE:
+
+        $ hsm-secrets tls resign-from-tls https://example.com -o new.cer.pem
+
+    Connects to a TLS server, extracts BOTH the public key and certificate fields
+    (CN, SANs, etc.), and creates a signed certificate directly with your HSM CA.
+    This reuses the server's existing public key but signs it with your CA.
+
+    The URL can be either https://host:port or tls://host:port format.
+    If port is not specified, defaults to 443.
+
+    NOTE: This reuses the server's existing public key - perfect for re-signing
+    an existing certificate with your own CA without needing private key access.
+    """
+    import ssl
+    import socket
+    import ipaddress
+    from urllib.parse import urlparse
+
+    # Parse the URL
+    if url.startswith('tls://'):
+        url = url.replace('tls://', 'https://', 1)
+
+    if not url.startswith('https://'):
+        url = 'https://' + url
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or 443
+
+    if not host:
+        raise click.ClickException("Invalid URL: could not extract hostname")
+
+    cli_info(f"Connecting to {host}:{port} to retrieve certificate and public key...")
+
+    # Connect to the server and get certificate
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as ssock:
+                peer_cert_der = ssock.getpeercert(binary_form=True)
+                server_cert = x509.load_der_x509_certificate(peer_cert_der)
+    except Exception as e:
+        raise click.ClickException(f"Failed to connect to {host}:{port}: {e}")
+
+    cli_info(f"Retrieved certificate from: {server_cert.subject.rfc4514_string()}")
+
+    # Extract the public key from the server's certificate
+    server_public_key = server_cert.public_key()
+    cli_info(f"Extracted public key: {type(server_public_key).__name__}")
+
+    # Extract certificate fields from server
+    cn = None
+    san_dns = []
+    san_ip = []
+
+    # Get CN from server cert subject
+    for attr in server_cert.subject:
+        if attr.oid == x509_oid.NameOID.COMMON_NAME:
+            cn = attr.value
+            break
+
+    # Get SANs from server cert
+    try:
+        san_ext = server_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        for san in san_ext.value:
+            if isinstance(san, x509.DNSName):
+                san_dns.append(san.value)
+            elif isinstance(san, x509.IPAddress):
+                san_ip.append(str(san.value))
+    except x509.ExtensionNotFound:
+        pass
+
+    if not cn and not san_dns:
+        raise click.ClickException("Server certificate has no Common Name or DNS Subject Alternative Names")
+
+    # Determine output filename
+    out_path = Path(out) if out else Path(f"{host}.cer.pem")
+
+    # Check for existing files
+    if out_path.exists():
+        cli_confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True)
+
+    # Build certificate info using server's certificate fields exactly
+    info = X509CertInfo()
+
+    # Use server's original subject (preserving all fields)
+    info.attribs = X509CertInfo.CertAttribs(common_name=cn or san_dns[0])
+    # Copy additional subject attributes from server certificate
+    for attr in server_cert.subject:
+        if attr.oid == x509_oid.NameOID.ORGANIZATION_NAME:
+            info.attribs.organization = attr.value
+        elif attr.oid == x509_oid.NameOID.LOCALITY_NAME:
+            info.attribs.locality = attr.value
+        elif attr.oid == x509_oid.NameOID.STATE_OR_PROVINCE_NAME:
+            info.attribs.state = attr.value
+        elif attr.oid == x509_oid.NameOID.COUNTRY_NAME:
+            info.attribs.country = attr.value
+
+    # Set key usage for TLS server cert
+    ku: set[X509KeyUsageName] = set(['digitalSignature', 'keyEncipherment', 'keyAgreement'])
+    info.key_usage = X509CertInfo.KeyUsage(usages=ku, critical=True)
+    info.extended_key_usage = X509CertInfo.ExtendedKeyUsage(usages=set(['serverAuth']), critical=False)
+    info.validity_days = validity
+
+    # Use server's exact SANs
+    if san_dns or san_ip:
+        info.subject_alt_name = X509CertInfo.SubjectAltName(names={'dns': san_dns, 'ip': san_ip}, critical=False)
+
+    # Build certificate directly using server's public key
+    info.basic_constraints = X509CertInfo.BasicConstraints(ca=False, path_len=None, critical=False)
+
+    # Find default CA
+    ca_cert_id = ctx.conf.tls.default_ca_id
+    ca_def = find_ca_def(ctx.conf, ca_cert_id)
+    if not ca_def:
+        raise click.ClickException(f"Default CA '{ca_cert_id}' not found in config")
+
+    # Sign with HSM-backed CA using server's public key directly
+    with open_hsm_session(ctx) as ses:
+        issuer_cert, issuer_key = get_issuer_cert_and_key(ctx, ses, ca_cert_id)
+
+        # Build certificate directly using cryptography library
+        from datetime import datetime, timedelta, timezone
+        builder = x509.CertificateBuilder()
+        builder = builder.subject_name(server_cert.subject)  # Use server's exact subject
+        builder = builder.issuer_name(issuer_cert.subject)
+        builder = builder.public_key(server_public_key)  # Use server's exact public key
+        builder = builder.serial_number(x509.random_serial_number())
+        now = datetime.now(timezone.utc)
+        builder = builder.not_valid_before(now)
+        builder = builder.not_valid_after(now + timedelta(days=validity))
+
+        # Add Subject Alternative Names from server
+        if san_dns or san_ip:
+            san_names = []
+            for dns_name in san_dns:
+                san_names.append(x509.DNSName(dns_name))
+            for ip_addr in san_ip:
+                try:
+                    san_names.append(x509.IPAddress(ipaddress.ip_address(ip_addr)))
+                except ValueError:
+                    san_names.append(x509.IPAddress(ipaddress.ip_network(ip_addr, strict=False)))
+            builder = builder.add_extension(x509.SubjectAlternativeName(san_names), critical=False)
+
+        # Add standard TLS server certificate extensions
+        builder = builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        builder = builder.add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=True,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False
+            ), critical=True)
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage([x509_oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+
+        # Add Subject Key Identifier and Authority Key Identifier
+        builder = builder.add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(server_public_key), critical=False)
+        builder = builder.add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_cert.public_key()), critical=False)
+
+        # Add CRL distribution points if configured
+        if ca_def.crl_distribution_points:
+            dps = [x509.DistributionPoint(
+                full_name=[x509.UniformResourceIdentifier(url)],
+                relative_name=None,
+                reasons=None,
+                crl_issuer=None
+            ) for url in ca_def.crl_distribution_points]
+            builder = builder.add_extension(x509.CRLDistributionPoints(dps), critical=False)
+
+        # Sign the certificate
+        from hsm_secrets.x509.cert_builder import sign_hash_algo_for_key
+        signed_cert = builder.sign(issuer_key, sign_hash_algo_for_key(issuer_key))
+
+    TLSServerCertificateChecker(signed_cert).check_and_show_issues()
+
+    # Save the signed certificate
+    out_path.write_bytes(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
+
+    cli_info(f"Signed certificate saved to: {out_path}")
+
+    # Show certificate details
+    cli_info("")
+    cli_info("Server certificate details copied:")
+    cli_info(f"  Subject: {server_cert.subject.rfc4514_string()}")
+    if san_dns:
+        cli_info(f"  DNS SANs: {', '.join(san_dns)}")
+    if san_ip:
+        cli_info(f"  IP SANs: {', '.join(san_ip)}")
+    cli_info(f"  Public key: {type(server_public_key).__name__}")
+
+    cli_info("")
+    cli_code_info(f"To view the certificate details, use:\n`openssl x509 -in {out_path} -text -noout`")
+    cli_info("")
+    cli_info("✅ Certificate ready - contains server's exact public key and subject")
+
 # ----- Sign CSR -----
 
 @cmd_tls.command('sign')

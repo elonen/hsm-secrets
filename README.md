@@ -130,6 +130,18 @@ openssl crl2pkcs7 -nocrl -certfile ./certs/wiki-server.cer.pem | openssl  pkcs7 
 In this example, the HTTPS server key was generated and written on local disk, for convenience.
 For added separation of concerns, it could also have been created on the web server by a webmaster (perhaps with openssl), and the HSM operator would only have signed the CSR (Certificate Signing Request) with `hsm-secrets tls sign wiki-server.csr.pem`.
 
+**Example 3: Migrate existing certificates to HSM CA**
+
+```
+# Extract certificate fields from live server, create new CSR with fresh keys
+$ hsm-secrets tls recreate-from-tls https://oldserver.com -o newserver.csr.pem
+
+# Or re-sign existing server's certificate directly (preserves original keys)
+$ hsm-secrets tls resign-from-tls https://oldserver.com -o newserver.cer.pem
+```
+
+These commands extract certificate details (CN, SANs, etc.) from live TLS servers for easy certificate refreshes and/or migration from external CAs like Let's Encrypt to your HSM-backed CA.
+
 ## Development
 
 **Work in progress**, but usable and useful.

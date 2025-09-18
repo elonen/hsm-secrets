@@ -565,6 +565,124 @@ test_logging_commands() {
     echo "All logging tests passed"
 }
 
+test_tls_recreate_from_tls() {
+    setup
+
+    # Test against google.com, a well-known, stable HTTPS service
+    local output=$(run_cmd tls recreate-from-tls https://google.com --out $TEMPDIR/google-csr.pem --keyfmt ecp384)
+    assert_success
+    echo "$output"
+
+    # Verify output contains expected information
+    assert_grep "Connecting to google.com:443" "$output"
+    assert_grep "Retrieved certificate for:" "$output"
+    assert_grep "Private key written to:" "$output"
+    assert_grep "CSR written to:" "$output"
+    assert_grep "To sign this CSR with your CA, run:" "$output"
+    assert_grep "hsm-secrets tls sign" "$output"
+    assert_grep "Certificate details extracted:" "$output"
+
+    # Verify files were created
+    [ -f $TEMPDIR/google-csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
+    [ -f $TEMPDIR/google-csr.key.pem ] || { echo "ERROR: Key not saved"; return 1; }
+
+    # Verify CSR content using OpenSSL
+    local csr_output=$(openssl req -in $TEMPDIR/google-csr.pem -text -noout)
+    assert_success
+    echo "$csr_output"
+    assert_grep "Subject.*google" "$csr_output"  # Should contain google in CN or subject
+    assert_grep "Subject Alternative Name" "$csr_output"  # Should have SANs
+    assert_grep "TLS Web Server Authentication" "$csr_output"  # Should have server auth EKU
+    assert_grep "Digital Signature" "$csr_output"  # Should have correct key usage
+    assert_grep "secp384r1" "$csr_output"  # Should use requested key format
+
+    # Test tls:// URL scheme
+    local output2=$(run_cmd tls recreate-from-tls tls://google.com:443 --out $TEMPDIR/google-tls-scheme.csr.pem)
+    assert_success
+    echo "$output2"
+    assert_grep "Connecting to google.com:443" "$output2"
+
+    # Test that both methods produce similar results (same CN at minimum)
+    local csr1_subject=$(openssl req -in $TEMPDIR/google-csr.pem -subject -noout)
+    local csr2_subject=$(openssl req -in $TEMPDIR/google-tls-scheme.csr.pem -subject -noout)
+    # Both should have the same subject (though different keys)
+    [ "$csr1_subject" = "$csr2_subject" ] || { echo "ERROR: tls:// and https:// schemes produced different subjects"; return 1; }
+
+    # Test signing the generated CSR works
+    local sign_output=$(run_cmd tls sign $TEMPDIR/google-csr.pem --out $TEMPDIR/google-signed.cer.pem)
+    assert_success
+    echo "$sign_output"
+    assert_grep "Signed certificate saved" "$sign_output"
+
+    # Verify signed certificate
+    local cert_output=$(openssl x509 -in $TEMPDIR/google-signed.cer.pem -text -noout)
+    assert_success
+    assert_grep "Subject.*google" "$cert_output"
+    assert_grep "TLS Web Server Authentication" "$cert_output"
+    assert_grep "CA:FALSE" "$cert_output"
+}
+
+test_tls_resign_from_tls() {
+    setup
+
+    # Test resign-from-tls with Google's server
+    local output=$(run_cmd tls resign-from-tls https://google.com --out $TEMPDIR/google-resigned.cer.pem)
+    assert_success
+    echo "$output"
+
+    # Verify output contains expected information
+    assert_grep "Connecting to google.com:443" "$output"
+    assert_grep "Retrieved certificate from:" "$output"
+    assert_grep "Extracted public key:" "$output"
+    assert_grep "Signed certificate saved" "$output"
+    assert_grep "Server certificate details copied:" "$output"
+    assert_grep "Certificate ready - contains server's exact public key and subject" "$output"
+
+    # Verify certificate file was created
+    [ -f $TEMPDIR/google-resigned.cer.pem ] || { echo "ERROR: Resigned certificate not created"; return 1; }
+
+    # Extract public key from original Google server
+    openssl s_client -connect google.com:443 -servername google.com </dev/null 2>/dev/null | openssl x509 -pubkey -noout > $TEMPDIR/original-google-pubkey.pem
+    assert_success
+
+    # Extract public key from our HSM-signed certificate
+    openssl x509 -in $TEMPDIR/google-resigned.cer.pem -pubkey -noout > $TEMPDIR/resigned-google-pubkey.pem
+    assert_success
+
+    # Verify public keys are identical
+    diff $TEMPDIR/original-google-pubkey.pem $TEMPDIR/resigned-google-pubkey.pem
+    assert_success
+    echo "✅ Public keys match between original and resigned certificates"
+
+    # Verify subject is preserved
+    local original_subject=$(openssl s_client -connect google.com:443 -servername google.com </dev/null 2>/dev/null | openssl x509 -subject -noout)
+    assert_success
+    local resigned_subject=$(openssl x509 -in $TEMPDIR/google-resigned.cer.pem -subject -noout)
+    assert_success
+
+    [ "$original_subject" = "$resigned_subject" ] || { echo "ERROR: Subject changed from '$original_subject' to '$resigned_subject'"; return 1; }
+    echo "✅ Subject preserved exactly"
+
+    # Verify issuer changed (should be HSM CA, not Google's original issuer)
+    local original_issuer=$(openssl s_client -connect google.com:443 -servername google.com </dev/null 2>/dev/null | openssl x509 -issuer -noout)
+    assert_success
+    local resigned_issuer=$(openssl x509 -in $TEMPDIR/google-resigned.cer.pem -issuer -noout)
+    assert_success
+
+    [ "$original_issuer" != "$resigned_issuer" ] || { echo "ERROR: Issuer should have changed but didn't"; return 1; }
+    assert_grep "Example TLS Intermediate" "$resigned_issuer"
+    echo "✅ Issuer correctly changed to HSM CA"
+
+    # Verify certificate works for TLS server
+    local cert_details=$(openssl x509 -in $TEMPDIR/google-resigned.cer.pem -text -noout)
+    assert_success
+    assert_grep "Subject.*google" "$cert_details"
+    assert_grep "TLS Web Server Authentication" "$cert_details"
+    assert_grep "CA:FALSE" "$cert_details"
+    assert_grep "Subject Alternative Name" "$cert_details"
+    assert_grep "DNS:.*google" "$cert_details"
+}
+
 # ------------------------------------------------------
 
 function run_test_quiet() {
@@ -606,6 +724,8 @@ run_test test_fresh_device
 run_test test_create_all
 run_test test_tls_certificates
 run_test test_tls_sign_command
+run_test test_tls_recreate_from_tls
+run_test test_tls_resign_from_tls
 run_test test_crl_commands
 run_test test_password_derivation
 run_test test_wrapped_backup
