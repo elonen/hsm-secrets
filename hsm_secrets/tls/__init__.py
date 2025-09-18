@@ -17,7 +17,7 @@ import yubihsm.objects  # type: ignore [import]
 
 from hsm_secrets.config import HSMKeyID, HSMOpaqueObject, X509CertInfo, X509KeyUsageName
 from hsm_secrets.key_adapters import PrivateKeyOrAdapter
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_info, cli_warn, open_hsm_session, pass_common_args
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_info, cli_warn, open_hsm_session, pass_common_args, try_post_cert_to_http_endpoint_as_form
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder, get_issuer_cert_and_key
 from hsm_secrets.x509.cert_checker import BaseCertificateChecker, IssueSeverity
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
@@ -136,6 +136,9 @@ def server_cert(ctx: HsmSecretsCtx, out: click.Path, common_name: str, san_dns: 
     cli_info(f"Key written to: {key_file}")
     cli_info(f"CSR written to: {csr_file}")
     cli_info(f"Cert written to: {cer_file}")
+
+    # Submit the certificate to the configured URL, if set (only after successful write)
+    _submit_tls_cert_if_configured(ctx, signed_cert, f"{common_name}-server")
 
     if issuer_cert and chain_pem:
         chain_file.write_bytes(chain_pem)
@@ -519,6 +522,9 @@ def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
 
     cli_info(f"Signed certificate saved to: {out_path}")
 
+    # Submit the certificate to the configured URL, if set (only after successful write)
+    _submit_tls_cert_if_configured(ctx, signed_cert, f"{host}-resign")
+
     # Show certificate details
     cli_info("")
     cli_info("Server certificate details copied:")
@@ -593,11 +599,24 @@ def sign_csr(ctx: HsmSecretsCtx, csr: click.Path, out: click.Path|None, ca: str|
     out_path.write_bytes(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
 
     cli_info(f"Signed certificate saved to: {out_path}")
+
+    # Submit the certificate to the configured URL, if set (only after successful write)
+    csr_path = Path(str(csr))
+    _submit_tls_cert_if_configured(ctx, signed_cert, f"{csr_path.stem}-signed")
     cli_code_info(f"To view certificate details, use:\n`openssl crl2pkcs7 -nocrl -certfile {out_path} | openssl  pkcs7 -print_certs | openssl x509 -text -noout`")
 
 
 # ----- Helpers -----
 from cryptography.x509.oid import ExtendedKeyUsageOID
+
+def _submit_tls_cert_if_configured(ctx: HsmSecretsCtx, signed_cert: x509.Certificate, cert_name_prefix: str):
+    """Submit TLS certificate to configured monitoring URL if set"""
+    if post_url := ctx.conf.general.cert_submit_url:
+        cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+        cert_name = f"{cert_name_prefix}-{today}.cer.pem"
+        try_post_cert_to_http_endpoint_as_form(cert_bytes, cert_name, str(post_url), {})
 
 class TLSServerCertificateChecker(BaseCertificateChecker):
     def _check_specific_key_usage(self, key_usage: x509.KeyUsage):
