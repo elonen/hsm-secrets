@@ -97,6 +97,13 @@ test_pytest() {
     $CURDIR/_venv/bin/pytest --cov=hsm_secrets --cov-append --cov-report='' -v hsm_secrets
 }
 
+test_mypy() {
+    echo "Running MyPy type checks..."
+    $CURDIR/_venv/bin/pip install mypy
+    $CURDIR/_venv/bin/mypy hsm_secrets --ignore-missing-imports
+    assert_success
+}
+
 test_fresh_device() {
     local count=$(run_cmd -q hsm objects list | grep -c '^0x')
     [ "$count" -eq 1 ] || { echo "Expected 1 object, but found $count"; return 1; }
@@ -719,6 +726,7 @@ rm -f .coverage .coverage.*
 echo "Running tests:"
 
 run_test test_pytest
+run_test test_mypy
 run_test test_attest
 run_test test_fresh_device
 run_test test_create_all

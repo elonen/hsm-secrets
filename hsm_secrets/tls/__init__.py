@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import cast
 import click
 
-from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec, ed448
+from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, ec, ed448, dsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hashes
 from cryptography import x509
@@ -198,6 +198,8 @@ def recreate_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, keyfmt: str, 
         with socket.create_connection((host, port), timeout=10) as sock:
             with context.wrap_socket(sock, server_hostname=host) as ssock:
                 peer_cert_der = ssock.getpeercert(binary_form=True)  # Get the leaf certificate in DER format
+                if peer_cert_der is None:
+                    raise click.ClickException(f"Could not retrieve certificate from {host}:{port}")
                 server_cert = x509.load_der_x509_certificate(peer_cert_der)
     except Exception as e:
         raise click.ClickException(f"Failed to connect to {host}:{port}: {e}")
@@ -374,6 +376,8 @@ def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
         with socket.create_connection((host, port), timeout=10) as sock:
             with context.wrap_socket(sock, server_hostname=host) as ssock:
                 peer_cert_der = ssock.getpeercert(binary_form=True)
+                if peer_cert_der is None:
+                    raise click.ClickException(f"Could not retrieve certificate from {host}:{port}")
                 server_cert = x509.load_der_x509_certificate(peer_cert_der)
     except Exception as e:
         raise click.ClickException(f"Failed to connect to {host}:{port}: {e}")
@@ -468,7 +472,7 @@ def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
 
         # Add Subject Alternative Names from server
         if san_dns or san_ip:
-            san_names = []
+            san_names: list[x509.GeneralName] = []
             for dns_name in san_dns:
                 san_names.append(x509.DNSName(dns_name))
             for ip_addr in san_ip:
@@ -498,8 +502,9 @@ def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
         # Add Subject Key Identifier and Authority Key Identifier
         builder = builder.add_extension(
             x509.SubjectKeyIdentifier.from_public_key(server_public_key), critical=False)
+        issuer_pubkey = cast('rsa.RSAPublicKey | ec.EllipticCurvePublicKey | ed25519.Ed25519PublicKey | ed448.Ed448PublicKey | dsa.DSAPublicKey', issuer_cert.public_key())
         builder = builder.add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_cert.public_key()), critical=False)
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_pubkey), critical=False)
 
         # Add CRL distribution points if configured
         if ca_def.crl_distribution_points:
