@@ -64,6 +64,40 @@ assert_not_grep() {
     fi
 }
 
+# Helper functions for certificate monitoring tests
+reset_mock_uploads() {
+    # Clear any previously uploaded certificates from mock monitoring server
+    curl -s -X POST http://localhost:8693/api/reset >/dev/null 2>&1 || true
+}
+
+get_upload_count() {
+    curl -s http://localhost:8693/api/uploads 2>/dev/null | grep -o '"count":[0-9]*' | cut -d: -f2 2>/dev/null || echo "0"
+}
+
+assert_upload_count() {
+    local expected=$1
+    local actual=$(get_upload_count)
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: Expected $expected uploads, got $actual"
+        curl -s http://localhost:8693/api/uploads 2>/dev/null || true
+        return 1
+    fi
+}
+
+assert_no_uploads() {
+    assert_upload_count 0
+}
+
+assert_has_upload_matching() {
+    local pattern=$1
+    local uploads=$(curl -s http://localhost:8693/api/uploads 2>/dev/null)
+    if ! echo "$uploads" | grep -q "$pattern"; then
+        echo "ERROR: No upload matching pattern '$pattern'"
+        echo "Actual uploads: $uploads"
+        return 1
+    fi
+}
+
 setup() {
     local output=$(run_cmd -q hsm objects create-missing)
     assert_success
@@ -167,6 +201,8 @@ test_attest() {
 
 test_tls_certificates() {
     setup
+    reset_mock_uploads
+
     run_cmd -q x509 cert get --all | openssl x509 -text -noout
     assert_success
 
@@ -202,6 +238,10 @@ test_tls_certificates() {
         [ -f $TEMPDIR/www-example-com_$KEYTYPE.csr.pem ] || { echo "ERROR: CSR not saved"; return 1; }
         [ -f $TEMPDIR/www-example-com_$KEYTYPE.chain.pem ] || { echo "ERROR: Chain bundle not saved"; return 1; }
     done
+
+    # Verify that all 4 TLS certificates were uploaded for monitoring
+    assert_upload_count 4
+    assert_has_upload_matching "www.example.com-tls-server-.*\.cer\.pem"
 }
 
 test_tls_sign_command() {
@@ -409,6 +449,8 @@ test_wrapped_backup() {
 
 test_ssh_user_certificates() {
     setup
+    reset_mock_uploads
+
     run_cmd ssh get-ca --all | ssh-keygen -l -f /dev/stdin
     assert_success
 
@@ -433,10 +475,15 @@ test_ssh_user_certificates() {
     assert_grep "^[[:space:]]*users$" "$output"
     assert_grep "^[[:space:]]*admins$" "$output"
     assert_grep 'Key ID: "test.user-[0-9]*-users+admins"' "$output"
+
+    # Verify that all 3 SSH certificates were uploaded for monitoring
+    assert_upload_count 3
+    assert_has_upload_matching "test\.user-.*-ssh-user-.*\.pub"
 }
 
 test_ssh_host_certificates() {
     setup
+    reset_mock_uploads
 
     # Generate a test host key
     ssh-keygen -t ed25519 -f $TEMPDIR/test_host_key -N '' -C 'test_host'
@@ -456,6 +503,10 @@ test_ssh_host_certificates() {
     assert_grep "^[[:space:]]*wiki.*$" "$output"
     assert_grep "^[[:space:]]*10.0.0.*$" "$output"
     assert_grep 'Key ID.*host-wiki.example.com-.*' "$output"
+
+    # Verify that the SSH host certificate was uploaded for monitoring
+    assert_upload_count 1
+    assert_has_upload_matching "host-wiki.example.com-.*-ssh-host-.*\.pub"
 
 }
 
@@ -690,6 +741,50 @@ test_tls_resign_from_tls() {
     assert_grep "DNS:.*google" "$cert_details"
 }
 
+test_certificate_monitoring() {
+    setup
+    reset_mock_uploads
+
+    # TLS certificate
+    run_cmd tls server-cert --out $TEMPDIR/tls-test.pem --common-name tls.example.com --keyfmt ecp384
+    assert_success
+
+    # SSH user certificate
+    ssh-keygen -t ed25519 -f $TEMPDIR/ssh-test -N '' -C 'test'
+    run_cmd ssh sign-user -u test.user -p users $TEMPDIR/ssh-test.pub
+    assert_success
+
+    # PIV certificate
+    run_cmd piv user-cert -u piv.user@example.com --os-type windows --key-type ecp384 --out $TEMPDIR/piv-test
+    assert_success
+
+    # Verify all uploads occurred
+    assert_upload_count 3
+    assert_has_upload_matching "tls.example.com-tls-server-.*\.cer\.pem"
+    assert_has_upload_matching "test\.user-.*-ssh-user-.*\.pub"
+    assert_has_upload_matching "piv-test-piv-.*\.cer\.pem"
+}
+
+test_monitoring_disabled() {
+    setup
+
+    # Verify --skip-upload prevents submissions
+    reset_mock_uploads
+    run_cmd --skip-upload tls server-cert --out $TEMPDIR/skip-upload.pem --common-name skipupload.example.com --keyfmt ecp384
+    assert_success
+    assert_no_uploads
+
+    # Test that missing cert_submit_url prevents submissions
+    sed -i.bak 's|cert_submit_url: http://localhost:8693/api/upload|#cert_submit_url: disabled|' $TEMPDIR/hsm-conf.yml
+    reset_mock_uploads
+    run_cmd tls server-cert --out $TEMPDIR/no-monitor.pem --common-name nomonitor.example.com --keyfmt ecp384
+    assert_success
+    assert_no_uploads
+
+    # Restore config
+    mv $TEMPDIR/hsm-conf.yml.bak $TEMPDIR/hsm-conf.yml
+}
+
 # ------------------------------------------------------
 
 function run_test_quiet() {
@@ -734,6 +829,8 @@ run_test test_tls_certificates
 run_test test_tls_sign_command
 run_test test_tls_recreate_from_tls
 run_test test_tls_resign_from_tls
+run_test test_certificate_monitoring
+run_test test_monitoring_disabled
 run_test test_crl_commands
 run_test test_password_derivation
 run_test test_wrapped_backup

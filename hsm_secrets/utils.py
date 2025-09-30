@@ -49,6 +49,7 @@ class HsmSecretsCtx:
     hsm_serial: str
     yubikey_label: str
     quiet: bool = False
+    skip_upload: bool = False
 
     # Authentication method overrides
     forced_auth_method: Optional[HSMAuthMethod] = None
@@ -72,6 +73,7 @@ def pass_common_args(f):
             hsm_serial = click_ctx.obj.get('hsmserial'),
             yubikey_label = click_ctx.obj.get('yubikey_label'),
             quiet=click_ctx.obj.get('quiet', False),
+            skip_upload=click_ctx.obj.get('skip_upload', False),
             forced_auth_method = click_ctx.obj.get('forced_auth_method'),
             forced_yubikey_serial = click_ctx.obj.get('forced_yubikey_serial'),
             auth_password = click_ctx.obj.get('auth_password'),
@@ -589,6 +591,38 @@ def try_post_cert_to_http_endpoint_as_form(file_contents: bytes, file_name: str,
     finally:
         if not submit_ok:
             save_failed()
+
+
+def submit_cert_for_monitoring(ctx: HsmSecretsCtx, cert_content: bytes, cert_name_prefix: str, cert_type: str = "cert") -> None:
+    """Submit certificate to configured monitoring URL if set
+
+    Args:
+        ctx: HSM secrets context containing configuration
+        cert_content: Certificate content as bytes (PEM or SSH format)
+        cert_name_prefix: Prefix for the certificate filename
+        cert_type: Type of certificate ("tls", "ssh", "piv", "codesign", etc.)
+    """
+    if ctx.skip_upload:
+        cli_debug("Skipping certificate upload (--skip-upload)")
+        return
+
+    if not (post_url := ctx.conf.general.cert_submit_url):
+        cli_debug("No certificate submission URL configured, skipping upload")
+        return
+
+    from datetime import datetime
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # Determine file extension based on certificate type
+    if cert_type == "ssh":
+        ext = ".pub"
+    elif cert_type in ("tls", "piv", "codesign", "x509"):
+        ext = ".cer.pem"
+    else:
+        ext = ".pem"  # fallback for unknown types
+
+    cert_name = f"{cert_name_prefix}-{today}{ext}"
+    try_post_cert_to_http_endpoint_as_form(cert_content, cert_name, str(post_url), {})
 
 
 def confirm_and_delete_old_yubihsm_object_if_exists(ses: HSMSession, obj_id: hscfg.HSMKeyID, object_type: OBJECT, abort=True) -> bool:

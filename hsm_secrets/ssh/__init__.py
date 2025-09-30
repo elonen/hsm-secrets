@@ -6,7 +6,7 @@ from typing import Sequence, cast
 import click
 
 from hsm_secrets.config import HSMAsymmetricKey, HSMConfig, HSMKeyID, click_hsm_obj_auto_complete
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_error, cli_info, cli_result, cli_warn, open_hsm_session, pass_common_args, try_post_cert_to_http_endpoint_as_form
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_confirm, cli_error, cli_info, cli_result, cli_warn, open_hsm_session, pass_common_args, submit_cert_for_monitoring
 from cryptography.hazmat.primitives import _serialization
 from cryptography.hazmat.primitives.serialization import ssh
 
@@ -184,8 +184,9 @@ def _sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, certid: str, valid
         ca_priv_key = ses.get_private_key(ca_key_def)
         sign_ssh_cert(cert, ca_priv_key)
         cert_str = cert.to_string_fmt().replace(certid, f"{certid}{key_comment}").strip()
-        if url := ctx.conf.general.cert_submit_url:
-            try_post_cert_to_http_endpoint_as_form(cert_str.encode(), f"{certid}.pub", str(url), {})
+
+        # Submit the certificate to the configured URL, if set (only after successful signing)
+        submit_cert_for_monitoring(ctx, cert_str.encode(), f"{certid}-ssh-{cert_type_str}", "ssh")
 
         if not out_fp:
             out_fp = open(path, 'w')

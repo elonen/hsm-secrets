@@ -19,7 +19,7 @@ from hsm_secrets.config import HSMOpaqueObject, X509NameType
 from hsm_secrets.piv.piv_cert_checks import PIVDomainControllerCertificateChecker
 from hsm_secrets.piv.piv_cert_utils import PivKeyTypeName, make_signed_piv_user_cert
 from hsm_secrets.piv.yubikey_piv import YUBIKEY_DEFAULT_PIN, YubikeyPivManagementSession, generate_yubikey_piv_keypair, import_to_yubikey_piv, confirm_and_reset_yubikey_piv_app, set_yubikey_piv_pin_puk_management_key
-from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_debug, cli_error, cli_info, cli_warn, open_hsm_session, pass_common_args, scan_local_yubikeys, try_post_cert_to_http_endpoint_as_form
+from hsm_secrets.utils import HsmSecretsCtx, cli_code_info, cli_debug, cli_error, cli_info, cli_warn, open_hsm_session, pass_common_args, scan_local_yubikeys, submit_cert_for_monitoring
 from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
@@ -167,9 +167,10 @@ def save_user_cert(ctx: HsmSecretsCtx, user: str, template: str|None, subject: s
         #cli_info(f"CSR saved to: {csr_file}")
 
     # Submit the certificate to the configured URL, if set
-    if post_url := ctx.conf.general.cert_submit_url:
-        cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
-        try_post_cert_to_http_endpoint_as_form(cert_bytes, cer_file.name, str(post_url), {})
+    cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
+    # Extract base name without any extensions (e.g., "piv-test" from "piv-test.cer.pem")
+    cert_base_name = Path(cer_file).name.split('.')[0]
+    submit_cert_for_monitoring(ctx, cert_bytes, f"{cert_base_name}-piv", "piv")
 
     with open(cer_file, 'wb') as fo:
         fo.write(signed_cert.public_bytes(encoding=serialization.Encoding.PEM))
@@ -286,12 +287,11 @@ def yubikey_gen_user_cert(ctx: HsmSecretsCtx, user: str, slot: str, no_reset: bo
     cli_debug(f"[PIV] Certificate signing completed successfully")
 
     # Submit the certificate to the configured URL, if set
-    if post_url := ctx.conf.general.cert_submit_url:
-        if not no_submit:
-            cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
-            today = datetime.now().strftime('%Y-%m-%d')
-            cert_name = f"{user}-piv-{today}.pem"
-            try_post_cert_to_http_endpoint_as_form(cert_bytes, cert_name, str(post_url), {})
+    if not no_submit:
+        cert_bytes = signed_cert.public_bytes(encoding=serialization.Encoding.PEM)
+        # Use username in the certificate name for better identification
+        user_safe = user.replace('@', '-').replace('.', '-')
+    submit_cert_for_monitoring(ctx, cert_bytes, f"{user_safe}-piv", "piv")
 
     cli_debug(f"[PIV] Opening second PIV session to import certificate to YubiKey")
     with YubikeyPivManagementSession(mgt_key_bytes, pin, hsm_auth_yk_serial=ctx.forced_yubikey_serial) as ses:
