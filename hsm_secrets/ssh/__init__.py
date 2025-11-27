@@ -124,6 +124,156 @@ def sign_ssh_host_key(ctx: HsmSecretsCtx, out: str, ca: str|None, hostname: str,
     _sign_ssh_key(ctx, out, ca, certid, validity, principals_str, '', keyfile, ssh.SSHCertificateType.HOST, timestamp)
 
 
+@cmd_ssh.command('resign-ssh-cert')
+@click.option('--out', '-o', type=click.Path(exists=False, dir_okay=False, resolve_path=True), help="Output file (default: original name with .resigned suffix)", default=None)
+@click.option('--ca', '-c', required=False, help="CA key ID (hex) or label to sign with. Default: read from config", default=None)
+@click.option('--validity', '-t', required=False, default=365*24*60*60, help="Validity period in seconds (default: 1 year)")
+@click.argument('certfile', type=click.Path(exists=True, dir_okay=False, resolve_path=True), required=True)
+@pass_common_args
+def resign_ssh_cert(ctx: HsmSecretsCtx, out: str|None, ca: str|None, validity: int, certfile: str):
+    """Re-sign an existing SSH certificate with the same fields
+
+    TYPICAL USAGE:
+
+        $ ssh resign-ssh-cert my-key-cert.pub
+
+    Takes an existing SSH certificate, extracts the public key and all certificate
+    fields (principals, extensions, etc.), and creates a new certificate with the
+    same fields but a new validity period and signed with your HSM CA.
+
+    This is useful for renewing certificates without needing the original private key.
+
+    The certificate type (user or host) is automatically detected from the input.
+
+    NOTE: This extracts the public key from the certificate and re-signs it.
+    The original private key is not needed.
+    """
+    import base64
+    import os
+    from hsm_secrets.ssh.openssh.ssh_certificate import (
+        RSACertificate, ECDSACertificate, ED25519Certificate,
+        SKECDSACertificate, SKEd25519Certificate, cert_for_ssh_pub_id, str_to_extension
+    )
+    from hsm_secrets.ssh.openssh.ssh_data_types import SSHDataType
+    from hsm_secrets.ssh.openssh.signing import sign_ssh_cert
+
+    # Read and parse the existing certificate
+    with open(certfile, 'r') as f:
+        cert_str = f.read().strip()
+
+    parts = cert_str.split(' ')
+    if len(parts) < 2:
+        raise click.ClickException("Invalid certificate format")
+
+    cert_type_str, base64_data = parts[0], parts[1]
+    cert_comment = parts[2] if len(parts) >= 3 else ""
+
+    # Decode the certificate
+    decoded_data = base64.b64decode(base64_data)
+
+    # Parse the certificate - following the OpenSSH certificate wire format
+    # Format: cipher_type (string) -> nonce (bytes) -> public_key -> serial -> type -> cert_id -> ...
+    cipher_type, data = SSHDataType.decode_string(decoded_data)
+
+    # Find the matching certificate class
+    old_cert = None
+    for cert_class in (RSACertificate, ECDSACertificate, ED25519Certificate, SKECDSACertificate, SKEd25519Certificate):
+        if cert_class.cipher_match(cipher_type):  # type: ignore[attr-defined]
+            old_cert = cert_class()
+            break
+
+    if not old_cert:
+        raise click.ClickException(f"Unsupported certificate type: {cipher_type}")
+
+    # Next comes the nonce (32 random bytes)
+    old_cert.nonce, data = SSHDataType.decode_bytes(data)
+    data = old_cert.decode_public_key(data)
+    old_cert.serial, data = SSHDataType.decode_uint64(data)
+    cert_type_value, data = SSHDataType.decode_uint32(data)
+    old_cert.cert_type = ssh.SSHCertificateType(cert_type_value)
+    old_cert.cert_id, data = SSHDataType.decode_string(data, 'utf-8')
+    old_cert.valid_principals, data = SSHDataType.decode_name_list(data)
+    old_cert.valid_after, data = SSHDataType.decode_uint64(data)
+    old_cert.valid_before, data = SSHDataType.decode_uint64(data)
+    old_cert.critical_options, data = SSHDataType.decode_options(data)
+    old_cert.extensions, data = SSHDataType.decode_options(data)
+
+    cli_info(f"Extracted certificate from: {certfile}")
+    cli_info(f"  Type: {old_cert.cert_type.name}")
+    cli_info(f"  Certificate ID: {old_cert.cert_id}")
+    cli_info(f"  Principals: {', '.join(old_cert.valid_principals) if old_cert.valid_principals else '(none)'}")
+    cli_info(f"  Valid: {datetime.fromtimestamp(old_cert.valid_after).isoformat()} - {datetime.fromtimestamp(old_cert.valid_before).isoformat()}")
+    cli_info(f"  Public key type: {old_cert.key_cipher_string()}")
+
+    # Encode the public key to string format (without the cert fields)
+    # This creates a standard SSH public key from the certificate's embedded public key
+    pub_key_str = old_cert.encode_public_key_as_string()
+
+    # Determine the CA to use
+    cert_type_str_val = "user" if old_cert.cert_type == ssh.SSHCertificateType.USER else "host"
+    default_ca = ctx.conf.ssh.default_user_ca if old_cert.cert_type == ssh.SSHCertificateType.USER else ctx.conf.ssh.default_host_ca
+    ca_key_def = ctx.conf.find_def(ca or default_ca, HSMAsymmetricKey)
+
+    ca_def = [c for c in ctx.conf.ssh.root_ca_keys if c.id == ca_key_def.id]
+    if not ca_def:
+        raise click.ClickException(f"CA key 0x{ca_key_def.id:04x} not found in config")
+
+    cli_code_info(f"Re-signing {cert_type_str_val} certificate with CA `{ca_def[0].label}`")
+
+    # Create a new certificate with the same fields
+    timestamp = int(time.time())
+    new_certid = f"{old_cert.cert_id}-resigned-{timestamp}"
+
+    new_cert = cert_for_ssh_pub_id(
+        pub_key_str,
+        new_certid,
+        cert_type=old_cert.cert_type,
+        nonce=os.urandom(32),
+        serial=timestamp,
+        principals=old_cert.valid_principals,
+        valid_seconds=validity,
+        critical_options=old_cert.critical_options,
+        extensions=old_cert.extensions  # type: ignore[arg-type]
+    )
+
+    # Determine output file
+    out_path = Path(out) if out else Path(certfile).with_suffix('.resigned.pub')
+    if out_path.exists():
+        cli_confirm(f"Output file '{out_path}' already exists. Overwrite?", abort=True)
+
+    # Sign the new certificate with HSM-backed CA
+    with open_hsm_session(ctx) as ses:
+        ca_priv_key = ses.get_private_key(ca_key_def)
+        sign_ssh_cert(new_cert, ca_priv_key)
+        cert_str_out = new_cert.to_string_fmt()
+
+        # Preserve original comment if it exists
+        if cert_comment:
+            cert_str_out = cert_str_out.replace(new_certid, f"{new_certid}__{cert_comment}")
+
+        # Submit the certificate to the configured URL, if set
+        submit_cert_for_monitoring(ctx, cert_str_out.encode(), f"{new_certid}-ssh-{cert_type_str_val}", "ssh")
+
+        # Write the new certificate
+        out_path.write_text(cert_str_out.strip() + "\n")
+
+    cli_info(f"Re-signed certificate written to: {out_path}")
+    cli_info("")
+    cli_info("Certificate details preserved:")
+    cli_info(f"  New Certificate ID: {new_certid}")
+    cli_info(f"  Principals: {', '.join(new_cert.valid_principals) if new_cert.valid_principals else '(none)'}")
+    cli_info(f"  Valid: {datetime.fromtimestamp(new_cert.valid_after).isoformat()} - {datetime.fromtimestamp(new_cert.valid_before).isoformat()}")
+    if old_cert.extensions:
+        cli_info(f"  Extensions: {', '.join(old_cert.extensions.keys())}")
+    if old_cert.critical_options:
+        cli_info(f"  Critical options: {', '.join(old_cert.critical_options.keys())}")
+
+    cli_info("")
+    cli_code_info(f"To view the certificate details, use:\n`ssh-keygen -L -f {out_path}`")
+    cli_info("")
+    cli_info("✅ Certificate ready - contains exact public key, principals, and extensions from original")
+
+
 
 def _sign_ssh_key(ctx: HsmSecretsCtx, out: str, ca: str|None, certid: str, validity: int, principals: str, extensions: str, keyfile: str, cert_type: ssh.SSHCertificateType, timestamp: int):
     from hsm_secrets.ssh.openssh.signing import sign_ssh_cert

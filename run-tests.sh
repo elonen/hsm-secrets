@@ -510,6 +510,90 @@ test_ssh_host_certificates() {
 
 }
 
+test_ssh_resign_cert() {
+    setup
+    reset_mock_uploads
+
+    # Test with user certificate
+    # Generate a test user key
+    ssh-keygen -t ed25519 -f $TEMPDIR/test_user_key -N '' -C 'test_user_resign'
+
+    # Sign the user key
+    run_cmd ssh sign-user -u test.user -p users,admins $TEMPDIR/test_user_key.pub
+    assert_success
+
+    # Verify original certificate was uploaded
+    assert_upload_count 1
+
+    # Capture original certificate details
+    local orig_output=$(ssh-keygen -L -f $TEMPDIR/test_user_key-cert.pub)
+    echo "Original cert:"
+    echo "$orig_output"
+    assert_grep "Public key: ED25519" "$orig_output"
+    assert_grep "^[[:space:]]*users$" "$orig_output"
+    assert_grep "^[[:space:]]*admins$" "$orig_output"
+
+    # Extract public key from original cert for comparison
+    local orig_pubkey=$(ssh-keygen -L -f $TEMPDIR/test_user_key-cert.pub | grep -A1 "Public key:" | tail -1)
+
+    # Wait a second to ensure different timestamp
+    sleep 1
+
+    # Re-sign the certificate
+    reset_mock_uploads
+    run_cmd ssh resign-ssh-cert $TEMPDIR/test_user_key-cert.pub
+    assert_success
+
+    # Verify re-signed certificate exists
+    [ -f $TEMPDIR/test_user_key-cert.resigned.pub ] || { echo "ERROR: Re-signed certificate not created"; return 1; }
+
+    # Verify re-signed certificate was uploaded
+    assert_upload_count 1
+
+    # Verify re-signed certificate details
+    local resigned_output=$(ssh-keygen -L -f $TEMPDIR/test_user_key-cert.resigned.pub)
+    echo "Re-signed cert:"
+    echo "$resigned_output"
+
+    assert_success
+    assert_grep "Public key: ED25519" "$resigned_output"
+    assert_grep "^[[:space:]]*users$" "$resigned_output"
+    assert_grep "^[[:space:]]*admins$" "$resigned_output"
+    assert_grep 'Key ID.*resigned' "$resigned_output"
+
+    # Extract public key from re-signed cert and compare
+    local resigned_pubkey=$(ssh-keygen -L -f $TEMPDIR/test_user_key-cert.resigned.pub | grep -A1 "Public key:" | tail -1)
+
+    # Verify public keys match
+    [ "$orig_pubkey" = "$resigned_pubkey" ] || { echo "ERROR: Public key changed during re-signing"; return 1; }
+    echo "✅ Public keys match between original and re-signed certificates"
+
+    # Test with host certificate
+    reset_mock_uploads
+    ssh-keygen -t rsa -b 2048 -f $TEMPDIR/test_host_resign -N '' -C 'test_host_resign'
+    run_cmd ssh sign-host --hostname resign.example.com --principals "resign.*" $TEMPDIR/test_host_resign.pub
+    assert_success
+
+    # Re-sign the host certificate
+    reset_mock_uploads
+    run_cmd ssh resign-ssh-cert -o $TEMPDIR/test_host_resign-NEW.pub $TEMPDIR/test_host_resign-cert.pub
+    assert_success
+
+    # Verify custom output file
+    [ -f $TEMPDIR/test_host_resign-NEW.pub ] || { echo "ERROR: Custom output file not created"; return 1; }
+
+    local host_resigned_output=$(ssh-keygen -L -f $TEMPDIR/test_host_resign-NEW.pub)
+    echo "Re-signed host cert:"
+    echo "$host_resigned_output"
+
+    assert_grep "Type: ssh-rsa-cert-v01@openssh.com host certificate" "$host_resigned_output"
+    assert_grep "^[[:space:]]*resign.example.com$" "$host_resigned_output"
+    assert_grep "^[[:space:]]*resign.*$" "$host_resigned_output"
+    assert_grep 'Key ID.*resigned' "$host_resigned_output"
+
+    echo "SSH certificate re-signing tests passed"
+}
+
 test_codesign_sign_osslsigncode_hash() {
 
     if ! which osslsigncode > /dev/null; then
@@ -836,6 +920,7 @@ run_test test_password_derivation
 run_test test_wrapped_backup
 run_test test_ssh_user_certificates
 run_test test_ssh_host_certificates
+run_test test_ssh_resign_cert
 run_test test_codesign_sign_osslsigncode_hash
 run_test test_piv_user_certificate_key_type
 run_test test_piv_user_certificate_csr
