@@ -1,5 +1,6 @@
 from pathlib import Path
 import click
+import subprocess
 from asn1crypto import cms, algos, x509, core, pem   # type: ignore [import]
 from datetime import datetime, timezone
 from cryptography.hazmat.primitives import serialization, hashes
@@ -30,29 +31,10 @@ def cmd_codesign(ctx: click.Context) -> None:
     ctx.ensure_object(dict)
 
 
-@cmd_codesign.command('sign-osslsigncode-hash')
-@pass_common_args
-@click.argument('hashfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-', required=True, metavar='<HASHFILE>')
-@click.option('--out', '-o', required=False, type=click.Path(dir_okay=False, resolve_path=True), help="Output filename (default: deduce from input)", default=None)
-@click.option('--ca', '-c', type=str, required=False, help="CA ID (hex) or label to sign with. Default: use config", default=None)
-def sign_osslsigncode_hash(
-    ctx: HsmSecretsCtx,
-    hashfile: str,
-    out: Optional[str],
-    ca: Optional[str]
-) -> None:
-    """Sign a Microsoft Authenticode hash from `osslsigncode`
+def _sign_authenticode_hash(ctx: HsmSecretsCtx, hashfile: str, out: Optional[str], ca: Optional[str]) -> None:
+    """Core implementation of Authenticode hash signing.
 
-    Usage:
-
-    1) Generate the hashfile with osslsigncode: `osslsigncode extract-data -h sha256 -in <bin.exe> -out <bin.req>`
-
-    2) Sign the request with this command
-
-    3) Embed the signature: `osslsigncode attach-signature -sigin <bin.req.signed> -CAfile <cert.chain> -in <bin.exe> -out <bin-signed.exe>`
-
-    The `cert.chain` file should contain the full certificate chain, from issuer up to the root CA.
-    Both input and output are ASN.1 structures. Input can be DER or PEM encoded, output is DER.
+    This function signs a hash file extracted by osslsigncode and writes the signed result.
     """
     # Read and parse the input data
     content_info: cms.ContentInfo = _read_input_data(hashfile)
@@ -104,6 +86,33 @@ def sign_osslsigncode_hash(
     content_info = cms.ContentInfo({'content_type': 'signed_data', 'content': signed_data})
 
     _write_output(content_info, hashfile, out)
+
+
+@cmd_codesign.command('sign-osslsigncode-hash')
+@pass_common_args
+@click.argument('hashfile', type=click.Path(exists=False, dir_okay=False, resolve_path=True, allow_dash=True), default='-', required=True, metavar='<HASHFILE>')
+@click.option('--out', '-o', required=False, type=click.Path(dir_okay=False, resolve_path=True), help="Output filename (default: deduce from input)", default=None)
+@click.option('--ca', '-c', type=str, required=False, help="CA ID (hex) or label to sign with. Default: use config", default=None)
+def sign_osslsigncode_hash(
+    ctx: HsmSecretsCtx,
+    hashfile: str,
+    out: Optional[str],
+    ca: Optional[str]
+) -> None:
+    """Sign a Microsoft Authenticode hash from `osslsigncode`
+
+    Usage:
+
+    1) Generate the hashfile with osslsigncode: `osslsigncode extract-data -h sha256 -in <bin.exe> -out <bin.req>`
+
+    2) Sign the request with this command
+
+    3) Embed the signature: `osslsigncode attach-signature -sigin <bin.req.signed> -CAfile <cert.chain> -in <bin.exe> -out <bin-signed.exe>`
+
+    The `cert.chain` file should contain the full certificate chain, from issuer up to the root CA.
+    Both input and output are ASN.1 structures. Input can be DER or PEM encoded, output is DER.
+    """
+    _sign_authenticode_hash(ctx, hashfile, out, ca)
 
 
 # ----- Helper functions -----
@@ -288,3 +297,172 @@ def _write_output(content_info: cms.ContentInfo, hashfile: str, out: Optional[st
     cli_code_info(
         f"  `osslsigncode attach-signature -sigin '{out_path.name}' -CAfile MYCERT.chain.pem -in MYBIN.exe -out MYBIN.signed.exe`"
     )
+
+
+@cmd_codesign.command('sign')
+@pass_common_args
+@click.argument('binary', type=click.Path(exists=True, dir_okay=False, resolve_path=True), metavar='<BINARY>')
+@click.option('--out', '-o', required=False, type=click.Path(dir_okay=False, resolve_path=True), help="Output filename (default: deduce from input)", default=None)
+@click.option('--ca', '-c', type=str, required=False, help="CA ID (hex) or label to sign with. Default: use config", default=None)
+@click.option('--cert-chain', type=click.Path(exists=True, dir_okay=False, resolve_path=True), required=False, help="Certificate chain file (PEM format). If not provided, will be extracted from HSM", metavar='<CERT_CHAIN>')
+@click.option('--crl-file', type=click.Path(exists=True, dir_okay=False, resolve_path=True), required=False, help="CRL file (PEM format, optional)", metavar='<CRL_FILE>')
+@click.option('--hash-alg', type=click.Choice(['sha256', 'sha384', 'sha512', 'sha1'], case_sensitive=False), default='sha256', help="Hash algorithm to use")
+@click.option('--timestamp', type=str, required=False, help="Timestamp server URL (optional)")
+def sign_complete(
+    ctx: HsmSecretsCtx,
+    binary: str,
+    out: Optional[str],
+    ca: Optional[str],
+    cert_chain: Optional[str],
+    crl_file: Optional[str],
+    hash_alg: str,
+    timestamp: Optional[str]
+) -> None:
+    """Sign a PE executable end-to-end with automatic hash extraction and signature integration
+
+    This command orchestrates the complete code signing workflow:
+
+    1) Extract the hash from the binary using osslsigncode
+    2) Sign the hash using the HSM
+    3) Attach the signature back to the binary
+
+    Required: osslsigncode must be installed and in your PATH
+
+    If --cert-chain is not provided, the certificate chain will be automatically
+    extracted from the HSM (signing cert + its issuer).
+    """
+    binary_path = Path(binary)
+    out_path = Path(out) if out else binary_path.with_stem(f"{binary_path.stem}.signed")
+
+    # Check if cert chain is provided
+    if not cert_chain:
+        # Get the codesign certificate definition
+        ca_cert_def = ctx.conf.find_def(ca or ctx.conf.codesign.default_cert_id, HSMOpaqueObject)
+
+        # Find the issuer certificate by looking up who signed this cert
+        from hsm_secrets.x509.def_utils import find_ca_def
+        ca_x509_def = find_ca_def(ctx.conf, ca_cert_def.id)
+
+        if not ca_x509_def:
+            raise click.ClickException(f"Could not find CA definition for certificate {hex(ca_cert_def.id)}")
+
+        # Find the issuer cert ID from the signed_certs list
+        issuer_cert_id = None
+        for cert_entry in ca_x509_def.signed_certs:
+            if cert_entry.id == ca_cert_def.id and hasattr(cert_entry, 'sign_by'):
+                issuer_cert_id = cert_entry.sign_by
+                break
+
+        if not issuer_cert_id:
+            raise click.ClickException(f"Could not determine issuer for certificate {ca_cert_def.label}")
+
+        # Generate chain filename from the cert label
+        chain_file = f"{ca_cert_def.label}.chain.pem"
+
+        cli_info("Certificate chain not provided. Extract it first with:")
+        cli_code_info(f"  `hsm-secrets x509 cert get {hex(ca_cert_def.id)} {hex(issuer_cert_id)} --bundle {chain_file}`")
+        cli_info("")
+        cli_info("Then run the sign command again with --cert-chain:")
+
+        # Build the command to show the user
+        cmd_parts = ["hsm-secrets", "codesign", "sign", str(binary)]
+        cmd_parts.extend(["--cert-chain", chain_file])
+        if ca:
+            cmd_parts.extend(["--ca", ca])
+        if out:
+            cmd_parts.extend(["--out", out])
+        if crl_file:
+            cmd_parts.extend(["--crl-file", crl_file])
+        if hash_alg != 'sha256':
+            cmd_parts.extend(["--hash-alg", hash_alg])
+        if timestamp:
+            cmd_parts.extend(["--timestamp", timestamp])
+
+        cli_code_info(f"  `{' '.join(cmd_parts)}`")
+        return
+
+    cert_chain_path = Path(cert_chain)
+
+    # Remove output file if it exists (osslsigncode won't overwrite)
+    if out_path.exists():
+        out_path.unlink()
+
+    # Use local intermediate files
+    hash_file_path = Path(f"{binary_path.stem}.req")
+    signed_hash_file_path = Path(f"{binary_path.stem}.signed.req")
+
+    # Remove intermediate files from previous runs (osslsigncode won't overwrite)
+    hash_file_path.unlink(missing_ok=True)
+    signed_hash_file_path.unlink(missing_ok=True)
+
+    try:
+        # Step 1: Extract hash from binary
+        cli_info(f"Step 1/3: Extracting hash from binary '{binary_path.name}' using {hash_alg}...")
+        try:
+            subprocess.run(
+                ['osslsigncode', 'extract-data', '-h', hash_alg, '-in', str(binary_path), '-out', str(hash_file_path)],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            cli_code_info(f"  Hash extracted to temporary file")
+        except subprocess.CalledProcessError as e:
+            raise click.ClickException(
+                f"osslsigncode extract-data failed: {e.stderr}\n"
+                "Make sure osslsigncode is installed and the input is a valid PE executable"
+            )
+        except FileNotFoundError:
+            raise click.ClickException(
+                "osslsigncode not found in PATH. Please install osslsigncode to use this command"
+            )
+
+        # Step 2: Sign the hash
+        cli_info("Step 2/3: Signing hash with HSM...")
+        try:
+            # Use the core signing logic
+            _sign_authenticode_hash(ctx, str(hash_file_path), str(signed_hash_file_path), ca)
+            cli_code_info(f"  Hash signed successfully")
+        except click.ClickException:
+            raise
+        except Exception as e:
+            raise click.ClickException(f"Hash signing failed: {str(e)}")
+
+        # Step 3: Attach signature to binary
+        cli_info("Step 3/3: Attaching signature to binary...")
+        try:
+            attach_cmd = [
+                'osslsigncode', 'attach-signature',
+                '-sigin', str(signed_hash_file_path),
+                '-CAfile', str(cert_chain_path),
+                '-in', str(binary_path),
+                '-out', str(out_path)
+            ]
+
+            # Add CRL file if provided
+            # Otherwise, osslsigncode will attempt to download CRL from URL embedded in certificate
+            if crl_file:
+                attach_cmd.extend(['-CRLfile', str(crl_file)])
+
+            if timestamp:
+                attach_cmd.extend(['-t', timestamp])
+
+            subprocess.run(
+                attach_cmd,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            cli_code_info(f"  Signature attached to binary")
+        except subprocess.CalledProcessError as e:
+            raise click.ClickException(f"osslsigncode attach-signature failed: {e.stderr}")
+
+        # Clean up intermediate files on success
+        hash_file_path.unlink(missing_ok=True)
+        signed_hash_file_path.unlink(missing_ok=True)
+
+        cli_code_info(f"Signed executable saved to: `{out_path}`")
+
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(f"Code signing failed: {str(e)}")
