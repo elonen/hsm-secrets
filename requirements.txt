@@ -1,3 +1,5 @@
+cryptography>=48.0.1
+
 yubihsm[http,usb]==3.1.0
 git+https://github.com/Yubico/yubikey-manager.git
 
