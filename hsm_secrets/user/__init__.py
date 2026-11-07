@@ -88,7 +88,8 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool, target_yk: s
         raise click.ClickException("No target Yubikey found. Aborting.")
     cli_ui_msg(f"Will write to Yubikey with serial number: {yubikey.info.serial}, form factor: {yubikey.info.form_factor}")
 
-    yk_auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yubikey.smart_card())
+    yk_conn = yubikey.smart_card()
+    yk_auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yk_conn)
     existing_slots = list(yk_auth_ses.list_credentials())
 
     old_slot = None
@@ -138,6 +139,10 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool, target_yk: s
 
     cli_info(f"Auth key added to the Yubikey (serial {yubikey.info.serial}) hsmauth slot '{cred.label}' (type: {repr(cred.algorithm)})")
 
+    # Release the target Yubikey before HSM auth. Yubikey scans during auth connect/disconnect all local
+    # Yubikeys, and PC/SC disconnect resets the card, which would invalidate this connection anyway.
+    yk_conn.close()
+
     # Store it in the YubiHSMs
     hsm_serials = ctx.conf.general.all_devices.keys() if alldevs else [ctx.hsm_serial]
     for serial in hsm_serials:
@@ -156,7 +161,9 @@ def add_user_yubikey(ctx: HsmSecretsCtx, label: str, alldevs: bool, target_yk: s
         cli_ui_msg("")
         cli_ui_msg("WARNING! You are using factory default for Yubikey hsmauth Management Key.")
         cli_ui_msg("")
-        _change_yubikey_hsm_mgt_key(yk_auth_ses, mgt_key_bin, ask_before_change=True)
+        with yubikey.smart_card() as yk_conn:
+            yk_auth_ses = yubikit.hsmauth.HsmAuthSession(connection=yk_conn)
+            _change_yubikey_hsm_mgt_key(yk_auth_ses, mgt_key_bin, ask_before_change=True)
 
 # ---------------
 

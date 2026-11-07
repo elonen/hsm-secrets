@@ -1,5 +1,8 @@
+import datetime
 import logging
 import os
+import tempfile
+import traceback
 import click
 
 from hsm_secrets.codesign import cmd_codesign
@@ -19,7 +22,52 @@ from click_repl import register_repl    # type: ignore
 
 # --- Main CLI Entrypoint ---
 
-@click.group(context_settings={'show_default': True, 'help_option_names': ['-h', '--help']})
+class HsmSecretsGroup(click.Group):
+    """Top-level group that prints a short summary of unexpected exceptions and writes the full traceback to a log file."""
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except (click.exceptions.ClickException, click.exceptions.Exit, click.exceptions.Abort, KeyboardInterrupt, EOFError, SystemExit):
+            raise
+        except Exception as e:
+            if (ctx.obj or {}).get('debug'):
+                raise
+            _report_unexpected_exception(e)
+            raise click.exceptions.Exit(1)
+
+
+def _report_unexpected_exception(e: Exception):
+    tb_text = ''.join(traceback.format_exception(e))
+    log_path = None
+    try:
+        timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        fd, log_path = tempfile.mkstemp(prefix=f'hsm-secrets-error-{timestamp}-', suffix='.log', text=True)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(tb_text)
+    except OSError:
+        log_path = None
+
+    frames = [fr for fr in traceback.extract_tb(e.__traceback__) if fr.filename != __file__]
+    own_frames = [fr for fr in frames if 'hsm_secrets' in fr.filename]
+    exc_name = type(e).__qualname__ if type(e).__module__ == 'builtins' else f"{type(e).__module__}.{type(e).__qualname__}"
+
+    def _fmt(fr: traceback.FrameSummary) -> str:
+        return f"{os.path.basename(fr.filename)}:{fr.lineno} in {fr.name}()"
+
+    click.echo(click.style(f"ERROR: {exc_name}: {e}", fg='red'), err=True)
+    if own_frames:
+        click.echo(click.style(f"  in {_fmt(own_frames[-1])}", fg='red'), err=True)
+    if frames and (not own_frames or frames[-1] is not own_frames[-1]):
+        click.echo(click.style(f"  raised from {_fmt(frames[-1])}", fg='red'), err=True)
+    if log_path:
+        click.echo(f"Full stack trace written to: {log_path}", err=True)
+    else:
+        click.echo(tb_text, err=True)   # Could not write log file, show everything
+    click.echo("(Use --debug to print the full stack trace on screen.)", err=True)
+
+
+@click.group(cls=HsmSecretsGroup, context_settings={'show_default': True, 'help_option_names': ['-h', '--help']})
 #@click.option('-d', '--debug', is_flag=True, help="Enable debug mode")
 @click.option('-c', '--config', required=False, type=click.Path(), default=None, help="Path to configuration file")
 @click.option('-q', '--quiet', is_flag=True, help="Suppress all non-essential output", default=False)
