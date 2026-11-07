@@ -23,6 +23,11 @@ from hsm_secrets.x509.cert_builder import CsrAmendMode, X509CertBuilder, get_iss
 from hsm_secrets.x509.cert_checker import BaseCertificateChecker, IssueSeverity
 from hsm_secrets.x509.def_utils import find_ca_def, merge_x509_info_with_defaults
 
+def _name_attr_str(attr: x509.NameAttribute) -> str:
+    """Return a subject attribute value as str (cryptography types it as str|bytes; bytes only for bit-string attributes)"""
+    return attr.value if isinstance(attr.value, str) else attr.value.decode('utf-8', errors='replace')
+
+
 @click.group()
 @click.pass_context
 def cmd_tls(ctx: click.Context):
@@ -215,7 +220,7 @@ def recreate_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, keyfmt: str, 
     # Get CN from subject
     for attr in server_cert.subject:
         if attr.oid == x509_oid.NameOID.COMMON_NAME:
-            cn = attr.value
+            cn = _name_attr_str(attr)
             break
 
     # Get SANs
@@ -397,7 +402,7 @@ def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
     # Get CN from server cert subject
     for attr in server_cert.subject:
         if attr.oid == x509_oid.NameOID.COMMON_NAME:
-            cn = attr.value
+            cn = _name_attr_str(attr)
             break
 
     # Get SANs from server cert
@@ -429,13 +434,13 @@ def resign_from_tls(ctx: HsmSecretsCtx, url: str, out: str|None, validity: int):
     # Copy additional subject attributes from server certificate
     for attr in server_cert.subject:
         if attr.oid == x509_oid.NameOID.ORGANIZATION_NAME:
-            info.attribs.organization = attr.value
+            info.attribs.organization = _name_attr_str(attr)
         elif attr.oid == x509_oid.NameOID.LOCALITY_NAME:
-            info.attribs.locality = attr.value
+            info.attribs.locality = _name_attr_str(attr)
         elif attr.oid == x509_oid.NameOID.STATE_OR_PROVINCE_NAME:
-            info.attribs.state = attr.value
+            info.attribs.state = _name_attr_str(attr)
         elif attr.oid == x509_oid.NameOID.COUNTRY_NAME:
-            info.attribs.country = attr.value
+            info.attribs.country = _name_attr_str(attr)
 
     # Set key usage for TLS server cert
     ku: set[X509KeyUsageName] = set(['digitalSignature', 'keyEncipherment', 'keyAgreement'])
