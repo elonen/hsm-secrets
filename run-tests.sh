@@ -629,7 +629,13 @@ test_codesign_sign_osslsigncode_hash() {
     assert_success
 
     # Attach the signature to the executable
-    local attach_output=$(osslsigncode attach-signature -sigin "$test_dir/tiny.signed.req" -CAfile "$test_dir/bundle.pem" -CRLfile "$test_dir/crl.pem" -in "$test_dir/tiny.exe" -out "$test_dir/tiny.signed.exe")
+    # (osslsigncode < 2.14 validates the chain on attach and needs CA/CRL files; 2.14+ rejects those options)
+    local attach_ca_args=()
+    if ! osslsigncode_at_least_2_14; then
+        attach_ca_args=(-CAfile "$test_dir/bundle.pem" -CRLfile "$test_dir/crl.pem")
+    fi
+    local attach_output
+    attach_output=$(osslsigncode attach-signature -sigin "$test_dir/tiny.signed.req" "${attach_ca_args[@]}" -in "$test_dir/tiny.exe" -out "$test_dir/tiny.signed.exe")
     assert_success
 
     # Check the output of the attach-signature command
@@ -638,12 +644,65 @@ test_codesign_sign_osslsigncode_hash() {
     assert_grep "Succeeded" "$attach_output"
 
     # Verify the signed executable
-    local verify_output=$(osslsigncode verify -in "$test_dir/tiny.signed.exe" -CAfile "$test_dir/bundle.pem"  -CRLfile "$test_dir/crl.pem")
+    local verify_output
+    verify_output=$(osslsigncode verify -in "$test_dir/tiny.signed.exe" -CAfile "$test_dir/bundle.pem"  -CRLfile "$test_dir/crl.pem")
     assert_success
     echo "$verify_output"
     assert_grep "Signature verification: ok" "$verify_output"
 
     echo "Codesign sign-osslsigncode-hash test passed successfully"
+}
+
+osslsigncode_at_least_2_14() {
+    local ver=$(osslsigncode --version 2>&1 | sed -n 's/^osslsigncode \([0-9]*\)\.\([0-9]*\).*/\1 \2/p' | head -1)
+    local major=${ver% *} minor=${ver#* }
+    [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 14 ]; }
+}
+
+test_codesign_sign() {
+
+    if ! which osslsigncode > /dev/null; then
+        echo "osslsigncode not found, skipping test"
+        return 0
+    fi
+
+    setup
+
+    local test_dir=$(mktemp -d "$TEMPDIR/codesign_test.XXXXXX")
+    echo "H4sIAH/x+VYAA/ONmsDAzMDAwALE//8zMOxggAAHBsJgAxDzye/iY9jCeVZxB6PPWcWQjMxihYKi/PSixFyF5MS8vPwShaRUhaLSPIXMPAUX/2CF3PyUVD1eXi4VqBk/dYtu7vWR6YLhWV2FXXvAdAqYDspMzgCJw+wMcGVg8GFkZMjf6+oKE3vAwMzIzcjBwMCE5DgBKFaA+gbEZoL4k4EBQYPlofog0gIQtXAaTg0o0CtJrShhgLob6hcU/zKAvZJAqrlZWhGHKXbcKBiyAAD3yoGLAAQAAA==" | base64 -d | gzip -d > "$test_dir/tiny.exe"
+
+    run_cmd x509 cert get --bundle "$test_dir/bundle.pem" cert_codesign-cs1-rsa3072 cert_ca-root-a1-rsa3072
+    assert_success
+    run_cmd x509 crl init -o "$test_dir/crl.pem" cert_ca-root-a1-rsa3072
+    assert_success
+
+    # Without --cert-chain, the command should only print instructions
+    local hint_output
+    hint_output=$(run_cmd codesign sign "$test_dir/tiny.exe")
+    assert_success
+    echo "$hint_output"
+    assert_grep "Certificate chain not provided" "$hint_output"
+    [ ! -f "$test_dir/tiny.signed.exe" ] || { echo "ERROR: Signed file created without cert chain"; return 1; }
+
+    # Full sign (run in test dir, as intermediate files are written to CWD)
+    local sign_output
+    sign_output=$(cd "$test_dir" && run_cmd codesign sign --cert-chain "$test_dir/bundle.pem" --crl-file "$test_dir/crl.pem" "$test_dir/tiny.exe")
+    assert_success
+    echo "$sign_output"
+    assert_grep "Signature verified" "$sign_output"
+    [ -f "$test_dir/tiny.signed.exe" ] || { echo "ERROR: Signed file not created"; return 1; }
+    [ ! -f "$test_dir/tiny.req" ] && [ ! -f "$test_dir/tiny.signed.req" ] || { echo "ERROR: Intermediate files not cleaned up"; return 1; }
+
+    local verify_output
+    verify_output=$(osslsigncode verify -in "$test_dir/tiny.signed.exe" -CAfile "$test_dir/bundle.pem" -CRLfile "$test_dir/crl.pem")
+    assert_success
+    assert_grep "Signature verification: ok" "$verify_output"
+
+    # Re-run should overwrite the existing output
+    (cd "$test_dir" && run_cmd codesign sign --cert-chain "$test_dir/bundle.pem" --crl-file "$test_dir/crl.pem" "$test_dir/tiny.exe")
+    assert_success
+
+    echo "Codesign sign test passed successfully"
 }
 
 test_logging_commands() {
@@ -922,6 +981,7 @@ run_test test_ssh_user_certificates
 run_test test_ssh_host_certificates
 run_test test_ssh_resign_cert
 run_test test_codesign_sign_osslsigncode_hash
+run_test test_codesign_sign
 run_test test_piv_user_certificate_key_type
 run_test test_piv_user_certificate_csr
 run_test test_piv_dc_certificate

@@ -301,7 +301,7 @@ def init_crl(ctx: HsmSecretsCtx, cacerts: list[str], out: str|None, period: int|
             crl_pem = crl.public_bytes(encoding=serialization.Encoding.PEM)
             outfile.write_bytes(crl_pem)
 
-            cli_code_info(f"Initialized CRL for `{ca_def.key.label}` (0x{ca_def.key.id:04x}), written to: `./{str(outfile)}`")
+            cli_code_info(f"Initialized CRL for `{ca_def.key.label}` (0x{ca_def.key.id:04x}), written to: `{str(outfile)}`")
 
 # ---------------
 

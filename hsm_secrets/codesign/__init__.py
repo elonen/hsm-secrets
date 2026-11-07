@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import click
 import subprocess
 from asn1crypto import cms, algos, x509, core, pem   # type: ignore [import]
@@ -22,6 +23,18 @@ SZ_OID_CTL = '1.3.6.1.4.1.311.10.1' # PKCS #7 ContentType OID for Certificate Tr
 SPC_INDIRECT_DATA_OBJID = '1.3.6.1.4.1.311.2.1.4'  # SpcIndirectDataContent OID
 SPC_STATEMENT_TYPE_OBJID = '1.3.6.1.4.1.311.2.1.11'  # SpcStatementType OID
 SPC_INDIVIDUAL_SP_KEY_PURPOSE_OBJID = '1.3.6.1.4.1.311.2.1.21'  # Individual Code Signing OID
+
+
+def _osslsigncode_version() -> Tuple[int, int]:
+    """Return osslsigncode (major, minor) version, e.g. (2, 14)."""
+    try:
+        res = subprocess.run(['osslsigncode', '--version'], capture_output=True, text=True)
+    except FileNotFoundError:
+        raise click.ClickException("osslsigncode not found in PATH. Please install osslsigncode to use this command")
+    m = re.search(r'osslsigncode (\d+)\.(\d+)', res.stdout + res.stderr)
+    if not m:
+        raise click.ClickException(f"Could not determine osslsigncode version from: {res.stdout.strip()}")
+    return int(m.group(1)), int(m.group(2))
 
 
 @click.group()
@@ -107,7 +120,10 @@ def sign_osslsigncode_hash(
 
     2) Sign the request with this command
 
-    3) Embed the signature: `osslsigncode attach-signature -sigin <bin.req.signed> -CAfile <cert.chain> -in <bin.exe> -out <bin-signed.exe>`
+    3) Embed the signature: `osslsigncode attach-signature -sigin <bin.req.signed> -in <bin.exe> -out <bin-signed.exe>`
+       (osslsigncode < 2.14 also requires `-CAfile <cert.chain>` here.)
+
+    4) Verify: `osslsigncode verify -CAfile <cert.chain> -in <bin-signed.exe>`
 
     The `cert.chain` file should contain the full certificate chain, from issuer up to the root CA.
     Both input and output are ASN.1 structures. Input can be DER or PEM encoded, output is DER.
@@ -295,8 +311,10 @@ def _write_output(content_info: cms.ContentInfo, hashfile: str, out: Optional[st
     cli_code_info(f"Signed code signature (ASN1 DER) saved to: `{out_path}`")
     cli_info("Attach it to your PE executable with:")
     cli_code_info(
-        f"  `osslsigncode attach-signature -sigin '{out_path.name}' -CAfile MYCERT.chain.pem -in MYBIN.exe -out MYBIN.signed.exe`"
+        f"  `osslsigncode attach-signature -sigin '{out_path.name}' -in MYBIN.exe -out MYBIN.signed.exe`"
     )
+    cli_info("(osslsigncode < 2.14 also requires `-CAfile MYCERT.chain.pem` on attach-signature.) Then verify with:")
+    cli_code_info("  `osslsigncode verify -CAfile MYCERT.chain.pem -in MYBIN.signed.exe`")
 
 
 @cmd_codesign.command('sign')
@@ -324,7 +342,8 @@ def sign_complete(
 
     1) Extract the hash from the binary using osslsigncode
     2) Sign the hash using the HSM
-    3) Attach the signature back to the binary
+    3) Attach the signature back to the binary (and add a timestamp, if requested)
+    4) Verify the signed binary against the certificate chain
 
     Required: osslsigncode must be installed and in your PATH
 
@@ -397,7 +416,7 @@ def sign_complete(
 
     try:
         # Step 1: Extract hash from binary
-        cli_info(f"Step 1/3: Extracting hash from binary '{binary_path.name}' using {hash_alg}...")
+        cli_info(f"Step 1/4: Extracting hash from binary '{binary_path.name}' using {hash_alg}...")
         try:
             subprocess.run(
                 ['osslsigncode', 'extract-data', '-h', hash_alg, '-in', str(binary_path), '-out', str(hash_file_path)],
@@ -417,7 +436,7 @@ def sign_complete(
             )
 
         # Step 2: Sign the hash
-        cli_info("Step 2/3: Signing hash with HSM...")
+        cli_info("Step 2/4: Signing hash with HSM...")
         try:
             # Use the core signing logic
             _sign_authenticode_hash(ctx, str(hash_file_path), str(signed_hash_file_path), ca)
@@ -428,33 +447,56 @@ def sign_complete(
             raise click.ClickException(f"Hash signing failed: {str(e)}")
 
         # Step 3: Attach signature to binary
-        cli_info("Step 3/3: Attaching signature to binary...")
-        try:
-            attach_cmd = [
-                'osslsigncode', 'attach-signature',
-                '-sigin', str(signed_hash_file_path),
-                '-CAfile', str(cert_chain_path),
-                '-in', str(binary_path),
-                '-out', str(out_path)
-            ]
-
-            # Add CRL file if provided
-            # Otherwise, osslsigncode will attempt to download CRL from URL embedded in certificate
+        cli_info("Step 3/4: Attaching signature to binary...")
+        attach_cmd = [
+            'osslsigncode', 'attach-signature',
+            '-sigin', str(signed_hash_file_path),
+            '-in', str(binary_path),
+            '-out', str(out_path)
+        ]
+        # osslsigncode < 2.14 does full chain validation on attach, and needs the CA/CRL files for it.
+        # 2.14+ only checks the digest on attach, and rejects these options. (Full validation is done in step 4.)
+        if _osslsigncode_version() < (2, 14):
+            attach_cmd.extend(['-CAfile', str(cert_chain_path)])
             if crl_file:
                 attach_cmd.extend(['-CRLfile', str(crl_file)])
-
-            if timestamp:
-                attach_cmd.extend(['-t', timestamp])
-
-            subprocess.run(
-                attach_cmd,
-                check=True,
-                capture_output=True,
-                text=True
-            )
+        try:
+            subprocess.run(attach_cmd, check=True, capture_output=True, text=True)
             cli_code_info(f"  Signature attached to binary")
         except subprocess.CalledProcessError as e:
-            raise click.ClickException(f"osslsigncode attach-signature failed: {e.stderr}")
+            raise click.ClickException(f"osslsigncode attach-signature failed: {e.stdout}{e.stderr}")
+
+        if timestamp:
+            # Timestamping is done with `osslsigncode add` (attach-signature has no -t option)
+            unstamped_path = out_path.with_name(f"{out_path.name}.unstamped")
+            unstamped_path.unlink(missing_ok=True)
+            out_path.rename(unstamped_path)
+            try:
+                subprocess.run(
+                    ['osslsigncode', 'add', '-t', timestamp, '-in', str(unstamped_path), '-out', str(out_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                cli_code_info(f"  Timestamp added from `{timestamp}`")
+            except subprocess.CalledProcessError as e:
+                out_path.unlink(missing_ok=True)
+                raise click.ClickException(f"osslsigncode add (timestamp) failed: {e.stdout}{e.stderr}")
+            finally:
+                unstamped_path.unlink(missing_ok=True)
+
+        # Step 4: Verify the signed binary
+        cli_info("Step 4/4: Verifying signed binary...")
+        verify_cmd = ['osslsigncode', 'verify', '-CAfile', str(cert_chain_path), '-in', str(out_path)]
+        # Without a CRL file, osslsigncode will attempt to download CRL from URL embedded in certificate
+        if crl_file:
+            verify_cmd.extend(['-CRLfile', str(crl_file)])
+        try:
+            subprocess.run(verify_cmd, check=True, capture_output=True, text=True)
+            cli_code_info(f"  Signature verified")
+        except subprocess.CalledProcessError as e:
+            out_path.unlink(missing_ok=True)
+            raise click.ClickException(f"osslsigncode verify failed (signed output removed): {e.stdout}{e.stderr}")
 
         # Clean up intermediate files on success
         hash_file_path.unlink(missing_ok=True)
